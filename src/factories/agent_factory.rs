@@ -6,6 +6,7 @@ use crate::error::{Result, SolanaAgentError};
 use crate::guardrails::pii::{NoopGuardrail, PiiGuardrail};
 use crate::interfaces::guardrails::{InputGuardrail, OutputGuardrail};
 use crate::providers::memory::InMemoryMemoryProvider;
+#[cfg(feature = "mongo")]
 use crate::providers::mongodb::MongoMemoryProvider;
 use crate::providers::openai::OpenAiProvider;
 use crate::services::agent::AgentService;
@@ -89,18 +90,27 @@ impl SolanaAgentFactory {
         let agent_service = Arc::new(agent_service);
         let routing_service = Arc::new(RoutingService::new(agent_service.clone()));
         let memory_provider: Arc<dyn crate::interfaces::providers::MemoryProvider> =
-            if let Some(mongo) = config.mongo {
-                let collection = mongo
-                    .collection
-                    .unwrap_or_else(|| "messages".to_string());
-                Arc::new(
-                    MongoMemoryProvider::new(
-                        &mongo.connection_string,
-                        &mongo.database,
-                        &collection,
+            if let Some(_mongo) = config.mongo {
+                #[cfg(feature = "mongo")]
+                {
+                    let collection = _mongo
+                        .collection
+                        .unwrap_or_else(|| "messages".to_string());
+                    Arc::new(
+                        MongoMemoryProvider::new(
+                            &_mongo.connection_string,
+                            &_mongo.database,
+                            &collection,
+                        )
+                        .await?,
                     )
-                    .await?,
-                )
+                }
+                #[cfg(not(feature = "mongo"))]
+                {
+                    return Err(SolanaAgentError::Config(
+                        "MongoDB support is disabled. Enable the 'mongo' feature.".to_string(),
+                    ));
+                }
             } else {
                 Arc::new(InMemoryMemoryProvider::new())
             };

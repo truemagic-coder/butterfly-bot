@@ -151,3 +151,4 @@ cython_debug/
 
 # tests
 coverage_html_report/
+tarpaulin-report.html

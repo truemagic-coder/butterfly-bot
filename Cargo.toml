@@ -28,3 +28,11 @@ mongodb = { version = "2.8", default-features = false, features = ["tokio-runtim
 base64 = "0.22"
 regex = "1.11"
 once_cell = "1.19"
+
+[features]
+default = []
+mongo = []
+
+[dev-dependencies]
+httpmock = "0.7"
+tempfile = "3.10"

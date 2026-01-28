@@ -15,80 +15,60 @@ permissions:
 
 jobs:
   lint:
-    name: Lint and Format Check
+    name: Rust Lint and Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: '3.13' # Use a specific version for linting
-          cache: 'pip'
+          components: rustfmt, clippy
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e .[dev]
-          pip install ruff
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Run Ruff Linter
-        run: ruff check .
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Run Ruff Formatter Check
-        run: ruff format --check .
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
-    name: Python ${{ matrix.python-version }} Test
+    name: Rust Tests
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.13']
-
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-        cache: 'pip'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -e .[dev]
-        pip install pytest pytest-cov pytest-asyncio pytest-mock pytest-github-actions-annotate-failures mongomock
-    
-    - name: Run tests with pytest
-      run: |
-        mkdir -p junit
-        pytest --junitxml=junit/test-results-${{ matrix.python-version }}.xml --cov=solana_agent --cov-report=xml --cov-report=term tests/
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v5
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }}
-    
-    - name: Publish Test Results
-      uses: EnricoMi/publish-unit-test-result-action@v2
-      if: always()
-      with:
-        check_name: "Test Results"
-        files: junit/test-results-${{ matrix.python-version }}.xml
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
-    - name: Upload test results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: test-results-${{ matrix.python-version }}
-        path: junit/*.xml
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Create Status Check
-      uses: LouisBrunner/checks-action@v2.0.0
-      if: always()
-      with:
-        token: ${{ github.token }}
-        name: "Python Tests"
-        conclusion: ${{ job.status }}
-        output: |
-          {"summary":"Python ${{ matrix.python-version }} test results"}
+      - name: Run tests
+        run: cargo test --all
+
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
+
+      - name: Run coverage (tarpaulin)
+        run: cargo tarpaulin --workspace --tests --out Xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: cobertura.xml

@@ -1,9 +1,6 @@
 {
     "openai": {
-        "api_key": "your-openai-api-key"
-    },
-    "grok": {
-        "api_key": "your-grok-api-key"
+        "api_key": "YOUR_API_KEY_HERE"
     },
     "agents": [
         {
