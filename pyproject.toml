@@ -1,0 +1,54 @@
+[tool.poetry]
+name = "solana-agent"
+version = "33.2.1"
+description = "AI Agents for Solana"
+authors = ["Bevan Hunt <bevan@bevanhunt.com>"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://solana-agent.com"
+repository = "https://github.com/truemagic-coder/solana-agent"
+documentation = "https://docs.solana-agent.com"
+keywords = ["solana", "solana ai", "solana agent", "ai", "ai agent", "ai agents"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+packages = [{ include = "solana_agent" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.poetry.dependencies]
+python = ">=3.13,<3.14"
+openai = "^2.15.0"
+pydantic = ">=2"
+pymongo = "^4.16.0"
+zep-cloud = "^3.16.0"
+scrubadub = "^2.0.1"
+logfire = "^4.20.0"
+typer = "^0.21.1"
+rich = ">=13,<14.0"
+pillow = "^12.1.0"
+websockets = ">=13,<16"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^9.0.2"
+pytest-cov = "^7.0.0"
+pytest-asyncio = "^1.3.0"
+pytest-mock = "^3.15.1"
+pytest-github-actions-annotate-failures = "^0.3.0"
+sphinx = "^8.2.3"
+sphinx-rtd-theme = "^3.0.2"
+myst-parser = "^4.0.1"
+sphinx-autobuild = "^2025.08.25"
+mongomock = "^4.3.0"
+ruff = "^0.14.14"
+
+[tool.poetry.scripts]
+solana-agent = "solana_agent.cli:app"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
