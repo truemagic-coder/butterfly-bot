@@ -676,7 +676,10 @@ async fn plugin_manager_auto_loads() {
 
     let mut loaded = manager.load_plugins();
     loaded.sort();
-    assert_eq!(loaded, vec!["p1".to_string(), "p2".to_string(), "p3".to_string()]);
+    assert_eq!(
+        loaded,
+        vec!["p1".to_string(), "p2".to_string(), "p3".to_string()]
+    );
     assert!(manager.get_plugin("p1").is_some());
     assert!(manager.get_plugin("missing").is_none());
     assert_eq!(*seen_p2.lock().unwrap(), Some(json!({"x":1})));
