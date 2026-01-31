@@ -23,7 +23,7 @@ Privacy is a core principle for Butterfly Bot:
 - Rust 1.93 or newer
 - Linux (Ubuntu recommended)
 - Certain system libraries for Linux
-- 24GB+ of VRAM (e.g. AMD 7900XTX or GTX 4090/5090)
+- 24GB+ of VRAM (e.g. AMD 7900XTX or GTX 3090/4090/5090)
 
 ## Ollama Models Used
 
