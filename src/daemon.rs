@@ -15,7 +15,8 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::client::ButterflyBot;
-use crate::config::Config;
+use crate::config::{AgentConfig, Config, MemoryConfig, OpenAiConfig};
+use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::ReminderStore;
@@ -289,6 +290,63 @@ pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()
     run_with_shutdown(host, port, db_path, token, futures::future::pending::<()>()).await
 }
 
+fn default_config(db_path: &str) -> Config {
+    let base_url = "http://localhost:11434/v1".to_string();
+    let model = "glm-4.7-flash:latest".to_string();
+    let memory = Some(MemoryConfig {
+        enabled: Some(true),
+        sqlite_path: Some(db_path.to_string()),
+        lancedb_path: Some("./data/lancedb".to_string()),
+        summary_model: Some(model.clone()),
+        embedding_model: Some("embeddinggemma:latest".to_string()),
+        rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+        summary_threshold: None,
+        retention_days: None,
+    });
+
+    Config {
+        openai: Some(OpenAiConfig {
+            api_key: None,
+            model: Some(model),
+            base_url: Some(base_url),
+        }),
+        agents: vec![AgentConfig {
+            name: "default_agent".to_string(),
+            description: Some("Butterfly, an expert conversationalist and assistant.".to_string()),
+            instructions: r#"You are Butterfly, an expert conversationalist and calm, capable assistant.
+
+Core behavior:
+- Be warm, concise, and natural. Ask clarifying questions when the request is ambiguous.
+- Prefer actionable help over long explanations. Offer a short plan when helpful.
+- If you’re unsure, say so briefly and suggest the next best step.
+
+Tools you can use:
+- reminders: create/list/complete/delete/snooze reminders and todos.
+    Use it when the user asks for reminders, alarms, timers, tasks, or follow-ups.
+- search_internet: fetch up-to-date info when the user asks for current events or live data.
+
+Memory:
+- Use provided context, but do not treat assistant statements as user facts.
+- Confirm personal details before relying on them.
+
+When scheduling:
+- If the user asks “in X seconds/minutes/hours,” create a reminder with that delay.
+- If they ask “tomorrow at 3pm” or similar, ask for timezone if missing.
+"#
+                .to_string(),
+            specialization: "conversation".to_string(),
+            tools: Some(vec!["reminders".to_string(), "search_internet".to_string()]),
+            capture_name: None,
+            capture_schema: None,
+        }],
+        business: None,
+        memory,
+        guardrails: None,
+        tools: None,
+        brains: None,
+    }
+}
+
 pub async fn run_with_shutdown<F>(
     host: &str,
     port: u16,
@@ -299,6 +357,11 @@ pub async fn run_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    if Config::from_store(db_path).is_err() {
+        let default_config = default_config(db_path);
+        config_store::save_config(db_path, &default_config)?;
+    }
+
     let config = Config::from_store(db_path).ok();
     let tick_seconds = config
         .as_ref()

@@ -1,5 +1,5 @@
 use butterfly_bot::daemon;
-use butterfly_bot::error::{ButterflyBotError, Result};
+use butterfly_bot::error::Result;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
@@ -16,7 +16,7 @@ struct Cli {
     #[arg(long, default_value = "./data/butterfly-bot.db")]
     db: String,
 
-    #[arg(long, env = "BUTTERFLY_BOT_TOKEN")]
+    #[arg(long, env = "BUTTERFLY_BOT_TOKEN", default_value = "")]
     token: String,
 }
 
@@ -26,12 +26,6 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info,lance=warn,lancedb=warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
-
-    if cli.token.trim().is_empty() {
-        return Err(ButterflyBotError::Config(
-            "Missing BUTTERFLY_BOT_TOKEN".to_string(),
-        ));
-    }
 
     daemon::run(&cli.host, cli.port, &cli.db, &cli.token).await
 }

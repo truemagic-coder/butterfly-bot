@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::num::NonZeroUsize;
 
 use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -15,6 +16,8 @@ use diesel_async::RunQueryDsl;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use futures::TryStreamExt;
 use serde_json::{json, Value};
+use time::{macros::format_description, OffsetDateTime};
+use lru::LruCache;
 
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::providers::{LlmProvider, MemoryProvider};
@@ -42,9 +45,11 @@ struct RowId {
 }
 
 #[derive(QueryableByName)]
-struct ContentRow {
+struct SearchRow {
     #[diesel(sql_type = Text)]
     content: String,
+    #[diesel(sql_type = BigInt)]
+    timestamp: i64,
 }
 
 #[derive(QueryableByName)]
@@ -247,6 +252,23 @@ pub struct SqliteMemoryProvider {
     summarizer: Option<Arc<dyn LlmProvider>>,
     summary_threshold: usize,
     retention_days: Option<u32>,
+    embedding_cache: Arc<tokio::sync::Mutex<LruCache<String, Vec<f32>>>>,
+}
+
+impl Clone for SqliteMemoryProvider {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            lancedb: self.lancedb.clone(),
+            embedder: self.embedder.clone(),
+            embedding_model: self.embedding_model.clone(),
+            reranker: self.reranker.clone(),
+            summarizer: self.summarizer.clone(),
+            summary_threshold: self.summary_threshold,
+            retention_days: self.retention_days,
+            embedding_cache: Arc::clone(&self.embedding_cache),
+        }
+    }
 }
 
 pub struct SqliteMemoryProviderConfig {
@@ -301,6 +323,9 @@ impl SqliteMemoryProvider {
             summarizer: config.summarizer,
             summary_threshold: config.summary_threshold.unwrap_or(12),
             retention_days: config.retention_days,
+            embedding_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
+                NonZeroUsize::new(256).unwrap(),
+            ))),
         })
     }
 
@@ -310,6 +335,16 @@ impl SqliteMemoryProvider {
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
     }
+}
+
+const TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
+    format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+fn format_timestamp(ts: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(ts)
+        .ok()
+        .and_then(|dt| dt.format(TIMESTAMP_FORMAT).ok())
+        .unwrap_or_else(|| ts.to_string())
 }
 
 fn ensure_parent_dir(path: &str) -> Result<()> {
@@ -378,11 +413,19 @@ impl MemoryProvider for SqliteMemoryProvider {
         }
 
         if role == "assistant" {
-            self.maybe_summarize(user_id).await?;
+            let provider = self.clone();
+            let user_id = user_id.to_string();
+            tokio::spawn(async move {
+                let _ = provider.maybe_summarize(&user_id).await;
+            });
         }
 
         if let Some(days) = self.retention_days {
-            self.apply_retention(user_id, days).await?;
+            let provider = self.clone();
+            let user_id = user_id.to_string();
+            tokio::spawn(async move {
+                let _ = provider.apply_retention(&user_id, days).await;
+            });
         }
         Ok(())
     }
@@ -406,7 +449,14 @@ impl MemoryProvider for SqliteMemoryProvider {
         rows.sort_by_key(|row| row.timestamp);
         Ok(rows
             .into_iter()
-            .map(|row| format!("{}: {}", row.role, row.content))
+            .map(|row| {
+                format!(
+                    "[{}] {}: {}",
+                    format_timestamp(row.timestamp),
+                    row.role,
+                    row.content
+                )
+            })
             .collect())
     }
 
@@ -460,21 +510,34 @@ impl MemoryProvider for SqliteMemoryProvider {
     }
 
     async fn search(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {
-        let fts_results = self.search_fts(user_id, query, limit).await?;
-        let vector_results = self.search_vector(user_id, query, limit).await?;
+        let mut fts_results = self.search_fts(user_id, query, limit).await?;
+        if fts_results.len() >= limit.max(1) {
+            return Ok(fts_results.into_iter().take(limit.max(1)).collect());
+        }
+        let trimmed = query.trim();
+        let tokens = trimmed.split_whitespace().count();
+        let use_vector = tokens >= 4 && trimmed.len() >= 18;
+
+        let vector_results = if use_vector {
+            self.search_vector(user_id, query, limit).await?
+        } else {
+            Vec::new()
+        };
 
         let mut merged = Vec::new();
-        for item in vector_results.into_iter().chain(fts_results.into_iter()) {
+        for item in fts_results.drain(..).chain(vector_results.into_iter()) {
             if !merged.contains(&item) {
                 merged.push(item);
             }
         }
 
         if let Some(reranker) = &self.reranker {
-            let reranked = self
-                .rerank_with_model(reranker, query, &merged, limit)
-                .await?;
-            return Ok(reranked);
+            if merged.len() > limit.max(1) * 2 {
+                let reranked = self
+                    .rerank_with_model(reranker, query, &merged, limit)
+                    .await?;
+                return Ok(reranked);
+            }
         }
 
         Ok(merged.into_iter().take(limit.max(1)).collect())
@@ -504,8 +567,8 @@ impl SqliteMemoryProvider {
             return Ok(Vec::new());
         };
         let mut conn = self.conn().await?;
-        let rows: Vec<ContentRow> = diesel::sql_query(
-            "SELECT summary as content FROM memories_fts WHERE user_id = ?1 AND summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content FROM messages_fts f JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role = 'user'\n             LIMIT ?3",
+        let rows: Vec<SearchRow> = diesel::sql_query(
+            "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role = 'user'\n             ORDER BY timestamp DESC\n             LIMIT ?3",
         )
         .bind::<Text, _>(user_id)
         .bind::<Text, _>(query)
@@ -513,7 +576,10 @@ impl SqliteMemoryProvider {
         .load(&mut conn)
         .await
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        Ok(rows.into_iter().map(|row| row.content).collect())
+        Ok(rows
+            .into_iter()
+            .map(|row| format!("[{}] {}", format_timestamp(row.timestamp), row.content))
+            .collect())
     }
 
     async fn search_vector(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {
@@ -527,11 +593,24 @@ impl SqliteMemoryProvider {
             return Ok(Vec::new());
         };
 
-        let vectors = embedder
-            .embed(vec![query.to_string()], self.embedding_model.as_deref())
-            .await?;
-        let Some(vector) = vectors.into_iter().next() else {
-            return Ok(Vec::new());
+        let model_key = self.embedding_model.as_deref().unwrap_or("default");
+        let cache_key = format!("{model_key}:{query}");
+        let cached = {
+            let mut cache = self.embedding_cache.lock().await;
+            cache.get(&cache_key).cloned()
+        };
+        let vector = if let Some(vector) = cached {
+            vector
+        } else {
+            let vectors = embedder
+                .embed(vec![query.to_string()], self.embedding_model.as_deref())
+                .await?;
+            let Some(vector) = vectors.into_iter().next() else {
+                return Ok(Vec::new());
+            };
+            let mut cache = self.embedding_cache.lock().await;
+            cache.put(cache_key, vector.clone());
+            vector
         };
 
         use lancedb::query::QueryBase;
@@ -552,14 +631,19 @@ impl SqliteMemoryProvider {
 
         let mut results = Vec::new();
         for batch in batches {
-            if let Some(array) = batch.column_by_name("content") {
-                if let Some(strings) = array.as_any().downcast_ref::<StringArray>() {
-                    for i in 0..strings.len() {
-                        if strings.is_null(i) {
-                            continue;
-                        }
-                        results.push(strings.value(i).to_string());
+            let content_array = batch
+                .column_by_name("content")
+                .and_then(|array| array.as_any().downcast_ref::<StringArray>());
+            let ts_array = batch
+                .column_by_name("timestamp")
+                .and_then(|array| array.as_any().downcast_ref::<Int64Array>());
+            if let (Some(strings), Some(timestamps)) = (content_array, ts_array) {
+                for i in 0..strings.len() {
+                    if strings.is_null(i) || timestamps.is_null(i) {
+                        continue;
                     }
+                    let ts = timestamps.value(i);
+                    results.push(format!("[{}] {}", format_timestamp(ts), strings.value(i)));
                 }
             }
         }
@@ -650,7 +734,14 @@ impl SqliteMemoryProvider {
         rows.sort_by_key(|row| row.timestamp);
         let transcript = rows
             .into_iter()
-            .map(|row| format!("{}: {}", row.role, row.content))
+            .map(|row| {
+                format!(
+                    "[{}] {}: {}",
+                    format_timestamp(row.timestamp),
+                    row.role,
+                    row.content
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
 

@@ -17,6 +17,10 @@ path = "src/main.rs"
 name = "butterfly-botd"
 path = "src/bin/butterfly-botd.rs"
 
+[[bin]]
+name = "butterfly-bot-ui"
+path = "src/bin/butterfly-bot-ui.rs"
+
 [dependencies]
 async-stream = "0.3"
 async-trait = "0.1"
@@ -48,6 +52,9 @@ axum = "0.7"
 bytes = "1.7"
 sha2 = "0.10"
 notify-rust = "4.11"
+dioxus = { version = "0.7.3", features = ["desktop"] }
+time = { version = "0.3", features = ["formatting", "macros"] }
+lru = "0.12"
 
 [features]
 default = []
@@ -57,3 +64,4 @@ httpmock = "0.7"
 tempfile = "3.10"
 tower = "0.5"
 http-body-util = "0.1"
+criterion = "0.5"

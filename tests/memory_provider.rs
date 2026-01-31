@@ -73,9 +73,19 @@ async fn memory_provider_defaults_and_in_memory() {
         .await
         .unwrap();
     assert_eq!(
-        provider.retrieve("u2").await.unwrap(),
-        "user: a\nassistant: b"
+        provider
+            .retrieve("u2")
+            .await
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>()
+            .len(),
+        2
     );
+    let retrieved = provider.retrieve("u2").await.unwrap();
+    let mut lines = retrieved.lines();
+    assert!(lines.next().unwrap_or_default().ends_with("user: a"));
+    assert!(lines.next().unwrap_or_default().ends_with("assistant: b"));
     provider.delete("u2").await.unwrap();
 
     provider

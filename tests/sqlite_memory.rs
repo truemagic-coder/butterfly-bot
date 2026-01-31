@@ -23,8 +23,8 @@ async fn sqlite_memory_appends_and_reads() {
 
     let history = provider.get_history("u1", 10).await.unwrap();
     assert_eq!(history.len(), 2);
-    assert_eq!(history[0], "user: hello");
-    assert_eq!(history[1], "assistant: world");
+    assert!(history[0].ends_with("user: hello"));
+    assert!(history[1].ends_with("assistant: world"));
 }
 
 #[tokio::test]

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use time::{macros::format_description, OffsetDateTime};
+
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
@@ -29,6 +31,16 @@ impl InMemoryMemoryProvider {
     }
 }
 
+const TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
+    format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+fn format_timestamp(ts: i64) -> String {
+    OffsetDateTime::from_unix_timestamp(ts)
+        .ok()
+        .and_then(|dt| dt.format(TIMESTAMP_FORMAT).ok())
+        .unwrap_or_else(|| ts.to_string())
+}
+
 #[async_trait]
 impl MemoryProvider for InMemoryMemoryProvider {
     async fn append_message(&self, user_id: &str, role: &str, content: &str) -> Result<()> {
@@ -54,7 +66,7 @@ impl MemoryProvider for InMemoryMemoryProvider {
         }
         Ok(messages
             .into_iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
+            .map(|m| format!("[{}] {}: {}", format_timestamp(m.timestamp), m.role, m.content))
             .collect())
     }
 

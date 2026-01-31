@@ -44,6 +44,8 @@ use butterfly_bot::tools::search_internet::SearchInternetTool;
 #[cfg(not(test))]
 use butterfly_bot::vault;
 #[cfg(not(test))]
+use butterfly_bot::ui;
+#[cfg(not(test))]
 use tokio::sync::oneshot;
 #[cfg(not(test))]
 use tracing_subscriber::EnvFilter;
@@ -53,6 +55,9 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "butterfly-bot")]
 #[command(about = "ButterFly Bot CLI (Rust)")]
 struct Cli {
+    #[arg(long = "cli", default_value_t = false, help = "Start in CLI mode (default is UI)")]
+    cli_mode: bool,
+
     #[arg(long, default_value = "./data/butterfly-bot.db")]
     db: String,
 
@@ -315,6 +320,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
+    if !cli.cli_mode {
+        ui::launch_ui();
+        return Ok(());
+    }
     let needs_onboarding = !matches!(
         cli.command,
         Some(Commands::Init) | Some(Commands::ConfigImport { .. })
@@ -796,14 +805,14 @@ fn run_onboarding(db_path: &str) -> Result<()> {
     println!();
 
     let base_url = "http://localhost:11434/v1".to_string();
-    let model = "qwen3:30b".to_string();
+    let model = "glm-4.7-flash:latest".to_string();
     let memory_enabled = true;
 
     let memory = if memory_enabled {
         let sqlite_path = prompt_with_default("Memory SQLite path", db_path)?;
         let lancedb_path = prompt_with_default("LanceDB path", "./data/lancedb")?;
-        let embedding_model = "qwen3-embedding:8b".to_string();
-        let rerank_model = "Krakekai/qwen3-reranker-8b:latest".to_string();
+        let embedding_model = "embeddinggemma:latest".to_string();
+        let rerank_model = "qllama/bge-reranker-v2-m3".to_string();
         let summary_model = model.clone();
         let summary_threshold = prompt_optional_u32("Summary threshold (messages)")?;
         let retention_days = prompt_optional_u32("Retention days (blank for unlimited)")?;

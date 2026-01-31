@@ -118,12 +118,17 @@ impl QueryService {
             None
         };
         let memory_context = if let Some(provider) = &self.memory_provider {
-            let history = provider.get_history(user_id, 20).await?.join("\n");
-            let semantic = if should_include_semantic_memory(&processed_query) {
-                provider.search(user_id, &processed_query, 8).await?
-            } else {
-                Vec::new()
+            let include_semantic = should_include_semantic_memory(&processed_query);
+            let history_future = provider.get_history(user_id, 12);
+            let semantic_future = async {
+                if include_semantic {
+                    provider.search(user_id, &processed_query, 5).await
+                } else {
+                    Ok(Vec::new())
+                }
             };
+            let (history, semantic) = tokio::try_join!(history_future, semantic_future)?;
+            let history = history.join("\n");
             build_memory_context(history, semantic, reminder_context)
         } else {
             reminder_context.unwrap_or_default()
@@ -205,12 +210,17 @@ impl QueryService {
             None
         };
         let memory_context = if let Some(provider) = &self.memory_provider {
-            let history = provider.get_history(user_id, 20).await?.join("\n");
-            let semantic = if should_include_semantic_memory(&text) {
-                provider.search(user_id, &text, 8).await?
-            } else {
-                Vec::new()
+            let include_semantic = should_include_semantic_memory(&text);
+            let history_future = provider.get_history(user_id, 12);
+            let semantic_future = async {
+                if include_semantic {
+                    provider.search(user_id, &text, 5).await
+                } else {
+                    Ok(Vec::new())
+                }
             };
+            let (history, semantic) = tokio::try_join!(history_future, semantic_future)?;
+            let history = history.join("\n");
             build_memory_context(history, semantic, reminder_context)
         } else {
             reminder_context.unwrap_or_default()
@@ -317,12 +327,17 @@ impl QueryService {
                 None
             };
             let memory_context = if let Some(provider) = &self.memory_provider {
-                let history = provider.get_history(user_id, 20).await?.join("\n");
-                let semantic = if should_include_semantic_memory(&processed_query) {
-                    provider.search(user_id, &processed_query, 8).await?
-                } else {
-                    Vec::new()
+                let include_semantic = should_include_semantic_memory(&processed_query);
+                let history_future = provider.get_history(user_id, 12);
+                let semantic_future = async {
+                    if include_semantic {
+                        provider.search(user_id, &processed_query, 5).await
+                    } else {
+                        Ok(Vec::new())
+                    }
                 };
+                let (history, semantic) = tokio::try_join!(history_future, semantic_future)?;
+                let history = history.join("\n");
                 build_memory_context(history, semantic, reminder_context)
             } else {
                 reminder_context.unwrap_or_default()
