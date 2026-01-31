@@ -1,0 +1,25 @@
+pub mod brain;
+pub mod client;
+pub mod config;
+pub mod config_store;
+pub mod daemon;
+pub mod domains;
+pub mod error;
+pub mod factories;
+pub mod guardrails;
+pub mod interfaces;
+pub mod plugins;
+pub mod providers;
+pub mod reminders;
+pub mod scheduler;
+pub mod services;
+pub mod tools;
+pub mod vault;
+
+pub type Result<T> = std::result::Result<T, error::ButterflyBotError>;
+
+pub use crate::client::ButterflyBot;
+pub use crate::config::Config;
+pub use crate::error::ButterflyBotError;
+pub use crate::interfaces::providers::{ImageData, ImageInput};
+pub use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};

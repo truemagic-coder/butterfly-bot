@@ -1,0 +1,342 @@
+use std::future::Future;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use axum::{
+    body::Body,
+    extract::{Json, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+    Router,
+};
+use bytes::Bytes;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
+
+use crate::client::ButterflyBot;
+use crate::config::Config;
+use crate::error::{ButterflyBotError, Result};
+use crate::interfaces::scheduler::ScheduledJob;
+use crate::reminders::ReminderStore;
+use crate::scheduler::Scheduler;
+use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
+
+#[derive(Clone)]
+pub struct AppState {
+    pub agent: Arc<ButterflyBot>,
+    pub reminder_store: Arc<ReminderStore>,
+    pub token: String,
+}
+
+struct BrainTickJob {
+    agent: Arc<ButterflyBot>,
+    interval: Duration,
+}
+
+#[async_trait::async_trait]
+impl ScheduledJob for BrainTickJob {
+    fn name(&self) -> &str {
+        "brain_tick"
+    }
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self) -> Result<()> {
+        self.agent.brain_tick().await;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct ProcessTextRequest {
+    user_id: String,
+    text: String,
+    prompt: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ProcessTextResponse {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct MemorySearchRequest {
+    user_id: String,
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ReminderStreamQuery {
+    user_id: String,
+}
+
+#[derive(Serialize)]
+struct MemorySearchResponse {
+    results: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+pub fn build_router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/process_text", post(process_text))
+        .route("/process_text_stream", post(process_text_stream))
+        .route("/memory_search", post(memory_search))
+    .route("/reminder_stream", get(reminder_stream))
+        .with_state(state)
+}
+
+async fn health() -> Json<HealthResponse> {
+    Json(HealthResponse {
+        status: "ok".to_string(),
+    })
+}
+
+async fn process_text(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ProcessTextRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let options = ProcessOptions {
+        prompt: payload.prompt.clone(),
+        images: Vec::new(),
+        output_format: OutputFormat::Text,
+        image_detail: "auto".to_string(),
+        json_schema: None,
+        router: None,
+    };
+
+    let response = state
+        .agent
+        .process(&payload.user_id, UserInput::Text(payload.text), options)
+        .await;
+
+    match response {
+        Ok(ProcessResult::Text(text)) => {
+            (StatusCode::OK, Json(ProcessTextResponse { text })).into_response()
+        }
+        Ok(other) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!("Unexpected response: {other:?}"),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn process_text_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ProcessTextRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let AppState { agent, .. } = state;
+    let ProcessTextRequest {
+        user_id,
+        text,
+        prompt,
+    } = payload;
+
+    let body = Body::from_stream(async_stream::stream! {
+        let mut stream = agent.process_text_stream(&user_id, &text, prompt.as_deref());
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(chunk) => {
+                    if !chunk.is_empty() {
+                        yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(chunk));
+                    }
+                }
+                Err(err) => {
+                    let message = format!("\n[error] {}", err);
+                    yield Ok(Bytes::from(message));
+                    break;
+                }
+            }
+        }
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/plain; charset=utf-8")
+        .body(body)
+        .unwrap()
+}
+
+async fn memory_search(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<MemorySearchRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let limit = payload.limit.unwrap_or(8);
+    let response = state
+        .agent
+        .search_memory(&payload.user_id, &payload.query, limit)
+        .await;
+
+    match response {
+        Ok(results) => (StatusCode::OK, Json(MemorySearchResponse { results })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn reminder_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ReminderStreamQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let store = state.reminder_store.clone();
+    let user_id = query.user_id;
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+
+    let body = Body::from_stream(async_stream::stream! {
+        loop {
+            tick.tick().await;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if let Ok(items) = store.due_reminders(&user_id, now, 10).await {
+                for item in items {
+                    let payload = serde_json::json!({
+                        "id": item.id,
+                        "title": item.title,
+                        "due_at": item.due_at,
+                    });
+                    let line = format!("data: {}\n\n", payload);
+                    yield Ok::<Bytes, std::convert::Infallible>(Bytes::from(line));
+                }
+            }
+        }
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .body(body)
+        .unwrap()
+}
+
+fn authorize(
+    headers: &HeaderMap,
+    token: &str,
+) -> std::result::Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let header = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let api_key = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    let bearer = header.strip_prefix("Bearer ").unwrap_or("");
+
+    if bearer == token || api_key == token {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Unauthorized".to_string(),
+            }),
+        ))
+    }
+}
+
+pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()> {
+    run_with_shutdown(host, port, db_path, token, futures::future::pending::<()>()).await
+}
+
+pub async fn run_with_shutdown<F>(
+    host: &str,
+    port: u16,
+    db_path: &str,
+    token: &str,
+    shutdown: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let config = Config::from_store(db_path).ok();
+    let tick_seconds = config
+        .as_ref()
+        .and_then(|cfg| cfg.brains.as_ref())
+        .and_then(|brains| brains.get("settings"))
+        .and_then(|settings| settings.get("tick_seconds"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(60);
+
+    let agent = Arc::new(ButterflyBot::from_store(db_path).await?);
+    let reminder_store = Arc::new(ReminderStore::new(db_path).await?);
+    let mut scheduler = Scheduler::new();
+    scheduler.register_job(Arc::new(BrainTickJob {
+        agent: agent.clone(),
+        interval: Duration::from_secs(tick_seconds.max(1)),
+    }));
+    scheduler.start();
+
+    let state = AppState {
+        agent,
+        reminder_store,
+        token: token.to_string(),
+    };
+    let app = build_router(state);
+
+    let addr = format!("{host}:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    let shutdown = async move {
+        shutdown.await;
+        scheduler.stop().await;
+    };
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+    Ok(())
+}

@@ -1,0 +1,5 @@
+[alias]
+coverage = "tarpaulin --workspace --tests --out Html"
+formater = "fmt --all --check"
+clipster = "clippy --all-targets --all-features -- -D warnings"
+tester = "test --workspace --all-features"
