@@ -174,8 +174,8 @@ use crate::e2e::identity_store::KeyringIdentityStore;
 use crate::e2e::manager::E2eManager;
 use crate::e2e::E2eEnvelope;
 use crate::e2e::trust_store::{
-    get_contact, get_peer_key, list_contacts, lookup_username, set_trust_state, upsert_contact,
-    upsert_peer_key, upsert_username_claim, TrustState,
+    get_contact, get_peer_key, get_username_by_public_key, list_contacts, lookup_username,
+    set_trust_state, upsert_contact, upsert_peer_key, upsert_username_claim, TrustState,
 };
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::scheduler::ScheduledJob;
@@ -381,6 +381,11 @@ struct UsernameLookupResponse {
 }
 
 #[derive(Serialize)]
+struct UsernameMeResponse {
+    username: String,
+}
+
+#[derive(Serialize)]
 struct E2eTrustResponse {
     trust_state: String,
 }
@@ -402,6 +407,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/contacts", post(contacts_upsert))
         .route("/username/claim", post(username_claim))
         .route("/username/lookup", get(username_lookup))
+        .route("/username/me", get(username_me))
         .route("/p2p/info", get(p2p_info))
         .route("/p2p/message", post(p2p_message))
         .route("/p2p/receipt", post(p2p_receipt))
@@ -934,7 +940,8 @@ async fn username_claim(
     if let Err(err) = authorize(&headers, &state.token) {
         return err.into_response();
     }
-    if !is_valid_username(&payload.username) {
+    let username = payload.username.to_lowercase();
+    if !is_valid_username(&username) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -978,12 +985,24 @@ async fn username_claim(
 
     let _ = upsert_username_claim(
         &state.db_path,
-        &payload.username,
+        &username,
         &peer_id,
         &public_key,
         &p2p_addr,
         seq,
     );
+
+    let dht_payload = serde_json::json!({
+        "username": username,
+        "peer_id": peer_id,
+        "public_key": public_key,
+        "p2p_addr": p2p_addr,
+        "seq": seq,
+    });
+    let _ = state
+        .gossip
+        .dht_put(format!("username:{}", payload.username.to_lowercase()), serde_json::to_vec(&dht_payload).unwrap_or_default())
+        .await;
 
     let message = GossipMessage {
         kind: "username_claim".to_string(),
@@ -991,7 +1010,7 @@ async fn username_claim(
         from: payload.user_id,
         message_id: seq as u64,
         payload: serde_json::json!({
-            "username": payload.username,
+            "username": username,
             "peer_id": peer_id,
             "public_key": public_key,
             "p2p_addr": p2p_addr,
@@ -1030,7 +1049,8 @@ async fn username_lookup(
         )
             .into_response();
     };
-    match lookup_username(&state.db_path, username) {
+    let username = username.to_lowercase();
+    match lookup_username(&state.db_path, &username) {
         Ok(Some(record)) => (
             StatusCode::OK,
             Json(UsernameLookupResponse {
@@ -1038,6 +1058,98 @@ async fn username_lookup(
                 peer_id: record.peer_id,
                 public_key: record.public_key,
                 p2p_addr: record.p2p_addr,
+            }),
+        )
+            .into_response(),
+        Ok(None) => {
+            let dht_key = format!("username:{}", username);
+            if let Ok(Some(value)) = state.gossip.dht_get(dht_key).await {
+                if let Ok(claim) = serde_json::from_slice::<serde_json::Value>(&value) {
+                    let peer_id = claim
+                        .get("peer_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let public_key = claim
+                        .get("public_key")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let p2p_addr = claim
+                        .get("p2p_addr")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    let seq = claim
+                        .get("seq")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    if is_valid_username(&username)
+                        && !peer_id.is_empty()
+                        && !public_key.is_empty()
+                        && !p2p_addr.is_empty()
+                    {
+                        let _ = upsert_username_claim(
+                            &state.db_path,
+                            &username,
+                            peer_id,
+                            public_key,
+                            p2p_addr,
+                            seq,
+                        );
+                        return (
+                            StatusCode::OK,
+                            Json(UsernameLookupResponse {
+                                username,
+                                peer_id: peer_id.to_string(),
+                                public_key: public_key.to_string(),
+                                p2p_addr: p2p_addr.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "username not found".to_string(),
+                }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn username_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<E2eIdentityQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+    let public_key = match state.e2e.identity_public_key(&query.user_id) {
+        Ok(key) => BASE64.encode(key),
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    match get_username_by_public_key(&state.db_path, &public_key) {
+        Ok(Some(record)) => (
+            StatusCode::OK,
+            Json(UsernameMeResponse {
+                username: record.username,
             }),
         )
             .into_response(),

@@ -233,6 +233,8 @@ fn app_view() -> Element {
     let username_status = use_signal(String::new);
     let username_lookup = use_signal(String::new);
     let username_lookup_error = use_signal(String::new);
+    let username_ready = use_signal(|| false);
+    let local_public_key = use_signal(String::new);
     let e2e_public_key = use_signal(String::new);
     let e2e_peer_public_key = use_signal(String::new);
     let e2e_plaintext = use_signal(String::new);
@@ -1099,6 +1101,66 @@ fn app_view() -> Element {
         });
     }
 
+    if local_public_key().is_empty() || !*username_ready.read() {
+        let mut local_public_key = local_public_key.clone();
+        let mut username_ready = username_ready.clone();
+        let mut username_claim = username_claim.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
+        let mut username_lookup_error = username_lookup_error.clone();
+
+        spawn(async move {
+            let client = match DaemonClient::new(daemon_url().to_string(), token().to_string()).await {
+                Ok(client) => client,
+                Err(err) => {
+                    username_lookup_error.set(format!("{err}"));
+                    return;
+                }
+            };
+            if local_public_key().is_empty() {
+                let response = client
+                    .get_stream("e2e/identity", &[("user_id", user_id())])
+                    .await;
+                if let Ok(resp) = response {
+                    if resp.status.is_success() {
+                        if let Ok(text) = resp.collect_string().await {
+                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                if let Some(key) = value.get("public_key").and_then(|v| v.as_str()) {
+                                    local_public_key.set(key.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let response = client
+                .get_stream("username/me", &[("user_id", user_id())])
+                .await;
+            match response {
+                Ok(resp) if resp.status.is_success() => {
+                    if let Ok(text) = resp.collect_string().await {
+                        if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                            if let Some(name) = value.get("username").and_then(|v| v.as_str()) {
+                                username_claim.set(name.to_string());
+                                username_ready.set(true);
+                            }
+                        }
+                    }
+                }
+                Ok(resp) => {
+                    if resp.status == reqwest::StatusCode::NOT_FOUND {
+                        username_ready.set(false);
+                    } else {
+                        let text = resp.collect_string().await.unwrap_or_default();
+                        username_lookup_error.set(text);
+                    }
+                }
+                Err(err) => username_lookup_error.set(format!("{err}")),
+            }
+        });
+    }
+
     if !*tools_loaded.read() {
         let tool_toggles = tool_toggles.clone();
         let tools_safe_mode = tools_safe_mode.clone();
@@ -1693,6 +1755,9 @@ fn app_view() -> Element {
             }}
             .error {{ color: #fca5a5; font-weight: 600; padding: 8px 20px; background: rgba(17,24,39,0.55); backdrop-filter: blur(12px); }}
             .hint {{ color: rgba(229,231,235,0.7); font-size: 12px; }}
+            .gate {{ position: fixed; inset: 0; background: rgba(7,10,20,0.86); display: flex; align-items: center; justify-content: center; z-index: 20; }}
+            .gate-card {{ max-width: 420px; width: 100%; background: rgba(17,24,39,0.85); border: 1px solid rgba(255,255,255,0.12); border-radius: 18px; padding: 24px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 12px 30px rgba(0,0,0,0.35); }}
+            .gate-title {{ font-size: 18px; font-weight: 700; }}
             .bubble pre {{ background: rgba(0,0,0,0.2); padding: 10px; border-radius: 10px; overflow-x: auto; }}
             .bubble code {{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }}
             .bubble a {{ color: #e0e7ff; text-decoration: underline; }}
@@ -1713,6 +1778,104 @@ fn app_view() -> Element {
             .status {{ color: #34d399; font-weight: 600; }}
         "# }
         div { class: "container",
+            if !*username_ready.read() {
+                div { class: "gate",
+                    div { class: "gate-card",
+                        div { class: "gate-title", "Claim your username" }
+                        div { class: "hint", "Pick a unique name (3-32 chars, a-z, 0-9, underscore)." }
+                        input {
+                            value: "{username_claim}",
+                            placeholder: "yourname",
+                            oninput: move |evt| {
+                                let mut username_claim_input = username_claim_input.clone();
+                                username_claim_input.set(evt.value());
+                            },
+                        }
+                        button {
+                            onclick: move |_| {
+                                let daemon_url = daemon_url.clone();
+                                let token = token.clone();
+                                let user_id = user_id.clone();
+                                let username_claim = username_claim.clone();
+                                let local_public_key = local_public_key.clone();
+                                let mut username_ready = username_ready.clone();
+                                let mut username_status_value = username_status_value.clone();
+                                let mut username_lookup_error_value = username_lookup_error_value.clone();
+                                spawn(async move {
+                                    username_status_value.set(String::new());
+                                    username_lookup_error_value.set(String::new());
+                                    let client = match DaemonClient::new(
+                                        daemon_url().to_string(),
+                                        token().to_string(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(client) => client,
+                                        Err(err) => {
+                                            username_lookup_error_value.set(format!("{err}"));
+                                            return;
+                                        }
+                                    };
+                                    let lookup = client
+                                        .get_stream(
+                                            "username/lookup",
+                                            &[("username", username_claim())],
+                                        )
+                                        .await;
+                                    match lookup {
+                                        Ok(resp) if resp.status.is_success() => {
+                                            if let Ok(text) = resp.collect_string().await {
+                                                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                                    let public_key = value
+                                                        .get("public_key")
+                                                        .and_then(|v| v.as_str())
+                                                        .unwrap_or("");
+                                                    if !public_key.is_empty()
+                                                        && public_key != local_public_key()
+                                                    {
+                                                        username_lookup_error_value
+                                                            .set("Username already taken.".to_string());
+                                                        return;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Ok(resp) if resp.status == reqwest::StatusCode::NOT_FOUND => {}
+                                        Ok(resp) => {
+                                            let text = resp.collect_string().await.unwrap_or_default();
+                                            username_lookup_error_value.set(text);
+                                            return;
+                                        }
+                                        Err(err) => {
+                                            username_lookup_error_value.set(format!("{err}"));
+                                            return;
+                                        }
+                                    }
+                                    let body = json!({
+                                        "user_id": user_id(),
+                                        "username": username_claim(),
+                                    });
+                                    match client.post_json_stream("username/claim", &body).await {
+                                        Ok(resp) if resp.status.is_success() => {
+                                            username_status_value.set("Username claimed".to_string());
+                                            username_ready.set(true);
+                                        }
+                                        Ok(resp) => {
+                                            let text = resp.collect_string().await.unwrap_or_default();
+                                            username_lookup_error_value.set(text);
+                                        }
+                                        Err(err) => username_lookup_error_value.set(format!("{err}")),
+                                    }
+                                });
+                            },
+                            "Claim"
+                        }
+                        if !username_lookup_error.read().is_empty() {
+                            div { class: "error", "{username_lookup_error}" }
+                        }
+                    }
+                }
+            }
             div { class: "header",
                 div { class: "title", "ButterFly Bot" }
                 div { class: "nav",
@@ -2198,6 +2361,8 @@ fn app_view() -> Element {
                                         let token = token.clone();
                                         let user_id = user_id.clone();
                                         let username_claim = username_claim.clone();
+                                        let local_public_key = local_public_key.clone();
+                                        let mut username_ready = username_ready.clone();
                                         let mut username_status_value = username_status_value.clone();
                                         let mut username_lookup_error_value = username_lookup_error_value.clone();
                                         spawn(async move {
@@ -2215,6 +2380,45 @@ fn app_view() -> Element {
                                                     return;
                                                 }
                                             };
+                                            let lookup = client
+                                                .get_stream(
+                                                    "username/lookup",
+                                                    &[("username", username_claim())],
+                                                )
+                                                .await;
+                                            match lookup {
+                                                Ok(resp) if resp.status.is_success() => {
+                                                    if let Ok(text) = resp.collect_string().await {
+                                                        if let Ok(value) =
+                                                            serde_json::from_str::<Value>(&text)
+                                                        {
+                                                            let public_key = value
+                                                                .get("public_key")
+                                                                .and_then(|v| v.as_str())
+                                                                .unwrap_or("");
+                                                            if !public_key.is_empty()
+                                                                && public_key != local_public_key()
+                                                            {
+                                                                username_lookup_error_value
+                                                                    .set("Username already taken.".to_string());
+                                                                return;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                Ok(resp)
+                                                    if resp.status == reqwest::StatusCode::NOT_FOUND => {}
+                                                Ok(resp) => {
+                                                    let text =
+                                                        resp.collect_string().await.unwrap_or_default();
+                                                    username_lookup_error_value.set(text);
+                                                    return;
+                                                }
+                                                Err(err) => {
+                                                    username_lookup_error_value.set(format!("{err}"));
+                                                    return;
+                                                }
+                                            }
                                             let body = json!({
                                                 "user_id": user_id(),
                                                 "username": username_claim(),
@@ -2222,6 +2426,7 @@ fn app_view() -> Element {
                                             match client.post_json_stream("username/claim", &body).await {
                                                 Ok(resp) if resp.status.is_success() => {
                                                     username_status_value.set("Username claimed".to_string());
+                                                    username_ready.set(true);
                                                 }
                                                 Ok(resp) => {
                                                     let text = resp.collect_string().await.unwrap_or_default();

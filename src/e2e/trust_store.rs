@@ -313,6 +313,9 @@ pub fn upsert_username_claim(
     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
     if let Some(row) = existing {
+        if row.public_key != public_key {
+            return Ok(());
+        }
         if seq <= row.seq {
             return Ok(());
         }
@@ -351,6 +354,30 @@ pub fn lookup_username(db_path: &str, username: &str) -> Result<Option<UsernameR
         "SELECT username, peer_id, public_key, p2p_addr, seq, updated_at FROM usernames WHERE username = ?1",
     )
     .bind::<Text, _>(username)
+    .get_result::<UsernameRow>(&mut conn)
+    .optional()
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+    Ok(row.map(|row| UsernameRecord {
+        username: row.username,
+        peer_id: row.peer_id,
+        public_key: row.public_key,
+        p2p_addr: row.p2p_addr,
+        seq: row.seq,
+        updated_at: row.updated_at,
+    }))
+}
+
+pub fn get_username_by_public_key(
+    db_path: &str,
+    public_key: &str,
+) -> Result<Option<UsernameRecord>> {
+    let mut conn = open_conn(db_path)?;
+    ensure_table(&mut conn)?;
+    let row = diesel::sql_query(
+        "SELECT username, peer_id, public_key, p2p_addr, seq, updated_at FROM usernames WHERE public_key = ?1 ORDER BY seq DESC LIMIT 1",
+    )
+    .bind::<Text, _>(public_key)
     .get_result::<UsernameRow>(&mut conn)
     .optional()
     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

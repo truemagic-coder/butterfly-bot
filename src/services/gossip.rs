@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,14 +7,15 @@ use libp2p::gossipsub::{
     self, AllowAllSubscriptionFilter, IdentTopic, IdentityTransform, MessageAuthenticity,
     ValidationMode,
 };
-use libp2p::swarm::SwarmEvent;
+use libp2p::kad::{self, store::MemoryStore, GetRecordOk, PutRecordOk, Quorum, Record, RecordKey};
+use libp2p::swarm::{NetworkBehaviour, SwarmEvent};
 use libp2p::{identity, noise, tcp, yamux, Multiaddr, PeerId, Swarm, Transport};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 
-use crate::error::{ButterflyBotError, Result};
+use crate::error::{ButterflyBotError, Result as BotResult};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GossipMessage {
@@ -35,12 +37,48 @@ struct SignableGossipMessage {
     pub payload: serde_json::Value,
 }
 
+type DhtGetResult = BotResult<Option<Vec<u8>>>;
+type DhtPutResult = BotResult<()>;
+
 enum GossipCommand {
     Publish(GossipMessage),
     Dial(Multiaddr),
+    PutRecord {
+        key: String,
+        value: Vec<u8>,
+        respond_to: oneshot::Sender<DhtPutResult>,
+    },
+    GetRecord {
+        key: String,
+        respond_to: oneshot::Sender<DhtGetResult>,
+    },
 }
 
-fn verify_message(message: &GossipMessage) -> Result<()> {
+#[derive(NetworkBehaviour)]
+#[behaviour(to_swarm = "AppBehaviourEvent")]
+struct AppBehaviour {
+    gossipsub: gossipsub::Behaviour<IdentityTransform, AllowAllSubscriptionFilter>,
+    kademlia: kad::Behaviour<MemoryStore>,
+}
+
+enum AppBehaviourEvent {
+    Gossipsub(gossipsub::Event),
+    Kademlia(kad::Event),
+}
+
+impl From<gossipsub::Event> for AppBehaviourEvent {
+    fn from(event: gossipsub::Event) -> Self {
+        Self::Gossipsub(event)
+    }
+}
+
+impl From<kad::Event> for AppBehaviourEvent {
+    fn from(event: kad::Event) -> Self {
+        Self::Kademlia(event)
+    }
+}
+
+fn verify_message(message: &GossipMessage) -> BotResult<()> {
     if message.signature.trim().is_empty() || message.public_key.trim().is_empty() {
         return Err(ButterflyBotError::Runtime("missing signature".to_string()));
     }
@@ -81,7 +119,7 @@ impl GossipHandle {
         listen_addrs: Vec<Multiaddr>,
         bootstrap: Vec<Multiaddr>,
         topic_name: &str,
-    ) -> Result<Self> {
+    ) -> BotResult<Self> {
         let local_key = identity::Keypair::generate_ed25519();
         let peer_id = PeerId::from(local_key.public());
 
@@ -100,16 +138,24 @@ impl GossipHandle {
             .build()
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let mut behaviour = gossipsub::Behaviour::<IdentityTransform, AllowAllSubscriptionFilter>::new(
+        let mut gossip = gossipsub::Behaviour::<IdentityTransform, AllowAllSubscriptionFilter>::new(
             MessageAuthenticity::Signed(local_key.clone()),
             gossipsub_config,
         )
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
         let topic = IdentTopic::new(topic_name);
-        behaviour
+        gossip
             .subscribe(&topic)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let mut kademlia = kad::Behaviour::new(peer_id, MemoryStore::new(peer_id));
+        kademlia.set_mode(Some(kad::Mode::Server));
+
+        let behaviour = AppBehaviour {
+            gossipsub: gossip,
+            kademlia,
+        };
 
         let mut swarm = Swarm::new(
             transport,
@@ -134,6 +180,8 @@ impl GossipHandle {
         let topic_task = topic.clone();
         let listen_addrs = Arc::new(RwLock::new(Vec::<Multiaddr>::new()));
         let listen_addrs_task = listen_addrs.clone();
+        let mut pending_get: HashMap<kad::QueryId, oneshot::Sender<DhtGetResult>> = HashMap::new();
+        let mut pending_put: HashMap<kad::QueryId, oneshot::Sender<DhtPutResult>> = HashMap::new();
 
         tokio::spawn(async move {
             loop {
@@ -142,20 +190,80 @@ impl GossipHandle {
                         match cmd {
                             GossipCommand::Publish(message) => {
                                 if let Ok(data) = serde_json::to_vec(&message) {
-                                    let _ = swarm.behaviour_mut().publish(topic_task.clone(), data);
+                                    let _ = swarm
+                                        .behaviour_mut()
+                                        .gossipsub
+                                        .publish(topic_task.clone(), data);
                                 }
                             }
                             GossipCommand::Dial(addr) => {
                                 let _ = swarm.dial(addr);
                             }
+                            GossipCommand::PutRecord { key, value, respond_to } => {
+                                let record = Record {
+                                    key: RecordKey::new(&key),
+                                    value,
+                                    publisher: None,
+                                    expires: None,
+                                };
+                                match swarm.behaviour_mut().kademlia.put_record(record, Quorum::One) {
+                                    Ok(query_id) => {
+                                        pending_put.insert(query_id, respond_to);
+                                    }
+                                    Err(err) => {
+                                        let _ = respond_to.send(Err(ButterflyBotError::Runtime(err.to_string())));
+                                    }
+                                }
+                            }
+                            GossipCommand::GetRecord { key, respond_to } => {
+                                let query_id = swarm
+                                    .behaviour_mut()
+                                    .kademlia
+                                    .get_record(RecordKey::new(&key));
+                                pending_get.insert(query_id, respond_to);
+                            }
                         }
                     }
                     event = swarm.select_next_some() => {
                         match event {
-                            SwarmEvent::Behaviour(gossipsub::Event::Message { message, .. }) => {
+                            SwarmEvent::Behaviour(AppBehaviourEvent::Gossipsub(
+                                gossipsub::Event::Message { message, .. },
+                            )) => {
                                 if let Ok(msg) = serde_json::from_slice::<GossipMessage>(&message.data) {
                                     if verify_message(&msg).is_ok() {
                                         let _ = event_tx_task.send(msg);
+                                    }
+                                }
+                            }
+                            SwarmEvent::Behaviour(AppBehaviourEvent::Kademlia(event)) => {
+                                if let kad::Event::OutboundQueryProgressed { id, result, .. } = event {
+                                    match result {
+                                        kad::QueryResult::GetRecord(Ok(GetRecordOk::FoundRecord(record))) => {
+                                            if let Some(sender) = pending_get.remove(&id) {
+                                                let _ = sender.send(Ok(Some(record.record.value)));
+                                            }
+                                        }
+                                        kad::QueryResult::GetRecord(Ok(GetRecordOk::FinishedWithNoAdditionalRecord { .. })) => {
+                                            if let Some(sender) = pending_get.remove(&id) {
+                                                let _ = sender.send(Ok(None));
+                                            }
+                                        }
+                                        kad::QueryResult::GetRecord(Err(_)) => {
+                                            if let Some(sender) = pending_get.remove(&id) {
+                                                let _ = sender.send(Ok(None));
+                                            }
+                                        }
+                                        kad::QueryResult::PutRecord(Ok(PutRecordOk { .. })) => {
+                                            if let Some(sender) = pending_put.remove(&id) {
+                                                let _ = sender.send(Ok(()));
+                                            }
+                                        }
+                                        kad::QueryResult::PutRecord(Err(err)) => {
+                                            if let Some(sender) = pending_put.remove(&id) {
+                                                let _ = sender.send(Err(ButterflyBotError::Runtime(err.to_string())));
+                                            }
+                                        }
+                                        _ => {}
                                     }
                                 }
                             }
@@ -182,7 +290,7 @@ impl GossipHandle {
         })
     }
 
-    pub async fn publish(&self, message: GossipMessage) -> Result<()> {
+    pub async fn publish(&self, message: GossipMessage) -> BotResult<()> {
         let signable = SignableGossipMessage {
             kind: message.kind.clone(),
             to: message.to.clone(),
@@ -212,11 +320,34 @@ impl GossipHandle {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
     }
 
-    pub async fn dial(&self, addr: Multiaddr) -> Result<()> {
+    pub async fn dial(&self, addr: Multiaddr) -> BotResult<()> {
         self.cmd_tx
             .send(GossipCommand::Dial(addr))
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
+    }
+
+    pub async fn dht_put(&self, key: String, value: Vec<u8>) -> BotResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(GossipCommand::PutRecord {
+                key,
+                value,
+                respond_to: tx,
+            })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        rx.await.map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+    }
+
+    pub async fn dht_get(&self, key: String) -> BotResult<Option<Vec<u8>>> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(GossipCommand::GetRecord { key, respond_to: tx })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        rx.await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<GossipMessage> {

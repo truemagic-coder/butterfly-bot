@@ -79,7 +79,7 @@ notify-rust = "4.11"
 dioxus = { version = "0.7.3", features = ["desktop"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
 lru = "0.12"
-libp2p = { version = "0.53", features = ["tokio", "tcp", "dns", "noise", "yamux", "gossipsub"] }
+libp2p = { version = "0.53", features = ["tokio", "tcp", "dns", "noise", "yamux", "gossipsub", "kad", "macros"] }
 
 [features]
 default = []
