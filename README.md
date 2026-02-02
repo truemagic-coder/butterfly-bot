@@ -28,12 +28,12 @@ Privacy is a core principle for Butterfly Bot:
 ## Ollama Models Used
 
 - ministral-3:14b (agent/router)
-- embeddinggemma (embedding)
+- embeddinggemma:latest (embedding)
 - qllama/bge-reranker-v2-m3 (reranking)
 
-## Tested
+## Supported Platforms/Devices
 
-- Tested on AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3
+- (instant results) AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3
 
 ## Build
 
@@ -47,13 +47,11 @@ cargo build --release
 cargo run --release --bin butterfly-bot
 ```
 
-Or run in dev:
+Run CLI:
 
 ```bash
 cargo run --bin butterfly-bot -- --cli
 ```
-
-When `base_url` is set, the API key is optional.
 
 ## Settings
 
@@ -65,14 +63,6 @@ Use the Settings tab in the app to configure:
 - Memory settings
 
 Config is stored in `./data/butterfly-bot.db` by default.
-
-## CLI (Optional)
-
-The CLI remains available for quick prompts or automation:
-
-```bash
-cargo run --release --bin butterfly-bot -- --cli
-```
 
 ## Library Usage (Minimal)
 
