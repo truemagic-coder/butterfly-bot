@@ -21,6 +21,7 @@ Privacy is a core principle for Butterfly Bot:
 ## Requirements
 
 - Rust 1.93 or newer
+- 32GB+ of RAM
 - Linux (Ubuntu recommended)
 - Certain system libraries for Linux
 - 24GB+ of VRAM (e.g. AMD 7900XTX or GTX 3090/4090/5090)
