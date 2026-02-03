@@ -12,6 +12,11 @@ use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
 use serde_json::Value;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::ThemeSet;
+use syntect::html::styled_line_to_highlighted_html;
+use syntect::parsing::SyntaxSet;
+use syntect::util::LinesWithEndings;
 use std::env;
 use std::thread;
 use tokio::time::{sleep, timeout, Duration};
@@ -84,6 +89,35 @@ async fn scroll_chat_after_render() {
     scroll_chat_to_bottom().await;
     sleep(Duration::from_millis(16)).await;
     scroll_chat_to_bottom().await;
+}
+
+fn highlight_json_html(input: &str) -> String {
+    static SYNTAX_SET: once_cell::sync::Lazy<SyntaxSet> =
+        once_cell::sync::Lazy::new(SyntaxSet::load_defaults_newlines);
+    static THEMES: once_cell::sync::Lazy<ThemeSet> =
+        once_cell::sync::Lazy::new(ThemeSet::load_defaults);
+
+    let syntax = SYNTAX_SET
+        .find_syntax_by_extension("json")
+        .unwrap_or_else(|| SYNTAX_SET.find_syntax_plain_text());
+    let theme = THEMES
+        .themes
+        .get("base16-ocean.dark")
+        .or_else(|| THEMES.themes.values().next())
+        .expect("theme available");
+
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut out = String::new();
+    for line in LinesWithEndings::from(input) {
+        let ranges = highlighter.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
+        let html = styled_line_to_highlighted_html(
+            &ranges[..],
+            syntect::html::IncludeBackground::No,
+        )
+        .unwrap_or_default();
+        out.push_str(&html);
+    }
+    out
 }
 
 pub fn launch_ui() {
@@ -796,6 +830,73 @@ fn app_view() -> Element {
         });
     }
 
+        let on_format_config = {
+            let settings_error = settings_error.clone();
+            let settings_status = settings_status.clone();
+            let config_json_text = config_json_text.clone();
+
+            use_callback(move |_| {
+                let settings_error = settings_error.clone();
+                let settings_status = settings_status.clone();
+                let config_json_text = config_json_text.clone();
+
+                spawn(async move {
+                    let mut settings_error = settings_error;
+                    let mut settings_status = settings_status;
+                    let mut config_json_text = config_json_text;
+
+                    settings_error.set(String::new());
+                    settings_status.set(String::new());
+
+                    let raw = config_json_text();
+                    match serde_json::from_str::<Value>(&raw) {
+                        Ok(value) => {
+                            let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw);
+                            config_json_text.set(pretty);
+                            settings_status.set("Formatted JSON.".to_string());
+                        }
+                        Err(err) => {
+                            settings_error.set(format!("Invalid JSON: {err}"));
+                        }
+                    }
+                });
+            })
+        };
+
+        let on_validate_config = {
+            let settings_error = settings_error.clone();
+            let settings_status = settings_status.clone();
+            let config_json_text = config_json_text.clone();
+
+            use_callback(move |_| {
+                let settings_error = settings_error.clone();
+                let settings_status = settings_status.clone();
+                let config_json_text = config_json_text.clone();
+
+                spawn(async move {
+                    let mut settings_error = settings_error;
+                    let mut settings_status = settings_status;
+                    let config_json_text = config_json_text;
+
+                    settings_error.set(String::new());
+                    settings_status.set(String::new());
+
+                    let raw = config_json_text();
+                    let value: Value = match serde_json::from_str(&raw) {
+                        Ok(value) => value,
+                        Err(err) => {
+                            settings_error.set(format!("Invalid JSON: {err}"));
+                            return;
+                        }
+                    };
+                    match serde_json::from_value::<crate::config::Config>(value) {
+                        Ok(_) => settings_status.set("Config is valid.".to_string()),
+                        Err(err) => settings_error.set(format!("Invalid config: {err}")),
+                    }
+                });
+            })
+        };
+
     let on_save_config = {
         let settings_error = settings_error.clone();
         let settings_status = settings_status.clone();
@@ -960,6 +1061,82 @@ fn app_view() -> Element {
                 backdrop-filter: blur(12px) saturate(180%);
                 box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
             }}
+            .config-editor {{
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                font-size: 13px;
+                line-height: 1.5;
+                background: rgba(2,6,23,0.6);
+                border: 1px solid rgba(148,163,184,0.35);
+                border-radius: 14px;
+                padding: 14px 16px;
+                min-height: 340px;
+            }}
+            .config-grid {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                gap: 14px;
+                align-items: stretch;
+            }}
+            .config-head {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+                gap: 14px;
+            }}
+            .config-head label {{
+                margin-bottom: 6px;
+                line-height: 16px;
+            }}
+            .config-panel {{
+                display: flex;
+                flex-direction: column;
+                min-width: 0;
+                min-height: 420px;
+                height: 100%;
+            }}
+            .config-panel > textarea,
+            .config-panel > pre {{
+                height: 100%;
+                width: 100%;
+            }}
+            .config-panel > pre {{
+                margin: 0;
+            }}
+            .config-preview {{
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+                font-size: 13px;
+                line-height: 1.5;
+                background: rgba(2,6,23,0.65);
+                border: 1px solid rgba(148,163,184,0.35);
+                border-radius: 14px;
+                padding: 14px 16px;
+                overflow: auto;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+                box-sizing: border-box;
+                margin: 0;
+            }}
+            .config-editor {{
+                resize: none;
+                box-sizing: border-box;
+                height: 100%;
+                max-height: 100%;
+            }}
+            @media (max-width: 860px) {{
+                .config-grid {{ grid-template-columns: 1fr; }}
+                .config-head {{ grid-template-columns: 1fr; }}
+                .config-panel {{ min-height: 360px; }}
+            }}
+            .config-actions {{
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                align-items: center;
+                justify-content: center;
+                margin-top: 24px;
+            }}
+            .config-actions button {{
+                min-width: 140px;
+            }}
             button {{
                 padding: 10px 18px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.12);
                 background: rgba(99,102,241,0.55);
@@ -1093,13 +1270,34 @@ fn app_view() -> Element {
                     if *tools_loaded.read() {
                         div { class: "settings-card",
                             label { "Config (JSON)" }
-                            textarea {
-                                value: "{config_json_text}",
-                                rows: "18",
-                                oninput: move |evt| {
-                                    let mut config_json_text = config_json_text.clone();
-                                    config_json_text.set(evt.value());
-                                },
+                            div { class: "config-head",
+                                label { "Editor" }
+                                label { "Preview" }
+                            }
+                            div { class: "config-grid",
+                                div { class: "config-panel",
+                                    textarea {
+                                        id: "config-json",
+                                        value: "{config_json_text}",
+                                        rows: "18",
+                                        class: "config-editor",
+                                        oninput: move |evt| {
+                                            let mut config_json_text = config_json_text.clone();
+                                            config_json_text.set(evt.value());
+                                        },
+                                    }
+                                }
+                                div { class: "config-panel",
+                                    pre {
+                                        class: "config-preview",
+                                        dangerous_inner_html: "{highlight_json_html(&config_json_text.read())}",
+                                    }
+                                }
+                            }
+                            div { class: "config-actions",
+                                button { onclick: move |_| on_format_config.call(()), "Format JSON" }
+                                button { onclick: move |_| on_validate_config.call(()), "Validate" }
+                                button { onclick: move |_| on_save_config.call(()), "Save Config" }
                             }
                             p { class: "hint", "Saved to the OS keyring. Changes reload automatically." }
                         }
@@ -1109,7 +1307,6 @@ fn app_view() -> Element {
                         if !settings_status.read().is_empty() {
                             div { class: "status", "{settings_status}" }
                         }
-                        button { onclick: move |_| on_save_config.call(()), "Save Config" }
                     }
                 }
             }
