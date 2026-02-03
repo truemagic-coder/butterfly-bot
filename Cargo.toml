@@ -55,6 +55,7 @@ notify-rust = "4.11"
 dioxus = { version = "0.7.3", features = ["desktop"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
 lru = "0.12"
+rust-mcp-sdk = "0.8.3"
 
 [features]
 default = []

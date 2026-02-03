@@ -1,0 +1,84 @@
+{
+  "openai": {
+    "api_key": "YOUR_OPENAI_API_KEY",
+    "model": "gpt-4o-mini",
+    "base_url": null
+  },
+  "agents": [
+    {
+      "name": "butterfly",
+      "instructions": "You are Butterfly, a helpful assistant.",
+      "specialization": "general",
+      "description": "Primary assistant",
+      "tools": ["search_internet", "reminders", "mcp", "wakeup"]
+    }
+  ],
+  "business": {
+    "mission": "",
+    "voice": "",
+    "values": [],
+    "goals": []
+  },
+  "memory": {
+    "enabled": true,
+    "sqlite_path": "./data/butterfly-bot.db",
+    "lancedb_path": "./data/lancedb",
+    "summary_model": null,
+    "embedding_model": null,
+    "rerank_model": null,
+    "summary_threshold": 24,
+    "retention_days": 365
+  },
+  "guardrails": {
+    "input": [],
+    "output": []
+  },
+  "tools": {
+    "settings": {
+      "safe_mode": false,
+      "enabled": [],
+      "disabled": [],
+      "audit_log_path": "./data/tool_audit.log",
+      "permissions": {
+        "search_internet": true,
+        "reminders": true,
+        "mcp": true,
+        "wakeup": true
+      }
+    },
+    "search_internet": {
+      "api_key": "YOUR_SEARCH_API_KEY",
+      "provider": "openai",
+      "model": "gpt-4o-mini-search-preview",
+      "citations": true,
+      "grok_web_search": true,
+      "grok_x_search": true,
+      "grok_timeout": 90,
+      "network_allow": ["api.openai.com"],
+      "default_deny": false
+    },
+    "reminders": {
+      "sqlite_path": "./data/butterfly-bot.db"
+    },
+    "mcp": {
+      "servers": [
+        {
+          "name": "local",
+          "url": "http://127.0.0.1:3001/sse",
+          "headers": {
+            "Authorization": "Bearer YOUR_TOKEN"
+          }
+        }
+      ]
+    },
+    "wakeup": {
+      "poll_seconds": 60,
+      "sqlite_path": "./data/butterfly-bot.db"
+    }
+  },
+  "brains": {
+    "settings": {
+      "tick_seconds": 60
+    }
+  }
+}

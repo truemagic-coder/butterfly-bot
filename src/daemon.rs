@@ -20,6 +20,7 @@ use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::ReminderStore;
+use crate::wakeup::WakeupStore;
 use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
@@ -50,6 +51,48 @@ impl ScheduledJob for BrainTickJob {
 
     async fn run(&self) -> Result<()> {
         self.agent.brain_tick().await;
+        Ok(())
+    }
+}
+
+struct WakeupJob {
+    agent: Arc<ButterflyBot>,
+    store: Arc<WakeupStore>,
+    interval: Duration,
+}
+
+#[async_trait::async_trait]
+impl ScheduledJob for WakeupJob {
+    fn name(&self) -> &str {
+        "wakeup"
+    }
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self) -> Result<()> {
+        let now = now_ts();
+        let tasks = self.store.list_due(now, 32).await?;
+        for task in tasks {
+            let run_at = now_ts();
+            let next_run_at = run_at + task.interval_minutes.max(1) * 60;
+            let _ = self.store.mark_run(task.id, run_at, next_run_at).await;
+
+            let options = ProcessOptions {
+                prompt: None,
+                images: Vec::new(),
+                output_format: OutputFormat::Text,
+                image_detail: "auto".to_string(),
+                json_schema: None,
+                router: None,
+            };
+            let input = format!("Wakeup task '{}': {}", task.name, task.prompt);
+            let _ = self
+                .agent
+                .process(&task.user_id, UserInput::Text(input), options)
+                .await;
+        }
         Ok(())
     }
 }
@@ -426,10 +469,23 @@ where
     let agent =
         Arc::new(ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?);
     let reminder_store = Arc::new(ReminderStore::new(db_path).await?);
+    let wakeup_store = Arc::new(WakeupStore::new(db_path).await?);
     let mut scheduler = Scheduler::new();
     scheduler.register_job(Arc::new(BrainTickJob {
         agent: agent.clone(),
         interval: Duration::from_secs(tick_seconds.max(1)),
+    }));
+    let wakeup_poll_seconds = config
+        .as_ref()
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| tools.get("wakeup"))
+        .and_then(|wakeup| wakeup.get("poll_seconds"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(60);
+    scheduler.register_job(Arc::new(WakeupJob {
+        agent: agent.clone(),
+        store: wakeup_store.clone(),
+        interval: Duration::from_secs(wakeup_poll_seconds.max(1)),
     }));
     scheduler.start();
 
@@ -456,4 +512,11 @@ where
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
     Ok(())
+}
+
+fn now_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }

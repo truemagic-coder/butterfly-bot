@@ -16,6 +16,7 @@ pub mod services;
 pub mod tools;
 pub mod ui;
 pub mod vault;
+pub mod wakeup;
 
 pub type Result<T> = std::result::Result<T, error::ButterflyBotError>;
 

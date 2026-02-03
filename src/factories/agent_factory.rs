@@ -79,8 +79,10 @@ use crate::reminders::{default_reminder_db_path, resolve_reminder_db_path, Remin
 use crate::services::agent::{AgentService, UiEvent};
 use crate::services::query::QueryService;
 use crate::services::routing::RoutingService;
+use crate::tools::mcp::McpTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
+use crate::tools::wakeup::WakeupTool;
 use tokio::sync::broadcast;
 
 pub struct ButterflyBotFactory;
@@ -358,10 +360,26 @@ impl ButterflyBotFactory {
                 .as_ref()
                 .map(|memory| memory.enabled.unwrap_or(true))
                 .unwrap_or(false);
+        let has_mcp_config = tools_config.get("mcp").is_some();
+        let has_wakeup_config = tools_config.get("wakeup").is_some();
         if has_reminders_config {
             for (_, tools) in &mut agent_tools {
                 if !tools.iter().any(|tool| tool == "reminders") {
                     tools.push("reminders".to_string());
+                }
+            }
+        }
+        if has_mcp_config {
+            for (_, tools) in &mut agent_tools {
+                if !tools.iter().any(|tool| tool == "mcp") {
+                    tools.push("mcp".to_string());
+                }
+            }
+        }
+        if has_wakeup_config {
+            for (_, tools) in &mut agent_tools {
+                if !tools.iter().any(|tool| tool == "wakeup") {
+                    tools.push("wakeup".to_string());
                 }
             }
         }
@@ -380,6 +398,18 @@ impl ButterflyBotFactory {
 
         if enabled_tools.contains("reminders") || has_reminders_config {
             let tool: Arc<dyn Tool> = Arc::new(RemindersTool::new());
+            tool.configure(&config_value)?;
+            let _ = tool_registry.register_tool(tool).await;
+        }
+
+        if enabled_tools.contains("mcp") || has_mcp_config {
+            let tool: Arc<dyn Tool> = Arc::new(McpTool::new());
+            tool.configure(&config_value)?;
+            let _ = tool_registry.register_tool(tool).await;
+        }
+
+        if enabled_tools.contains("wakeup") || has_wakeup_config {
+            let tool: Arc<dyn Tool> = Arc::new(WakeupTool::new());
             tool.configure(&config_value)?;
             let _ = tool_registry.register_tool(tool).await;
         }

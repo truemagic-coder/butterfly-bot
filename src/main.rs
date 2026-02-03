@@ -61,6 +61,9 @@ struct Cli {
     )]
     cli_mode: bool,
 
+    #[arg(long, env = "BUTTERFLY_BOT_CONFIG")]
+    config: Option<String>,
+
     #[arg(long, default_value = "./data/butterfly-bot.db")]
     db: String,
 
@@ -323,7 +326,17 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     let cli = Cli::parse();
+    if let Some(config_path) = cli.config.as_ref() {
+        let config = Config::from_file(config_path)?;
+        config_store::save_config(&cli.db, &config)?;
+    }
     if !cli.cli_mode {
+        std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
+        std::env::set_var("BUTTERFLY_BOT_DAEMON", &cli.daemon);
+        if let Some(token) = cli.token.as_ref() {
+            std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
+        }
+        std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
         ui::launch_ui();
         return Ok(());
     }

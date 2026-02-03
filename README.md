@@ -48,6 +48,12 @@ cargo build --release
 cargo run --release --bin butterfly-bot
 ```
 
+Optional config import on launch:
+
+```bash
+cargo run --release --bin butterfly-bot -- --config config.json
+```
+
 Run CLI:
 
 ```bash
@@ -64,6 +70,66 @@ Use the Settings tab in the app to configure:
 - Memory settings
 
 Config is stored in `./data/butterfly-bot.db` by default.
+
+## Tools
+
+### MCP Tool (SSE)
+
+Configure MCP servers in config.json under `tools.mcp.servers`:
+
+```json
+{
+    "tools": {
+        "mcp": {
+            "servers": [
+                {
+                    "name": "local",
+                    "url": "http://127.0.0.1:3001/sse",
+                    "headers": {
+                        "Authorization": "Bearer my-token"
+                    }
+                }
+            ]
+        }
+    }
+}
+```
+
+### Internet Search Tool
+
+Configure the internet search tool in config.json under `tools.search_internet`:
+
+```json
+{
+    "tools": {
+        "search_internet": {
+            "api_key": "YOUR_API_KEY",
+            "provider": "openai",
+            "model": "gpt-4o-mini-search-preview",
+            "citations": true,
+            "grok_web_search": true,
+            "grok_x_search": true,
+            "grok_timeout": 90,
+            "network_allow": ["api.openai.com"],
+            "default_deny": false
+        }
+    }
+}
+```
+
+### Wakeup Tool
+
+Create recurring agent tasks with `tools.wakeup` and control polling:
+
+```json
+{
+    "tools": {
+        "wakeup": {
+            "poll_seconds": 60
+        }
+    }
+}
+```
 
 ## Library Usage (Minimal)
 
