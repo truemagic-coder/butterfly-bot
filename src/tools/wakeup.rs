@@ -118,7 +118,8 @@ impl Tool for WakeupTool {
                 Ok(json!({"status": "ok", "task": item}))
             }
             "list" => {
-                let status = WakeupStatus::from_option(params.get("status").and_then(|v| v.as_str()));
+                let status =
+                    WakeupStatus::from_option(params.get("status").and_then(|v| v.as_str()));
                 let items = store.list_tasks(user_id, status, limit).await?;
                 Ok(json!({"status": "ok", "tasks": items}))
             }

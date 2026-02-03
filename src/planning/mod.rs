@@ -162,7 +162,10 @@ impl PlanStore {
         }
         if let Some(steps) = steps {
             diesel::update(plans::table.filter(plans::id.eq(id)))
-                .set((plans::steps_json.eq(Some(steps.to_string())), plans::updated_at.eq(now)))
+                .set((
+                    plans::steps_json.eq(Some(steps.to_string())),
+                    plans::updated_at.eq(now),
+                ))
                 .execute(&mut conn)
                 .await
                 .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

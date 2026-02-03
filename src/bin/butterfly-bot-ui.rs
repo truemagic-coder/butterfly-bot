@@ -8,7 +8,11 @@ struct UiCli {
     config: Option<String>,
 
     /// Database path for settings/config storage.
-    #[arg(long, env = "BUTTERFLY_BOT_DB", default_value = "./data/butterfly-bot.db")]
+    #[arg(
+        long,
+        env = "BUTTERFLY_BOT_DB",
+        default_value = "./data/butterfly-bot.db"
+    )]
     db: String,
 
     /// Daemon address (e.g. http://127.0.0.1:7878).

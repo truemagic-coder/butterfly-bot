@@ -63,7 +63,11 @@ impl HttpCallTool {
         Ok(out)
     }
 
-    fn build_url(base_url: &Option<String>, url: Option<&str>, endpoint: Option<&str>) -> Result<String> {
+    fn build_url(
+        base_url: &Option<String>,
+        url: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> Result<String> {
         if let Some(url) = url {
             if !url.trim().is_empty() {
                 return Ok(url.trim().to_string());
@@ -71,13 +75,17 @@ impl HttpCallTool {
         }
         let endpoint = endpoint.unwrap_or("").trim();
         if endpoint.is_empty() {
-            return Err(ButterflyBotError::Runtime("Missing url or endpoint".to_string()));
+            return Err(ButterflyBotError::Runtime(
+                "Missing url or endpoint".to_string(),
+            ));
         }
         let base = base_url
             .as_ref()
             .map(|v| v.trim().trim_end_matches('/').to_string())
             .filter(|v| !v.is_empty())
-            .ok_or_else(|| ButterflyBotError::Runtime("Missing base_url for endpoint".to_string()))?;
+            .ok_or_else(|| {
+                ButterflyBotError::Runtime("Missing base_url for endpoint".to_string())
+            })?;
         let endpoint = endpoint.trim_start_matches('/');
         Ok(format!("{base}/{endpoint}"))
     }
@@ -122,9 +130,7 @@ impl Tool for HttpCallTool {
     }
 
     fn configure(&self, config: &Value) -> Result<()> {
-        let tool_cfg = config
-            .get("tools")
-            .and_then(|v| v.get("http_call"));
+        let tool_cfg = config.get("tools").and_then(|v| v.get("http_call"));
         let mut next = HttpCallConfig::default();
         if let Some(cfg) = tool_cfg {
             if let Some(base_url) = cfg.get("base_url").and_then(|v| v.as_str()) {
@@ -166,7 +172,10 @@ impl Tool for HttpCallTool {
         let endpoint = params.get("endpoint").and_then(|v| v.as_str());
         let headers = params.get("headers");
         let query = params.get("query");
-        let body = params.get("body").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let body = params
+            .get("body")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let json_body = params.get("json").cloned();
         let timeout_override = params.get("timeout_seconds").and_then(|v| v.as_u64());
 
@@ -175,9 +184,12 @@ impl Tool for HttpCallTool {
         let headers = Self::build_headers(&cfg.default_headers, headers)?;
 
         let client = reqwest::Client::new();
-        let mut req = client.request(method.parse().map_err(|_| {
-            ButterflyBotError::Runtime("Invalid method".to_string())
-        })?, &url);
+        let mut req = client.request(
+            method
+                .parse()
+                .map_err(|_| ButterflyBotError::Runtime("Invalid method".to_string()))?,
+            &url,
+        );
 
         if !headers.is_empty() {
             req = req.headers(headers);

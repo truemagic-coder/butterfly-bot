@@ -8,18 +8,18 @@ pub mod error;
 pub mod factories;
 pub mod guardrails;
 pub mod interfaces;
+pub mod planning;
 pub mod plugins;
 pub mod providers;
 pub mod reminders;
 pub mod scheduler;
 pub mod services;
+pub mod tasks;
+pub mod todo;
 pub mod tools;
 pub mod ui;
 pub mod vault;
 pub mod wakeup;
-pub mod todo;
-pub mod planning;
-pub mod tasks;
 
 pub type Result<T> = std::result::Result<T, error::ButterflyBotError>;
 

@@ -171,7 +171,10 @@ impl TaskStore {
         let now = now_ts();
         let mut conn = self.conn().await?;
         diesel::update(scheduled_tasks::table.filter(scheduled_tasks::id.eq(id)))
-            .set((scheduled_tasks::enabled.eq(enabled), scheduled_tasks::updated_at.eq(now)))
+            .set((
+                scheduled_tasks::enabled.eq(enabled),
+                scheduled_tasks::updated_at.eq(now),
+            ))
             .execute(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

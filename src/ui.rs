@@ -11,7 +11,7 @@ use futures::StreamExt;
 use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::env;
 use std::thread;
 use tokio::time::{sleep, timeout, Duration};
@@ -48,6 +48,7 @@ enum MessageRole {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ToolToggle {
     name: String,
     enabled: bool,
@@ -56,7 +57,7 @@ struct ToolToggle {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UiTab {
     Chat,
-    Settings,
+    Config,
 }
 
 fn markdown_to_html(input: &str) -> String {
@@ -151,6 +152,7 @@ fn app_view() -> Element {
     let tools_safe_mode = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
+    let config_json_text = use_signal(String::new);
 
     let search_provider = use_signal(|| "openai".to_string());
     let search_model = use_signal(String::new);
@@ -160,7 +162,6 @@ fn app_view() -> Element {
     let search_grok_timeout = use_signal(|| "90".to_string());
     let search_network_allow = use_signal(String::new);
     let search_default_deny = use_signal(|| false);
-    let search_api_key = use_signal(String::new);
     let search_api_key_status = use_signal(String::new);
 
     let reminders_sqlite_path = use_signal(String::new);
@@ -566,6 +567,8 @@ fn app_view() -> Element {
         let tools_safe_mode = tools_safe_mode.clone();
         let settings_error = settings_error.clone();
         let tools_loaded = tools_loaded.clone();
+        let settings_status = settings_status.clone();
+        let config_json_text = config_json_text.clone();
         let search_provider = search_provider.clone();
         let search_model = search_model.clone();
         let search_citations = search_citations.clone();
@@ -584,6 +587,8 @@ fn app_view() -> Element {
             let mut tools_safe_mode = tools_safe_mode;
             let mut settings_error = settings_error;
             let mut tools_loaded = tools_loaded;
+            let mut settings_status = settings_status;
+            let mut config_json_text = config_json_text;
             let mut search_provider = search_provider;
             let mut search_model = search_model;
             let mut search_citations = search_citations;
@@ -604,6 +609,21 @@ fn app_view() -> Element {
                     return;
                 }
             };
+
+            match crate::vault::get_secret("app_config_json") {
+                Ok(Some(secret)) if !secret.trim().is_empty() => {
+                    config_json_text.set(secret);
+                    settings_status.set("Loaded config from keyring.".to_string());
+                }
+                Ok(_) => {
+                    if let Ok(pretty) = serde_json::to_string_pretty(&config) {
+                        config_json_text.set(pretty);
+                    }
+                }
+                Err(err) => {
+                    settings_error.set(format!("Vault error: {err}"));
+                }
+            }
 
             let mut tool_names: Vec<String> = AVAILABLE_TOOLS
                 .iter()
@@ -776,181 +796,50 @@ fn app_view() -> Element {
         });
     }
 
-    let on_save_settings = {
-        let tool_toggles = tool_toggles.clone();
-        let tools_safe_mode = tools_safe_mode.clone();
+    let on_save_config = {
         let settings_error = settings_error.clone();
         let settings_status = settings_status.clone();
-        let search_provider = search_provider.clone();
-        let search_model = search_model.clone();
-        let search_citations = search_citations.clone();
-        let search_grok_web = search_grok_web.clone();
-        let search_grok_x = search_grok_x.clone();
-        let search_grok_timeout = search_grok_timeout.clone();
-        let search_network_allow = search_network_allow.clone();
-        let search_default_deny = search_default_deny.clone();
-        let search_api_key = search_api_key.clone();
-        let search_api_key_status = search_api_key_status.clone();
-        let reminders_sqlite_path = reminders_sqlite_path.clone();
-        let memory_enabled = memory_enabled.clone();
+        let config_json_text = config_json_text.clone();
         let db_path = db_path.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
 
         use_callback(move |_| {
-            let tool_toggles = tool_toggles.clone();
-            let tools_safe_mode = tools_safe_mode.clone();
             let settings_error = settings_error.clone();
             let settings_status = settings_status.clone();
-            let search_provider = search_provider.clone();
-            let search_model = search_model.clone();
-            let search_citations = search_citations.clone();
-            let search_grok_web = search_grok_web.clone();
-            let search_grok_x = search_grok_x.clone();
-            let search_grok_timeout = search_grok_timeout.clone();
-            let search_network_allow = search_network_allow.clone();
-            let search_default_deny = search_default_deny.clone();
-            let search_api_key = search_api_key.clone();
-            let search_api_key_status = search_api_key_status.clone();
-            let reminders_sqlite_path = reminders_sqlite_path.clone();
-            let memory_enabled = memory_enabled.clone();
+            let config_json_text = config_json_text.clone();
             let db_path = db_path.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
 
             spawn(async move {
-                let tool_toggles = tool_toggles;
-                let tools_safe_mode = tools_safe_mode;
                 let mut settings_error = settings_error;
                 let mut settings_status = settings_status;
-                let search_provider = search_provider;
-                let search_model = search_model;
-                let search_citations = search_citations;
-                let search_grok_web = search_grok_web;
-                let search_grok_x = search_grok_x;
-                let search_grok_timeout = search_grok_timeout;
-                let search_network_allow = search_network_allow;
-                let search_default_deny = search_default_deny;
-                let mut search_api_key = search_api_key;
-                let mut search_api_key_status = search_api_key_status;
-                let reminders_sqlite_path = reminders_sqlite_path;
-                let memory_enabled = memory_enabled;
+                let mut config_json_text = config_json_text;
 
                 settings_error.set(String::new());
                 settings_status.set(String::new());
 
-                let enabled: Vec<String> = tool_toggles()
-                    .iter()
-                    .filter(|tool| tool.enabled)
-                    .map(|tool| tool.name.clone())
-                    .collect();
-                let disabled: Vec<String> = tool_toggles()
-                    .iter()
-                    .filter(|tool| !tool.enabled)
-                    .map(|tool| tool.name.clone())
-                    .collect();
-
-                let mut settings = serde_json::Map::new();
-                if tools_safe_mode() {
-                    settings.insert("safe_mode".to_string(), Value::Bool(true));
-                    settings.insert(
-                        "enabled".to_string(),
-                        Value::Array(enabled.into_iter().map(Value::String).collect()),
-                    );
-                } else {
-                    settings.insert("safe_mode".to_string(), Value::Bool(false));
-                    if !disabled.is_empty() {
-                        settings.insert(
-                            "disabled".to_string(),
-                            Value::Array(disabled.into_iter().map(Value::String).collect()),
-                        );
-                    }
-                }
-
-                let mut tools_object = serde_json::Map::new();
-
-                let network_allow: Vec<String> = search_network_allow()
-                    .split([',', '\n'])
-                    .map(|item| item.trim())
-                    .filter(|item| !item.is_empty())
-                    .map(|item| item.to_string())
-                    .collect();
-                settings.insert(
-                    "permissions".to_string(),
-                    json!({
-                        "default_deny": search_default_deny(),
-                        "network_allow": network_allow,
-                    }),
-                );
-                tools_object.insert("settings".to_string(), Value::Object(settings));
-
-                let timeout = search_grok_timeout()
-                    .trim()
-                    .parse::<u64>()
-                    .map_err(|_| "grok_timeout must be a number".to_string());
-                let timeout = match timeout {
+                let raw = config_json_text();
+                let value: Value = match serde_json::from_str(&raw) {
                     Ok(value) => value,
                     Err(err) => {
-                        settings_error.set(err);
+                        settings_error.set(format!("Invalid JSON: {err}"));
+                        return;
+                    }
+                };
+                let config: crate::config::Config = match serde_json::from_value(value.clone()) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        settings_error.set(format!("Invalid config: {err}"));
                         return;
                     }
                 };
 
-                let mut search_cfg = serde_json::Map::new();
-                search_cfg.insert("provider".to_string(), Value::String(search_provider()));
-                if !search_model().trim().is_empty() {
-                    search_cfg.insert("model".to_string(), Value::String(search_model()));
-                }
-                search_cfg.insert("citations".to_string(), Value::Bool(search_citations()));
-                search_cfg.insert(
-                    "grok_web_search".to_string(),
-                    Value::Bool(search_grok_web()),
-                );
-                search_cfg.insert("grok_x_search".to_string(), Value::Bool(search_grok_x()));
-                search_cfg.insert("grok_timeout".to_string(), Value::Number(timeout.into()));
-                search_cfg.insert(
-                    "permissions".to_string(),
-                    json!({ "network_allow": search_network_allow()
-                        .split([',', '\n'])
-                        .map(|item| item.trim())
-                        .filter(|item| !item.is_empty())
-                        .map(|item| item.to_string())
-                        .collect::<Vec<_>>()
-                    }),
-                );
-                tools_object.insert("search_internet".to_string(), Value::Object(search_cfg));
-
-                if !reminders_sqlite_path().trim().is_empty() {
-                    tools_object.insert(
-                        "reminders".to_string(),
-                        json!({ "sqlite_path": reminders_sqlite_path() }),
-                    );
-                }
-
-                if !search_api_key().trim().is_empty() {
-                    let secret_name = match search_provider().as_str() {
-                        "perplexity" => "search_internet_perplexity_api_key",
-                        "grok" => "search_internet_grok_api_key",
-                        _ => "search_internet_openai_api_key",
-                    };
-                    match crate::vault::set_secret(secret_name, &search_api_key()) {
-                        Ok(()) => {
-                            search_api_key.set(String::new());
-                            search_api_key_status.set("Stored in vault".to_string());
-                        }
-                        Err(err) => {
-                            settings_error.set(format!("Failed to store API key: {err}"));
-                            return;
-                        }
-                    }
-                }
-
-                let mut config = match crate::config::Config::from_store(&db_path) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        settings_error.set(format!("Failed to load config: {err}"));
-                        return;
-                    }
-                };
-                config.tools = Some(Value::Object(tools_object));
-                if let Some(memory) = &mut config.memory {
-                    memory.enabled = Some(memory_enabled());
+                let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw.clone());
+                if let Err(err) = crate::vault::set_secret("app_config_json", &pretty) {
+                    settings_error.set(format!("Failed to store config in keyring: {err}"));
+                    return;
                 }
 
                 let result = tokio::task::spawn_blocking(move || {
@@ -959,7 +848,37 @@ fn app_view() -> Element {
                 .await;
 
                 match result {
-                    Ok(Ok(())) => settings_status.set("Settings saved.".to_string()),
+                    Ok(Ok(())) => {
+                        config_json_text.set(pretty);
+                        let client = reqwest::Client::new();
+                        let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
+                        let mut request = client.post(url);
+                        let token_value = token();
+                        if !token_value.trim().is_empty() {
+                            request =
+                                request.header("authorization", format!("Bearer {token_value}"));
+                        }
+                        match request.send().await {
+                            Ok(response) if response.status().is_success() => {
+                                settings_status.set("Config saved and reloaded.".to_string());
+                            }
+                            Ok(response) => {
+                                let status = response.status();
+                                let text = response
+                                    .text()
+                                    .await
+                                    .unwrap_or_else(|_| "Unable to read error body".to_string());
+                                settings_status.set(format!(
+                                    "Config saved, but reload failed ({status}). Restart required. {text}"
+                                ));
+                            }
+                            Err(err) => {
+                                settings_status.set(format!(
+                                    "Config saved, but reload failed: {err}. Restart required."
+                                ));
+                            }
+                        }
+                    }
                     Ok(Err(err)) => settings_error.set(format!("Save failed: {err}")),
                     Err(err) => settings_error.set(format!("Save failed: {err}")),
                 }
@@ -968,21 +887,9 @@ fn app_view() -> Element {
     };
 
     let active_tab_chat = active_tab.clone();
-    let active_tab_settings = active_tab.clone();
-    let tools_safe_mode_toggle = tools_safe_mode.clone();
+    let active_tab_config = active_tab.clone();
     let prompt_input = prompt.clone();
     let message_input = input.clone();
-    let search_provider_input = search_provider.clone();
-    let search_model_input = search_model.clone();
-    let search_citations_toggle = search_citations.clone();
-    let search_grok_web_toggle = search_grok_web.clone();
-    let search_grok_x_toggle = search_grok_x.clone();
-    let search_grok_timeout_input = search_grok_timeout.clone();
-    let search_network_allow_input = search_network_allow.clone();
-    let search_default_deny_toggle = search_default_deny.clone();
-    let search_api_key_input = search_api_key.clone();
-    let reminders_sqlite_input = reminders_sqlite_path.clone();
-    let memory_enabled_toggle = memory_enabled.clone();
 
     rsx! {
         style { r#"
@@ -1109,12 +1016,12 @@ fn app_view() -> Element {
                         "Chat"
                     }
                     button {
-                        class: if *active_tab.read() == UiTab::Settings { "active" } else { "" },
+                        class: if *active_tab.read() == UiTab::Config { "active" } else { "" },
                         onclick: move |_| {
-                            let mut active_tab_settings = active_tab_settings.clone();
-                            active_tab_settings.set(UiTab::Settings);
+                            let mut active_tab_config = active_tab_config.clone();
+                            active_tab_config.set(UiTab::Config);
                         },
-                        "Settings"
+                        "Config"
                     }
                 }
             }
@@ -1178,185 +1085,23 @@ fn app_view() -> Element {
                     }
                 }
             }
-            if *active_tab.read() == UiTab::Settings {
+            if *active_tab.read() == UiTab::Config {
                 div { class: "settings",
                     if !*tools_loaded.read() {
-                        div { class: "hint", "Loading settings…" }
+                        div { class: "hint", "Loading config…" }
                     }
                     if *tools_loaded.read() {
                         div { class: "settings-card",
-                            label { "Tool Mode" }
-                            div { class: "tool-item",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *tools_safe_mode.read(),
-                                    onclick: move |_| {
-                                        let mut tools_safe_mode_toggle = tools_safe_mode_toggle.clone();
-                                        let current = *tools_safe_mode_toggle.read();
-                                        tools_safe_mode_toggle.set(!current);
-                                    },
-                                }
-                                span { "Safe mode (allowlist)" }
+                            label { "Config (JSON)" }
+                            textarea {
+                                value: "{config_json_text}",
+                                rows: "18",
+                                oninput: move |evt| {
+                                    let mut config_json_text = config_json_text.clone();
+                                    config_json_text.set(evt.value());
+                                },
                             }
-                            p { class: "hint", "When enabled, only tools explicitly enabled below can run." }
-                        }
-                        div { class: "settings-card",
-                            label { "Tools" }
-                            div { class: "tool-list",
-                                for (idx, tool) in tool_toggles.read().iter().enumerate() {
-                                    div { class: "tool-item",
-                                        input {
-                                            r#type: "checkbox",
-                                            checked: tool.enabled,
-                                            onclick: move |_| {
-                                                let mut tool_toggles = tool_toggles.clone();
-                                                let mut list = tool_toggles.write();
-                                                if let Some(item) = list.get_mut(idx) {
-                                                    item.enabled = !item.enabled;
-                                                }
-                                            },
-                                        }
-                                        span { "{tool.name}" }
-                                    }
-                                }
-                            }
-                        }
-                        div { class: "settings-card",
-                            label { "Search Internet" }
-                            div { class: "tool-list",
-                                div { class: "tool-item",
-                                    span { "Provider" }
-                                    input {
-                                        value: "{search_provider}",
-                                        oninput: move |evt| {
-                                            let mut search_provider_input = search_provider_input.clone();
-                                            search_provider_input.set(evt.value());
-                                        },
-                                    }
-                                }
-                                div { class: "tool-item",
-                                    span { "Model" }
-                                    input {
-                                        value: "{search_model}",
-                                        oninput: move |evt| {
-                                            let mut search_model_input = search_model_input.clone();
-                                            search_model_input.set(evt.value());
-                                        },
-                                    }
-                                }
-                                div { class: "tool-item",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: *search_citations.read(),
-                                        onclick: move |_| {
-                                            let mut search_citations_toggle = search_citations_toggle.clone();
-                                            let current = *search_citations_toggle.read();
-                                            search_citations_toggle.set(!current);
-                                        },
-                                    }
-                                    span { "Citations" }
-                                }
-                                div { class: "tool-item",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: *search_grok_web.read(),
-                                        onclick: move |_| {
-                                            let mut search_grok_web_toggle = search_grok_web_toggle.clone();
-                                            let current = *search_grok_web_toggle.read();
-                                            search_grok_web_toggle.set(!current);
-                                        },
-                                    }
-                                    span { "Grok web search" }
-                                }
-                                div { class: "tool-item",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: *search_grok_x.read(),
-                                        onclick: move |_| {
-                                            let mut search_grok_x_toggle = search_grok_x_toggle.clone();
-                                            let current = *search_grok_x_toggle.read();
-                                            search_grok_x_toggle.set(!current);
-                                        },
-                                    }
-                                    span { "Grok X search" }
-                                }
-                                div { class: "tool-item",
-                                    span { "Grok timeout (seconds)" }
-                                    input {
-                                        value: "{search_grok_timeout}",
-                                        oninput: move |evt| {
-                                            let mut search_grok_timeout_input = search_grok_timeout_input.clone();
-                                            search_grok_timeout_input.set(evt.value());
-                                        },
-                                    }
-                                }
-                                div { class: "tool-item",
-                                    span { "Network allowlist" }
-                                    input {
-                                        placeholder: "example.com, *.trusted.com",
-                                        value: "{search_network_allow}",
-                                        oninput: move |evt| {
-                                            let mut search_network_allow_input = search_network_allow_input.clone();
-                                            search_network_allow_input.set(evt.value());
-                                        },
-                                    }
-                                }
-                                div { class: "tool-item",
-                                    input {
-                                        r#type: "checkbox",
-                                        checked: *search_default_deny.read(),
-                                        onclick: move |_| {
-                                            let mut search_default_deny_toggle = search_default_deny_toggle.clone();
-                                            let current = *search_default_deny_toggle.read();
-                                            search_default_deny_toggle.set(!current);
-                                        },
-                                    }
-                                    span { "Default deny network" }
-                                }
-                                div { class: "tool-item",
-                                    span { "API key (stored in vault)" }
-                                    input {
-                                        r#type: "password",
-                                        placeholder: "Enter new key",
-                                        value: "{search_api_key}",
-                                        oninput: move |evt| {
-                                            let mut search_api_key_input = search_api_key_input.clone();
-                                            search_api_key_input.set(evt.value());
-                                        },
-                                    }
-                                }
-                                if !search_api_key_status.read().is_empty() {
-                                    div { class: "hint", "{search_api_key_status}" }
-                                }
-                            }
-                        }
-                        div { class: "settings-card",
-                            label { "Reminders" }
-                            div { class: "tool-item",
-                                span { "SQLite path" }
-                                input {
-                                    value: "{reminders_sqlite_path}",
-                                    oninput: move |evt| {
-                                        let mut reminders_sqlite_input = reminders_sqlite_input.clone();
-                                        reminders_sqlite_input.set(evt.value());
-                                    },
-                                }
-                            }
-                        }
-                        div { class: "settings-card",
-                            label { "Memory" }
-                            div { class: "tool-item",
-                                input {
-                                    r#type: "checkbox",
-                                    checked: *memory_enabled.read(),
-                                    onclick: move |_| {
-                                        let mut memory_enabled_toggle = memory_enabled_toggle.clone();
-                                        let current = *memory_enabled_toggle.read();
-                                        memory_enabled_toggle.set(!current);
-                                    },
-                                }
-                                span { "Enable memory" }
-                            }
+                            p { class: "hint", "Saved to the OS keyring. Changes reload automatically." }
                         }
                         if !settings_error.read().is_empty() {
                             div { class: "error", "{settings_error}" }
@@ -1364,7 +1109,7 @@ fn app_view() -> Element {
                         if !settings_status.read().is_empty() {
                             div { class: "status", "{settings_status}" }
                         }
-                        button { onclick: move |_| on_save_settings.call(()), "Save Settings" }
+                        button { onclick: move |_| on_save_config.call(()), "Save Config" }
                     }
                 }
             }

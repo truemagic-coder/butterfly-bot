@@ -7,7 +7,7 @@ use httpmock::Method::POST;
 use httpmock::MockServer;
 use serde_json::json;
 use tempfile::NamedTempFile;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 use tower::ServiceExt;
 
 use butterfly_bot::client::ButterflyBot;
@@ -49,12 +49,14 @@ async fn daemon_health_and_auth() {
     let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
         .await
         .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
     let (ui_event_tx, _) = broadcast::channel(16);
     let state = AppState {
-        agent: Arc::new(agent),
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
         reminder_store: Arc::new(reminder_store),
         token: "token".to_string(),
         ui_event_tx,
+        db_path,
     };
     let app = build_router(state);
 
@@ -111,12 +113,14 @@ async fn daemon_process_text_and_memory_search() {
     let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
         .await
         .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
     let (ui_event_tx, _) = broadcast::channel(16);
     let state = AppState {
-        agent: Arc::new(agent),
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
         reminder_store: Arc::new(reminder_store),
         token: "token".to_string(),
         ui_event_tx,
+        db_path,
     };
     let app = build_router(state);
 

@@ -49,7 +49,7 @@ impl Tool for TasksTool {
     }
 
     fn description(&self) -> &str {
-        "Schedule one-off or recurring tasks at specific times; cancelable." 
+        "Schedule one-off or recurring tasks at specific times; cancelable."
     }
 
     fn parameters(&self) -> Value {

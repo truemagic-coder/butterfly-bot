@@ -21,23 +21,24 @@ use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::ReminderStore;
-use crate::tasks::TaskStore;
-use crate::wakeup::WakeupStore;
 use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
-use tokio::sync::broadcast;
+use crate::tasks::TaskStore;
+use crate::wakeup::WakeupStore;
+use tokio::sync::{broadcast, RwLock};
 
 #[derive(Clone)]
 pub struct AppState {
-    pub agent: Arc<ButterflyBot>,
+    pub agent: Arc<RwLock<Arc<ButterflyBot>>>,
     pub reminder_store: Arc<ReminderStore>,
     pub token: String,
     pub ui_event_tx: broadcast::Sender<UiEvent>,
+    pub db_path: String,
 }
 
 struct BrainTickJob {
-    agent: Arc<ButterflyBot>,
+    agent: Arc<RwLock<Arc<ButterflyBot>>>,
     interval: Duration,
 }
 
@@ -52,13 +53,14 @@ impl ScheduledJob for BrainTickJob {
     }
 
     async fn run(&self) -> Result<()> {
-        self.agent.brain_tick().await;
+        let agent = self.agent.read().await.clone();
+        agent.brain_tick().await;
         Ok(())
     }
 }
 
 struct WakeupJob {
-    agent: Arc<ButterflyBot>,
+    agent: Arc<RwLock<Arc<ButterflyBot>>>,
     store: Arc<WakeupStore>,
     interval: Duration,
     ui_event_tx: broadcast::Sender<UiEvent>,
@@ -66,7 +68,7 @@ struct WakeupJob {
 }
 
 struct ScheduledTasksJob {
-    agent: Arc<ButterflyBot>,
+    agent: Arc<RwLock<Arc<ButterflyBot>>>,
     store: Arc<TaskStore>,
     interval: Duration,
     ui_event_tx: broadcast::Sender<UiEvent>,
@@ -87,6 +89,7 @@ impl ScheduledJob for ScheduledTasksJob {
         let now = now_ts();
         let tasks = self.store.list_due(now, 32).await?;
         for task in tasks {
+            let agent = self.agent.read().await.clone();
             let run_at = now_ts();
             let next_run_at = if let Some(interval) = task.interval_minutes {
                 run_at + interval.max(1) * 60
@@ -109,8 +112,7 @@ impl ScheduledJob for ScheduledTasksJob {
                 router: None,
             };
             let input = format!("Scheduled task '{}': {}", task.name, task.prompt);
-            let result = self
-                .agent
+            let result = agent
                 .process(&task.user_id, UserInput::Text(input), options)
                 .await;
 
@@ -164,6 +166,7 @@ impl ScheduledJob for WakeupJob {
         let now = now_ts();
         let tasks = self.store.list_due(now, 32).await?;
         for task in tasks {
+            let agent = self.agent.read().await.clone();
             let run_at = now_ts();
             let next_run_at = run_at + task.interval_minutes.max(1) * 60;
             let _ = self.store.mark_run(task.id, run_at, next_run_at).await;
@@ -177,8 +180,7 @@ impl ScheduledJob for WakeupJob {
                 router: None,
             };
             let input = format!("Wakeup task '{}': {}", task.name, task.prompt);
-            let result = self
-                .agent
+            let result = agent
                 .process(&task.user_id, UserInput::Text(input), options)
                 .await;
 
@@ -270,6 +272,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/memory_search", post(memory_search))
         .route("/reminder_stream", get(reminder_stream))
         .route("/ui_events", get(ui_events))
+        .route("/reload_config", post(reload_config))
         .with_state(state)
 }
 
@@ -297,8 +300,8 @@ async fn process_text(
         router: None,
     };
 
-    let response = state
-        .agent
+    let agent = state.agent.read().await.clone();
+    let response = agent
         .process(&payload.user_id, UserInput::Text(payload.text), options)
         .await;
 
@@ -332,7 +335,7 @@ async fn process_text_stream(
         return err.into_response();
     }
 
-    let AppState { agent, .. } = state;
+    let agent = state.agent.read().await.clone();
     let ProcessTextRequest {
         user_id,
         text,
@@ -374,8 +377,8 @@ async fn memory_search(
     }
 
     let limit = payload.limit.unwrap_or(8);
-    let response = state
-        .agent
+    let agent = state.agent.read().await.clone();
+    let response = agent
         .search_memory(&payload.user_id, &payload.query, limit)
         .await;
 
@@ -431,6 +434,33 @@ async fn reminder_stream(
         .header("cache-control", "no-cache")
         .body(body)
         .unwrap()
+}
+
+async fn reload_config(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let agent =
+        ButterflyBot::from_store_with_events(&state.db_path, Some(state.ui_event_tx.clone())).await;
+    match agent {
+        Ok(agent) => {
+            let mut guard = state.agent.write().await;
+            *guard = Arc::new(agent);
+            (
+                StatusCode::OK,
+                Json(json!({"status": "ok", "message": "Config reloaded"})),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn ui_events(
@@ -587,8 +617,9 @@ where
         .unwrap_or(60);
 
     let (ui_event_tx, _) = broadcast::channel(256);
-    let agent =
-        Arc::new(ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?);
+    let agent = Arc::new(RwLock::new(Arc::new(
+        ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?,
+    )));
     let reminder_store = Arc::new(ReminderStore::new(db_path).await?);
     let task_store = Arc::new(TaskStore::new(db_path).await?);
     let wakeup_store = Arc::new(WakeupStore::new(db_path).await?);
@@ -632,6 +663,7 @@ where
         reminder_store,
         token: token.to_string(),
         ui_event_tx,
+        db_path: db_path.to_string(),
     };
     let app = build_router(state);
 

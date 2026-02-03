@@ -169,7 +169,10 @@ impl WakeupStore {
         let now = now_ts();
         let mut conn = self.conn().await?;
         diesel::update(wakeup_tasks::table.filter(wakeup_tasks::id.eq(id)))
-            .set((wakeup_tasks::enabled.eq(enabled), wakeup_tasks::updated_at.eq(now)))
+            .set((
+                wakeup_tasks::enabled.eq(enabled),
+                wakeup_tasks::updated_at.eq(now),
+            ))
             .execute(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

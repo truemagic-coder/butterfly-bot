@@ -81,12 +81,12 @@ use crate::services::query::QueryService;
 use crate::services::routing::RoutingService;
 use crate::tools::http_call::HttpCallTool;
 use crate::tools::mcp::McpTool;
+use crate::tools::planning::PlanningTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
-use crate::tools::wakeup::WakeupTool;
-use crate::tools::todo::TodoTool;
-use crate::tools::planning::PlanningTool;
 use crate::tools::tasks::TasksTool;
+use crate::tools::todo::TodoTool;
+use crate::tools::wakeup::WakeupTool;
 use tokio::sync::broadcast;
 
 pub struct ButterflyBotFactory;

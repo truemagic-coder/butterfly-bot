@@ -7,15 +7,17 @@ use tokio::sync::RwLock;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
 
-use rust_mcp_sdk::mcp_client::{client_runtime, ClientHandler, McpClientOptions, ToMcpClientHandler};
+use rust_mcp_sdk::mcp_client::{
+    client_runtime, ClientHandler, McpClientOptions, ToMcpClientHandler,
+};
 use rust_mcp_sdk::schema::{
     CallToolRequestParams, ClientCapabilities, Implementation, InitializeRequestParams,
     LATEST_PROTOCOL_VERSION,
 };
 use rust_mcp_sdk::{ClientSseTransport, ClientSseTransportOptions, McpClient};
+use rust_mcp_transport::{RequestOptions, StreamableTransportOptions};
 use std::sync::Arc;
 use std::time::Duration;
-use rust_mcp_transport::{RequestOptions, StreamableTransportOptions};
 
 #[derive(Clone, Debug)]
 struct McpServerConfig {
@@ -232,10 +234,14 @@ impl McpTool {
         serde_json::to_value(&list).map_err(|e| ButterflyBotError::Serialization(e.to_string()))
     }
 
-    async fn call_tool(&self, server: &McpServerConfig, tool_name: &str, args: Option<Value>) -> Result<Value> {
+    async fn call_tool(
+        &self,
+        server: &McpServerConfig,
+        tool_name: &str,
+        args: Option<Value>,
+    ) -> Result<Value> {
         let client = self.create_client(server).await?;
-        let args_map = args
-            .and_then(|value| value.as_object().cloned());
+        let args_map = args.and_then(|value| value.as_object().cloned());
         let result = client
             .request_tool_call(CallToolRequestParams {
                 name: tool_name.to_string(),
@@ -312,9 +318,7 @@ impl Tool for McpTool {
                 let result = self.call_tool(&server, tool_name, args).await?;
                 Ok(json!({"status": "ok", "server": server.name, "result": result}))
             }
-            _ => Err(ButterflyBotError::Runtime(
-                "Unsupported action".to_string(),
-            )),
+            _ => Err(ButterflyBotError::Runtime("Unsupported action".to_string())),
         }
     }
 }
