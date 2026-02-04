@@ -20,42 +20,13 @@
     "settings": {
       "audit_log_path": "./data/tool_audit.log"
     },
-    "search_internet": {
-      "api_key": "YOUR_SEARCH_API_KEY",
-      "provider": "openai",
-      "model": "gpt-4o-mini-search-preview",
-      "citations": true,
-      "grok_web_search": true,
-      "grok_x_search": true,
-      "grok_timeout": 90,
-      "network_allow": ["api.openai.com"]
-    },
     "reminders": {
       "sqlite_path": "./data/butterfly-bot.db"
-    },
-    "mcp": {
-      "servers": [
-        {
-          "name": "local",
-          "type": "sse",
-          "url": "http://127.0.0.1:3001/sse",
-          "headers": {
-            "Authorization": "Bearer YOUR_TOKEN"
-          }
-        }
-      ]
     },
     "wakeup": {
       "poll_seconds": 60,
       "sqlite_path": "./data/butterfly-bot.db",
       "audit_log_path": "./data/wakeup_audit.log"
-    },
-    "http_call": {
-      "base_url": "",
-      "default_headers": {
-        "Authorization": "Bearer YOUR_TOKEN"
-      },
-      "timeout_seconds": 60
     },
     "todo": {
       "sqlite_path": "./data/butterfly-bot.db"
