@@ -4,12 +4,12 @@
 
 ## Highlights
 
-- Modern desktop UI (Dioxus) with streaming chat using local Ollama models or OpenAI compatible providers.
+- Liquid Glass cross-platform desktop app with streaming chat.
 - Reminders and notifications both in chat and OS notifications.
-- Optional long-term memory (temporal knowledge graph) using embedded local storage of SQLCipher and LanceDB.
-- Skill and heartbeat Markdown files that define the assistant’s identity and ongoing guidance.
-- Agent tool integrations with live UI events (tools are always on by default).
-- Config and secrets managed from the config screen via JSON and stored in OS keychain for the best security.
+- Long-term agentic memory stored locally.
+- Skill and heartbeat Markdown file integration.
+- Agent tools including MCP.
+- Config stored in the OS keychain for maximum security.
 
 ## Architecture (Daemon + UI + Always-On Agent)
 
@@ -28,7 +28,7 @@
             │  - tools + wakeups           │
             │  - memory + planning         │
             └──────────────┬───────────────┘
-                   │
+                           │
          ┌─────────────────┼─────────────────┐
          v                 v                 v
     ┌────────────────┐  ┌───────────────┐  ┌──────────────────┐
