@@ -16,6 +16,7 @@ mod schema;
 use schema::reminders;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+const REMINDERS_UP_SQL: &str = include_str!("../../migrations/20260130_create_reminders/up.sql");
 
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
@@ -62,6 +63,7 @@ impl ReminderStore {
         let sqlite_path = sqlite_path.as_ref();
         ensure_parent_dir(sqlite_path)?;
         run_migrations(sqlite_path).await?;
+        ensure_reminders_table(sqlite_path).await?;
 
         let manager = AsyncDieselConnectionManager::<SqliteAsyncConn>::new(sqlite_path);
         let pool: SqlitePool = Pool::builder()
@@ -239,6 +241,30 @@ impl ReminderStore {
         Ok(rows.into_iter().map(map_row).collect())
     }
 
+    pub async fn peek_due_reminders(
+        &self,
+        user_id: &str,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderItem>> {
+        let mut conn = self.conn().await?;
+        let mut query = reminders::table
+            .filter(reminders::user_id.eq(user_id))
+            .filter(reminders::completed_at.is_null())
+            .filter(reminders::due_at.le(now))
+            .filter(reminders::fired_at.is_null())
+            .into_boxed();
+        if limit > 0 {
+            query = query.limit(limit as i64);
+        }
+        let rows: Vec<ReminderRow> = query
+            .order(reminders::due_at.asc())
+            .load(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(rows.into_iter().map(map_row).collect())
+    }
+
     async fn conn(&self) -> Result<SqlitePooledConn<'_>> {
         let mut conn = self
             .pool
@@ -311,6 +337,36 @@ async fn run_migrations(database_url: &str) -> Result<()> {
         crate::db::apply_sqlcipher_key_sync(&mut conn)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok::<_, ButterflyBotError>(())
+    })
+    .await
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+    Ok(())
+}
+
+async fn ensure_reminders_table(database_url: &str) -> Result<()> {
+    let database_url = database_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = SqliteConnection::establish(&database_url)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+
+        let check = diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "SELECT 1 FROM reminders LIMIT 1",
+        );
+        if let Err(err) = check {
+            let message = err.to_string();
+            if message.contains("no such table") {
+                conn.run_pending_migrations(MIGRATIONS)
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+                diesel::connection::SimpleConnection::batch_execute(&mut conn, REMINDERS_UP_SQL)
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            } else {
+                return Err(ButterflyBotError::Runtime(message));
+            }
+        }
+
         Ok::<_, ButterflyBotError>(())
     })
     .await

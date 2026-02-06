@@ -130,9 +130,20 @@ fn highlight_json_html(input: &str) -> String {
 }
 
 pub fn launch_ui() {
+    force_dbusrs();
     start_local_daemon();
     launch(app_view);
 }
+
+#[cfg(target_os = "linux")]
+fn force_dbusrs() {
+    if std::env::var("DBUSRS").is_err() {
+        std::env::set_var("DBUSRS", "1");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn force_dbusrs() {}
 
 fn start_local_daemon() {
     if env::var("BUTTERFLY_BOT_DISABLE_DAEMON").is_ok() {
@@ -463,11 +474,21 @@ fn app_view() -> Element {
                 let response = match request.send().await {
                     Ok(resp) => resp,
                     Err(_) => {
+                        if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
+                            || cfg!(debug_assertions)
+                        {
+                            eprintln!("Reminder stream request failed (daemon unreachable?)");
+                        }
                         sleep(Duration::from_secs(2)).await;
                         continue;
                     }
                 };
                 if !response.status().is_success() {
+                    if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
+                        || cfg!(debug_assertions)
+                    {
+                        eprintln!("Reminder stream error: HTTP {}", response.status());
+                    }
                     sleep(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -498,10 +519,13 @@ fn app_view() -> Element {
                                         text: format!("⏰ {title}"),
                                     });
                                     scroll_chat_to_bottom().await;
-                                    let _ = Notification::new()
+                                    if let Err(err) = Notification::new()
                                         .summary("Butterfly Bot")
                                         .body(title)
-                                        .show();
+                                        .show()
+                                    {
+                                        eprintln!("Notification error: {err}");
+                                    }
                                 }
                             }
                         }
@@ -576,6 +600,16 @@ fn app_view() -> Element {
                                         .get("status")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
+                                    let show_success = std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
+                                    if !show_success && (status == "success" || status == "ok") {
+                                        if let Some(payload) = value.get("payload") {
+                                            if payload.get("error").is_none() {
+                                                continue;
+                                            }
+                                        } else {
+                                            continue;
+                                        }
+                                    }
                                     let mut text = format!("🔧 {tool}: {status}");
                                     if let Some(payload) = value.get("payload") {
                                         if let Some(error) =

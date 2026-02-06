@@ -118,6 +118,10 @@ impl AgentService {
             }
         }
 
+        system_prompt.push_str(
+            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n",
+        );
+
         Ok(system_prompt)
     }
 
@@ -245,22 +249,33 @@ impl AgentService {
             full_prompt.push_str(&format!("\n\nUSER IDENTIFIER: {}", user_id));
 
             let mut response_text = String::new();
-            let mut messages = Vec::new();
-            if !system_prompt.is_empty() {
-                messages.push(json!({"role": "system", "content": system_prompt}));
-            }
-            messages.push(json!({"role": "user", "content": full_prompt}));
-
-            let mut stream = self.llm_provider.chat_stream(messages, None);
-            while let Some(event) = stream.next().await {
-                let event = event?;
-                if let Some(error) = event.error {
-                    Err(ButterflyBotError::Runtime(error))?;
+            let tools = self.tool_registry.get_agent_tools(&self.agent.name).await;
+            if !tools.is_empty() {
+                let output = self
+                    .run_tool_loop(&system_prompt, &full_prompt, tools, user_id)
+                    .await?;
+                if !output.is_empty() {
+                    response_text.push_str(&output);
+                    yield output;
                 }
-                if let Some(delta) = event.delta {
-                    if !delta.is_empty() {
-                        response_text.push_str(&delta);
-                        yield delta;
+            } else {
+                let mut messages = Vec::new();
+                if !system_prompt.is_empty() {
+                    messages.push(json!({"role": "system", "content": system_prompt}));
+                }
+                messages.push(json!({"role": "user", "content": full_prompt}));
+
+                let mut stream = self.llm_provider.chat_stream(messages, None);
+                while let Some(event) = stream.next().await {
+                    let event = event?;
+                    if let Some(error) = event.error {
+                        Err(ButterflyBotError::Runtime(error))?;
+                    }
+                    if let Some(delta) = event.delta {
+                        if !delta.is_empty() {
+                            response_text.push_str(&delta);
+                            yield delta;
+                        }
                     }
                 }
             }

@@ -16,6 +16,7 @@ mod schema;
 use schema::wakeup_tasks;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+const WAKEUP_UP_SQL: &str = include_str!("../../migrations/20260202_create_wakeup/up.sql");
 
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
@@ -89,6 +90,7 @@ impl WakeupStore {
         let sqlite_path = sqlite_path.as_ref();
         ensure_parent_dir(sqlite_path)?;
         run_migrations(sqlite_path).await?;
+        ensure_wakeup_table(sqlite_path).await?;
 
         let manager = AsyncDieselConnectionManager::<SqliteAsyncConn>::new(sqlite_path);
         let pool: SqlitePool = Pool::builder()
@@ -263,6 +265,36 @@ async fn run_migrations(database_url: &str) -> Result<()> {
         crate::db::apply_sqlcipher_key_sync(&mut conn)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok::<_, ButterflyBotError>(())
+    })
+    .await
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+    Ok(())
+}
+
+async fn ensure_wakeup_table(database_url: &str) -> Result<()> {
+    let database_url = database_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = SqliteConnection::establish(&database_url)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+
+        let check = diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "SELECT 1 FROM wakeup_tasks LIMIT 1",
+        );
+        if let Err(err) = check {
+            let message = err.to_string();
+            if message.contains("no such table") {
+                conn.run_pending_migrations(MIGRATIONS)
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+                diesel::connection::SimpleConnection::batch_execute(&mut conn, WAKEUP_UP_SQL)
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            } else {
+                return Err(ButterflyBotError::Runtime(message));
+            }
+        }
+
         Ok::<_, ButterflyBotError>(())
     })
     .await

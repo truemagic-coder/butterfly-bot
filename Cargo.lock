@@ -7337,6 +7337,7 @@ version = "4.11.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6442248665a5aa2514e794af3b39661a8e73033b1cc5e59899e1276117ee4400"
 dependencies = [
+ "dbus",
  "futures-lite",
  "log",
  "mac-notification-sys",

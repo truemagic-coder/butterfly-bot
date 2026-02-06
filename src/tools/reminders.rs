@@ -53,7 +53,7 @@ impl RemindersTool {
             return Ok(now_ts() + seconds.max(0));
         }
         if let Some(due_at) = params.get("due_at").and_then(|v| v.as_i64()) {
-            return Ok(due_at);
+            return Ok(normalize_due_at(due_at));
         }
         Err(ButterflyBotError::Runtime(
             "Missing due_at or delay_seconds".to_string(),
@@ -68,7 +68,7 @@ impl RemindersTool {
             return now_ts() + seconds.max(0);
         }
         if let Some(due_at) = params.get("due_at").and_then(|v| v.as_i64()) {
-            return due_at;
+            return normalize_due_at(due_at);
         }
         now_ts() + 315_360_000
     }
@@ -145,6 +145,20 @@ impl Tool for RemindersTool {
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing title".to_string()))?;
                 let due_at = Self::parse_due_at_optional(&params);
                 let item = store.create_reminder(user_id, title, due_at).await?;
+                if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
+                    || cfg!(debug_assertions)
+                {
+                    let path = self
+                        .sqlite_path
+                        .read()
+                        .await
+                        .clone()
+                        .unwrap_or_else(default_reminder_db_path);
+                    eprintln!(
+                        "Reminder created: id={} user_id={} due_at={} db={}",
+                        item.id, user_id, item.due_at, path
+                    );
+                }
                 Ok(json!({"status": "ok", "reminder": item}))
             }
             "list" => {
@@ -199,4 +213,12 @@ fn now_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn normalize_due_at(due_at: i64) -> i64 {
+    if due_at >= 1_000_000_000_000 {
+        due_at / 1000
+    } else {
+        due_at
+    }
 }

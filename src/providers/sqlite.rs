@@ -26,6 +26,7 @@ mod schema;
 use schema::messages;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
+const MEMORY_UP_SQL: &str = include_str!("../../migrations/20250129_create_memory/up.sql");
 
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
@@ -290,6 +291,7 @@ impl SqliteMemoryProvider {
     pub async fn new(config: SqliteMemoryProviderConfig) -> Result<Self> {
         ensure_parent_dir(&config.sqlite_path)?;
         run_migrations(&config.sqlite_path).await?;
+        ensure_memory_tables(&config.sqlite_path).await?;
 
         let manager =
             AsyncDieselConnectionManager::<SqliteAsyncConn>::new(config.sqlite_path.as_str());
@@ -355,6 +357,46 @@ async fn run_migrations(database_url: &str) -> Result<()> {
         crate::db::apply_sqlcipher_key_sync(&mut conn)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok::<_, ButterflyBotError>(())
+    })
+    .await
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+    Ok(())
+}
+
+async fn ensure_memory_tables(database_url: &str) -> Result<()> {
+    let database_url = database_url.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = SqliteConnection::establish(&database_url)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+
+        let tables = [
+            "messages",
+            "memories",
+            "entities",
+            "events",
+            "facts",
+            "edges",
+            "memory_links",
+        ];
+        for table in tables {
+            let query = format!("SELECT 1 FROM {table} LIMIT 1");
+            let check = diesel::connection::SimpleConnection::batch_execute(&mut conn, &query);
+            if let Err(err) = check {
+                let message = err.to_string();
+                if message.contains("no such table") {
+                    conn.run_pending_migrations(MIGRATIONS)
+                        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+                    diesel::connection::SimpleConnection::batch_execute(&mut conn, MEMORY_UP_SQL)
+                        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+                    break;
+                } else {
+                    return Err(ButterflyBotError::Runtime(message));
+                }
+            }
+        }
+
         Ok::<_, ButterflyBotError>(())
     })
     .await

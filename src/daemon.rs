@@ -21,7 +21,7 @@ use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::factories::agent_factory::load_markdown_source;
 use crate::interfaces::scheduler::ScheduledJob;
-use crate::reminders::ReminderStore;
+use crate::reminders::{resolve_reminder_db_path, ReminderStore};
 use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
@@ -442,6 +442,17 @@ async fn reminder_stream(
                 .unwrap_or_default()
                 .as_secs() as i64;
             if let Ok(items) = store.due_reminders(&user_id, now, 10).await {
+                if (std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
+                    || cfg!(debug_assertions))
+                    && !items.is_empty()
+                {
+                    eprintln!(
+                        "Reminder stream emit: user_id={} count={} now={}",
+                        user_id,
+                        items.len(),
+                        now
+                    );
+                }
                 for item in items {
                     let payload = serde_json::json!({
                         "id": item.id,
@@ -617,7 +628,12 @@ where
     let agent = Arc::new(RwLock::new(Arc::new(
         ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?,
     )));
-    let reminder_store = Arc::new(ReminderStore::new(db_path).await?);
+    let reminder_db_path = config
+        .as_ref()
+        .and_then(|cfg| serde_json::to_value(cfg).ok())
+        .and_then(|value| resolve_reminder_db_path(&value))
+        .unwrap_or_else(|| db_path.to_string());
+    let reminder_store = Arc::new(ReminderStore::new(reminder_db_path).await?);
     let task_store = Arc::new(TaskStore::new(db_path).await?);
     let wakeup_store = Arc::new(WakeupStore::new(db_path).await?);
     let mut scheduler = Scheduler::new();

@@ -196,9 +196,19 @@ async fn start_reminder_listener(cli: &Cli) {
             }
             let resp = request.send().await;
             let Ok(resp) = resp else {
+                if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok() || cfg!(debug_assertions) {
+                    eprintln!("Reminder stream request failed (daemon unreachable?)");
+                }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 continue;
             };
+            if !resp.status().is_success() {
+                if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok() || cfg!(debug_assertions) {
+                    eprintln!("Reminder stream error: HTTP {}", resp.status());
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                continue;
+            }
             let mut stream = resp.bytes_stream();
             let mut buffer = String::new();
             while let Some(chunk) = stream.next().await {
@@ -219,10 +229,13 @@ async fn start_reminder_listener(cli: &Cli) {
                                     .unwrap_or("Reminder");
                                 let _ = std_io::stdout().write_all(b"\n\n");
                                 println!("{} {}", style("⏰").color256(214), title);
-                                let _ = Notification::new()
+                                if let Err(err) = Notification::new()
                                     .summary("Butterfly Bot")
                                     .body(title)
-                                    .show();
+                                    .show()
+                                {
+                                    eprintln!("Notification error: {err}");
+                                }
                                 let _ = print_user_prompt();
                             }
                         }
@@ -324,6 +337,7 @@ async fn main() -> Result<()> {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info,lance=warn,lancedb=warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    force_dbusrs();
 
     let cli = Cli::parse();
     if let Some(config_path) = cli.config.as_ref() {
@@ -482,6 +496,18 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(not(test))]
+#[cfg(target_os = "linux")]
+fn force_dbusrs() {
+    if std::env::var("DBUSRS").is_err() {
+        std::env::set_var("DBUSRS", "1");
+    }
+}
+
+#[cfg(not(test))]
+#[cfg(not(target_os = "linux"))]
+fn force_dbusrs() {}
 
 #[cfg(not(test))]
 async fn ensure_tool_secrets(db_path: &str) -> Result<()> {
@@ -814,7 +840,7 @@ fn ensure_ollama_models(config: &Config) -> Result<()> {
 
     let installed = list_ollama_models()?;
     for model in required {
-        if !installed.iter().any(|name| name == &model) {
+        if !installed.iter().any(|name| model_matches(&model, name)) {
             println!(
                 "{} {}",
                 style("⏳").color256(214),
@@ -867,6 +893,32 @@ fn pull_ollama_model(model: &str) -> Result<()> {
         Err(butterfly_bot::error::ButterflyBotError::Runtime(format!(
             "Failed to pull model '{model}'"
         )))
+    }
+}
+
+#[cfg(not(test))]
+fn split_model_name(model: &str) -> (String, Option<String>) {
+    let mut parts = model.rsplitn(2, ':');
+    let tag = parts.next().map(|v| v.to_string());
+    let base = parts.next();
+    match base {
+        Some(base) if !base.is_empty() => (base.to_string(), tag),
+        _ => (model.to_string(), None),
+    }
+}
+
+#[cfg(not(test))]
+fn model_matches(required: &str, installed: &str) -> bool {
+    let (req_base, req_tag) = split_model_name(required);
+    let (ins_base, ins_tag) = split_model_name(installed);
+    if req_base != ins_base {
+        return false;
+    }
+    match (req_tag, ins_tag) {
+        (Some(req), Some(ins)) => req == ins,
+        (Some(req), None) => req == "latest",
+        (None, Some(ins)) => ins == "latest",
+        (None, None) => true,
     }
 }
 

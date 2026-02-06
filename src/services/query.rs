@@ -3,7 +3,6 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
-use regex::Regex;
 
 use crate::error::Result;
 use crate::interfaces::providers::{ImageInput, MemoryProvider};
@@ -83,21 +82,6 @@ impl QueryService {
             return Ok(response);
         }
 
-        if let Some(response) = self
-            .try_handle_reminder_command(user_id, &processed_query)
-            .await?
-        {
-            if let Some(provider) = &self.memory_provider {
-                provider
-                    .append_message(user_id, "user", &processed_query)
-                    .await?;
-                provider
-                    .append_message(user_id, "assistant", &response)
-                    .await?;
-            }
-            return Ok(response);
-        }
-
         let reminder_context = if let Some(store) = &self.reminder_store {
             build_reminder_context(store, user_id).await
         } else {
@@ -156,16 +140,6 @@ impl QueryService {
         };
 
         if let Some(response) = self.try_handle_search_command(user_id, &text).await? {
-            if let Some(provider) = &self.memory_provider {
-                provider.append_message(user_id, "user", &text).await?;
-                provider
-                    .append_message(user_id, "assistant", &response)
-                    .await?;
-            }
-            return Ok(ProcessResult::Text(response));
-        }
-
-        if let Some(response) = self.try_handle_reminder_command(user_id, &text).await? {
             if let Some(provider) = &self.memory_provider {
                 provider.append_message(user_id, "user", &text).await?;
                 provider
@@ -268,15 +242,6 @@ impl QueryService {
             let processed_query = query.to_string();
 
             if let Some(response) = self.try_handle_search_command(user_id, &processed_query).await? {
-                if let Some(provider) = &self.memory_provider {
-                    provider.append_message(user_id, "user", &processed_query).await?;
-                    provider.append_message(user_id, "assistant", &response).await?;
-                }
-                yield response;
-                return;
-            }
-
-            if let Some(response) = self.try_handle_reminder_command(user_id, &processed_query).await? {
                 if let Some(provider) = &self.memory_provider {
                     provider.append_message(user_id, "user", &processed_query).await?;
                     provider.append_message(user_id, "assistant", &response).await?;
@@ -397,7 +362,7 @@ async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-    let items = store.due_reminders(user_id, now_ts, 5).await.ok()?;
+        let items = store.peek_due_reminders(user_id, now_ts, 5).await.ok()?;
     if items.is_empty() {
         return None;
     }
@@ -491,126 +456,4 @@ impl QueryService {
         Ok(Some(response))
     }
 
-    async fn try_handle_reminder_command(
-        &self,
-        user_id: &str,
-        text: &str,
-    ) -> Result<Option<String>> {
-        let lower = text.to_lowercase();
-        let clear_re = Regex::new(r"(?i)^\s*clear\s+(all\s+)?reminders\b").unwrap();
-        let list_re = Regex::new(r"(?i)^\s*(list|show)\s+reminders\b").unwrap();
-        let remind_re = Regex::new(
-            r"(?i)\bremind me to (.+?)\s+in\s+(\d+)\s*(seconds?|minutes?|hours?|secs?|mins?|hrs?)\b",
-        )
-        .unwrap();
-        let set_re = Regex::new(
-            r"(?i)\bset a reminder\s+in\s+(\d+)\s*(seconds?|minutes?|hours?|secs?|mins?|hrs?)\s+to\s+(.+)$",
-        )
-        .unwrap();
-        let remind_in_re = Regex::new(
-            r"(?i)\bremind me in\s+(\d+)\s*(seconds?|minutes?|hours?|secs?|mins?|hrs?)\s+to\s+(.+)$",
-        )
-        .unwrap();
-
-        let tool = self.agent_service.tool_registry.get_tool("reminders").await;
-        let Some(tool) = tool else {
-            return Ok(None);
-        };
-
-        if clear_re.is_match(&lower) {
-            let include_completed = lower.contains("clear all");
-            let params = serde_json::json!({
-                "action": "clear",
-                "user_id": user_id,
-                "status": if include_completed { "all" } else { "open" }
-            });
-            let result = tool.execute(params).await?;
-            let deleted = result.get("deleted").and_then(|v| v.as_u64()).unwrap_or(0);
-            let response = if deleted == 0 {
-                "No reminders to clear.".to_string()
-            } else {
-                format!("Cleared {} reminders.", deleted)
-            };
-            return Ok(Some(response));
-        }
-
-        if list_re.is_match(&lower) {
-            let params = serde_json::json!({
-                "action": "list",
-                "user_id": user_id,
-                "status": "open",
-                "limit": 20
-            });
-            let result = tool.execute(params).await?;
-            let reminders = result
-                .get("reminders")
-                .and_then(|v| v.as_array())
-                .cloned()
-                .unwrap_or_default();
-            if reminders.is_empty() {
-                return Ok(Some("No open reminders.".to_string()));
-            }
-            let mut out = String::from("Open reminders:\n");
-            for item in reminders {
-                let id = item.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let title = item
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Reminder");
-                let due = item.get("due_at").and_then(|v| v.as_i64()).unwrap_or(0);
-                out.push_str(&format!("- #{}: {} (due_at: {})\n", id, title, due));
-            }
-            return Ok(Some(out.trim_end().to_string()));
-        }
-
-        let capture = remind_re
-            .captures(text)
-            .or_else(|| set_re.captures(text))
-            .or_else(|| remind_in_re.captures(text));
-        if let Some(caps) = capture {
-            let (title, amount_idx, unit_idx) = if caps.len() >= 4 {
-                // set_re or remind_in_re
-                (caps.get(3).map(|m| m.as_str()), 1, 2)
-            } else {
-                // remind_re
-                (caps.get(1).map(|m| m.as_str()), 2, 3)
-            };
-            let title = title.unwrap_or("reminder").trim();
-            let amount: i64 = caps
-                .get(amount_idx)
-                .and_then(|m| m.as_str().parse::<i64>().ok())
-                .unwrap_or(0);
-            let unit = caps.get(unit_idx).map(|m| m.as_str()).unwrap_or("seconds");
-            let multiplier = if unit.starts_with('h') {
-                3600
-            } else if unit.starts_with('m') {
-                60
-            } else {
-                1
-            };
-            let delay_seconds = amount.max(0) * multiplier;
-            if delay_seconds <= 0 {
-                return Ok(None);
-            }
-            let params = serde_json::json!({
-                "action": "create",
-                "user_id": user_id,
-                "title": title,
-                "delay_seconds": delay_seconds
-            });
-            let result = tool.execute(params).await?;
-            let reminder = result.get("reminder");
-            let id = reminder.and_then(|v| v.get("id")).and_then(|v| v.as_i64());
-            let response = match id {
-                Some(id) => format!(
-                    "Reminder set (#{}): {} in {} seconds.",
-                    id, title, delay_seconds
-                ),
-                None => format!("Reminder set: {} in {} seconds.", title, delay_seconds),
-            };
-            return Ok(Some(response));
-        }
-
-        Ok(None)
-    }
 }
