@@ -108,7 +108,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - 32GB+ of RAM 
 - Linux (Ubuntu recommended)
 - Certain system libraries for Linux
-- 24GB+ of VRAM (e.g. AMD 7900XTX or GTX 3090/4090/5090)
+- 8GB+ of VRAM
 
 ### Models Used
 
@@ -121,10 +121,11 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Ollama models can be overriden and other models can be used rather than the default ones.
 - Very beefy Macs like a max speced Mini or Studio could also run the Ollama setup (not tested)
 
-### Test System
+### Test Systems
 
 - AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3
-- Provides instant results for Ollama chatting with memory
+- MSI Raider GE68-HX-14V on Ubuntu 24.04.3
+- Both provides instant results for Ollama chatting with memory
 
 ## OpenAI 
 
