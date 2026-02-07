@@ -123,7 +123,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Models Used
 
-- ministral-3:14b (assistant + summaries)
+- gpt-oss:20b (assistant + summaries)
 - embeddinggemma:latest (embedding)
 - qllama/bge-reranker-v2-m3 (reranking)
 
@@ -180,7 +180,7 @@ Config is stored in the OS keychain for top security and safety.
 {
     "openai": {
         "api_key": null,
-        "model": "ministral-3:14b",
+        "model": "gpt-oss:20b",
         "base_url": "http://localhost:11434/v1"
     },
     "skill_file": "./skill.md",
@@ -189,7 +189,7 @@ Config is stored in the OS keychain for top security and safety.
         "enabled": true,
         "sqlite_path": "./data/butterfly-bot.db",
         "lancedb_path": "./data/lancedb",
-        "summary_model": "ministral-3:14b",
+        "summary_model": "gpt-oss:20b",
         "embedding_model": "embeddinggemma:latest",
         "rerank_model": "qllama/bge-reranker-v2-m3",
         "summary_threshold": null,

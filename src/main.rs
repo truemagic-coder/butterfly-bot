@@ -693,7 +693,7 @@ fn run_onboarding(db_path: &str) -> Result<()> {
     println!();
 
     let base_url = "http://localhost:11434/v1".to_string();
-    let model = "ministral-3:14b".to_string();
+    let model = "gpt-oss:20b".to_string();
     let memory_enabled = true;
 
     let memory = if memory_enabled {
@@ -712,6 +712,7 @@ fn run_onboarding(db_path: &str) -> Result<()> {
             summary_model: Some(summary_model),
             embedding_model: Some(embedding_model),
             rerank_model: Some(rerank_model),
+            skill_embed_enabled: Some(false),
             summary_threshold: summary_threshold.map(|value| value as usize),
             retention_days,
         })
@@ -723,6 +724,7 @@ fn run_onboarding(db_path: &str) -> Result<()> {
             summary_model: None,
             embedding_model: None,
             rerank_model: None,
+            skill_embed_enabled: Some(false),
             summary_threshold: None,
             retention_days: None,
         })

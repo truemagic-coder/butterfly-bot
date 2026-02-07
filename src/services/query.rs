@@ -3,11 +3,17 @@ use std::sync::Arc;
 use async_stream::try_stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
+use std::hash::Hasher;
+use std::time::Instant;
+
+use md5::{Digest, Md5};
 
 use crate::error::Result;
 use crate::interfaces::providers::{ImageInput, MemoryProvider};
 use crate::reminders::ReminderStore;
 use crate::services::agent::AgentService;
+use tracing::info;
+use crate::vault;
 
 #[derive(Debug, Clone)]
 pub enum UserInput {
@@ -44,6 +50,7 @@ pub struct QueryService {
     agent_service: Arc<AgentService>,
     memory_provider: Option<Arc<dyn MemoryProvider>>,
     reminder_store: Option<Arc<ReminderStore>>,
+    skill_cache: tokio::sync::RwLock<Option<u64>>,
 }
 
 impl QueryService {
@@ -56,7 +63,51 @@ impl QueryService {
             agent_service,
             memory_provider,
             reminder_store,
+            skill_cache: tokio::sync::RwLock::new(None),
         }
+    }
+
+    async fn ensure_skill_in_memory(&self, user_id: &str) -> Result<()> {
+        let started = Instant::now();
+        let Some(provider) = &self.memory_provider else {
+            return Ok(());
+        };
+        let _ = self.agent_service.refresh_skill_for_user(user_id).await?;
+        info!("ensure_skill_in_memory: refresh_skill took {:?}", started.elapsed());
+        let Some(skill) = self.agent_service.get_skill_markdown().await else {
+            return Ok(());
+        };
+        if skill.trim().is_empty() {
+            return Ok(());
+        }
+
+        let mut md5_hasher = Md5::new();
+        md5_hasher.update(skill.as_bytes());
+        let md5_hash = format!("{:x}", md5_hasher.finalize());
+        if let Ok(Some(stored)) = vault::get_secret("skill_md5") {
+            if stored == md5_hash {
+                let mut guard = self.skill_cache.write().await;
+                if guard.is_none() {
+                    *guard = Some(0);
+                }
+                info!("ensure_skill_in_memory: md5 unchanged, skipping import (elapsed {:?})", started.elapsed());
+                return Ok(());
+            }
+        }
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&skill, &mut hasher);
+        let hash = hasher.finish();
+
+        let mut guard = self.skill_cache.write().await;
+        if guard.map_or(true, |prev| prev != hash) {
+            let content = format!("SKILL_DOC:\n{}", skill);
+            provider.append_message(user_id, "skill", &content).await?;
+            *guard = Some(hash);
+            let _ = vault::set_secret("skill_md5", &md5_hash);
+            info!("ensure_skill_in_memory: imported skill into memory (elapsed {:?})", started.elapsed());
+        }
+        Ok(())
     }
 
     pub async fn process_text(
@@ -66,6 +117,8 @@ impl QueryService {
         prompt: Option<&str>,
     ) -> Result<String> {
         let processed_query = query.to_string();
+
+        self.ensure_skill_in_memory(user_id).await?;
 
         if let Some(response) = self
             .try_handle_search_command(user_id, &processed_query)
@@ -87,7 +140,7 @@ impl QueryService {
         } else {
             None
         };
-        let memory_context = if let Some(provider) = &self.memory_provider {
+        let mut memory_context = if let Some(provider) = &self.memory_provider {
             let include_semantic = should_include_semantic_memory(&processed_query);
             let history_future = provider.get_history(user_id, 12);
             let semantic_future = async {
@@ -103,6 +156,13 @@ impl QueryService {
         } else {
             reminder_context.unwrap_or_default()
         };
+
+        if let Some(skill) = self.skill_context_for(user_id, &processed_query).await {
+            if !memory_context.is_empty() {
+                memory_context.push_str("\n\n");
+            }
+            memory_context.push_str(&skill);
+        }
 
         let response = self
             .agent_service
@@ -139,6 +199,8 @@ impl QueryService {
             }
         };
 
+        self.ensure_skill_in_memory(user_id).await?;
+
         if let Some(response) = self.try_handle_search_command(user_id, &text).await? {
             if let Some(provider) = &self.memory_provider {
                 provider.append_message(user_id, "user", &text).await?;
@@ -154,7 +216,7 @@ impl QueryService {
         } else {
             None
         };
-        let memory_context = if let Some(provider) = &self.memory_provider {
+        let mut memory_context = if let Some(provider) = &self.memory_provider {
             let include_semantic = should_include_semantic_memory(&text);
             let history_future = provider.get_history(user_id, 12);
             let semantic_future = async {
@@ -170,6 +232,13 @@ impl QueryService {
         } else {
             reminder_context.unwrap_or_default()
         };
+
+        if let Some(skill) = self.skill_context_for(user_id, &text).await {
+            if !memory_context.is_empty() {
+                memory_context.push_str("\n\n");
+            }
+            memory_context.push_str(&skill);
+        }
 
         let result = if let Some(schema) = options.json_schema {
             let structured = self
@@ -236,6 +305,8 @@ impl QueryService {
         Box::pin(try_stream! {
             let processed_query = query.to_string();
 
+            self.ensure_skill_in_memory(user_id).await?;
+
             if let Some(response) = self.try_handle_search_command(user_id, &processed_query).await? {
                 if let Some(provider) = &self.memory_provider {
                     provider.append_message(user_id, "user", &processed_query).await?;
@@ -250,7 +321,7 @@ impl QueryService {
             } else {
                 None
             };
-            let memory_context = if let Some(provider) = &self.memory_provider {
+            let mut memory_context = if let Some(provider) = &self.memory_provider {
                 let include_semantic = should_include_semantic_memory(&processed_query);
                 let history_future = provider.get_history(user_id, 12);
                 let semantic_future = async {
@@ -266,6 +337,13 @@ impl QueryService {
             } else {
                 reminder_context.unwrap_or_default()
             };
+
+            if let Some(skill) = self.skill_context_for(user_id, &processed_query).await {
+                if !memory_context.is_empty() {
+                    memory_context.push_str("\n\n");
+                }
+                memory_context.push_str(&skill);
+            }
 
             let mut response_text = String::new();
             let mut stream = self.agent_service.generate_response_stream(
@@ -292,6 +370,29 @@ impl QueryService {
 
     pub fn agent_service(&self) -> Arc<AgentService> {
         self.agent_service.clone()
+    }
+
+    async fn skill_context_for(&self, user_id: &str, query: &str) -> Option<String> {
+        let lower = query.to_lowercase();
+        let is_autonomy_tick = lower.contains("autonomous") && lower.contains("heartbeat");
+        if user_id != "system" && !is_autonomy_tick {
+            return None;
+        }
+        let skill = self.agent_service.get_skill_markdown().await?;
+        if skill.trim().is_empty() {
+            return None;
+        }
+        let max_len = 8000usize;
+        let trimmed = if skill.len() > max_len {
+            format!("{}\n...\n[SKILL_DOC TRUNCATED]", &skill[..max_len])
+        } else {
+            skill
+        };
+        Some(format!("SKILL_DOC (authoritative):\n{}", trimmed))
+    }
+
+    pub async fn preload_skill(&self, user_id: &str) -> Result<()> {
+        self.ensure_skill_in_memory(user_id).await
     }
 
     pub async fn delete_user_history(&self, user_id: &str) -> Result<()> {
@@ -334,7 +435,14 @@ fn build_memory_context(
         }
     }
     if !history.is_empty() {
-        context.push_str(&history);
+        let filtered_history = history
+            .lines()
+            .filter(|line| !should_skip_memory_line(line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !filtered_history.trim().is_empty() {
+            context.push_str(&filtered_history);
+        }
     }
     if !semantic.is_empty() {
         if !context.is_empty() {
@@ -343,13 +451,24 @@ fn build_memory_context(
         context.push_str(
             "RELEVANT MEMORY (unverified; use only if clearly applicable to the user's request):\n",
         );
-        for item in semantic {
+        for item in semantic.into_iter().filter(|item| !should_skip_memory_line(item)) {
             context.push_str("- ");
             context.push_str(&item);
             context.push('\n');
         }
     }
     context
+}
+
+fn should_skip_memory_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("api key")
+        || lower.contains("api_key")
+        || lower.contains("authorization header")
+        || lower.contains("missing api key")
+        || lower.contains("no api key")
+        || lower.contains("invalid api key")
+        || lower.contains("need your api key")
 }
 
 async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<String> {
@@ -377,6 +496,13 @@ fn should_include_semantic_memory(query: &str) -> bool {
         return false;
     }
     let lower = trimmed.to_lowercase();
+    if lower.contains("hackathon")
+        || lower.contains("colosseum")
+        || lower.contains("skill")
+        || lower.contains("agent hackathon")
+    {
+        return true;
+    }
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     if tokens.len() < 3 || trimmed.len() < 12 {
         return false;

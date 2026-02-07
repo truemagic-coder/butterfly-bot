@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
+use tracing::info;
 
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
@@ -100,6 +101,27 @@ impl HttpCallTool {
         }
         req
     }
+
+    fn redact_headers(headers: &HeaderMap) -> HashMap<String, String> {
+        headers
+            .iter()
+            .map(|(k, v)| {
+                let key = k.to_string();
+                let lower = key.to_ascii_lowercase();
+                let value = if lower.contains("authorization")
+                    || lower.contains("api-key")
+                    || lower.contains("apikey")
+                    || lower.contains("token")
+                    || lower.contains("secret")
+                {
+                    "[REDACTED]".to_string()
+                } else {
+                    v.to_str().unwrap_or("").to_string()
+                };
+                (key, value)
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -181,7 +203,20 @@ impl Tool for HttpCallTool {
 
         let cfg = self.config.read().await.clone();
         let url = Self::build_url(&cfg.base_url, url, endpoint)?;
-        let headers = Self::build_headers(&cfg.default_headers, headers)?;
+        let mut headers = Self::build_headers(&cfg.default_headers, headers)?;
+        let mut body = body;
+        let mut inferred_json: Option<Value> = None;
+        if json_body.is_none() {
+            if let Some(body_str) = body.as_deref() {
+                if !headers.contains_key(CONTENT_TYPE) {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(body_str) {
+                        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+                        inferred_json = Some(parsed);
+                        body = None;
+                    }
+                }
+            }
+        }
 
         let client = reqwest::Client::new();
         let mut req = client.request(
@@ -191,6 +226,7 @@ impl Tool for HttpCallTool {
             &url,
         );
 
+        let redacted_headers = Self::redact_headers(&headers);
         if !headers.is_empty() {
             req = req.headers(headers);
         }
@@ -198,6 +234,8 @@ impl Tool for HttpCallTool {
 
         if let Some(json_body) = json_body.and_then(|v| v.as_object().cloned()) {
             req = req.json(&json_body);
+        } else if let Some(inferred_json) = inferred_json {
+            req = req.json(&inferred_json);
         } else if let Some(body) = body {
             req = req.body(body);
         }
@@ -205,12 +243,25 @@ impl Tool for HttpCallTool {
         let timeout = timeout_override.or(cfg.timeout_seconds).unwrap_or(60);
         req = req.timeout(Duration::from_secs(timeout));
 
+        info!(
+            method = %method,
+            url = %url,
+            headers = ?redacted_headers,
+            "HTTP call request"
+        );
+
         let response = req
             .send()
             .await
             .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
 
         let status = response.status().as_u16();
+        info!(
+            method = %method,
+            url = %url,
+            status = %status,
+            "HTTP call response"
+        );
         let headers = response
             .headers()
             .iter()

@@ -89,6 +89,15 @@ impl ButterflyBot {
             .await
     }
 
+    pub async fn preload_skill(&self, user_id: &str) -> Result<()> {
+        self.query_service.preload_skill(user_id).await
+    }
+
+    pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
+        let agent_service = self.query_service.agent_service();
+        agent_service.set_heartbeat_markdown(heartbeat_markdown).await;
+    }
+
     pub async fn register_tool(&self, tool: Arc<dyn Tool>) -> Result<bool> {
         let agent_service = self.query_service.agent_service();
         let registry = agent_service.tool_registry.clone();
@@ -111,10 +120,4 @@ impl ButterflyBot {
         agent_service.dispatch_brain_tick().await;
     }
 
-    pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
-        let agent_service = self.query_service.agent_service();
-        agent_service
-            .set_heartbeat_markdown(heartbeat_markdown)
-            .await;
-    }
 }

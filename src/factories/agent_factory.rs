@@ -125,12 +125,32 @@ impl ButterflyBotFactory {
         ));
         let llm_for_memory = llm.clone();
 
-        let skill_markdown = load_markdown_source(config.skill_file.as_deref()).await?;
+        let skill_source = config.skill_file.clone();
+        tracing::info!(
+            "Skill source from config: {:?}",
+            skill_source.as_deref().unwrap_or("(none)")
+        );
+        let skill_markdown = load_markdown_source(skill_source.as_deref()).await?;
         let heartbeat_markdown = load_markdown_source(config.heartbeat_file.as_deref()).await?;
-        let instructions = skill_markdown.unwrap_or_else(|| {
-            "You are Butterfly, a helpful assistant. Follow the skill file and user instructions."
-                .to_string()
-        });
+        match &skill_markdown {
+            Some(text) if !text.trim().is_empty() => {
+                tracing::info!(
+                    "Skill file loaded at startup: {} bytes from {:?}",
+                    text.len(),
+                    skill_source
+                );
+            }
+            _ => {
+                tracing::warn!(
+                    "No skill file content at startup! skill_source={:?}",
+                    skill_source
+                );
+            }
+        }
+        let instructions =
+            "You are Butterfly, a helpful assistant. Follow the skill file (stored in memory) and user instructions."
+                .to_string();
+        let instructions_for_prompt = instructions.clone();
         let specialization = "general".to_string();
         let agent = AIAgent {
             name: "butterfly".to_string(),
@@ -292,7 +312,9 @@ impl ButterflyBotFactory {
         let agent_name = agent.name.clone();
         let agent_service = AgentService::new(
             llm.clone(),
-            agent,
+            agent.clone(),
+            skill_source,
+            Some(instructions_for_prompt),
             heartbeat_markdown,
             brain_manager,
             ui_event_tx,
@@ -408,6 +430,8 @@ impl ButterflyBotFactory {
                     memory_provider_config.embedding_model = memory.embedding_model.clone();
                     memory_provider_config.reranker = reranker;
                     memory_provider_config.summarizer = summarizer;
+                    memory_provider_config.skill_embed_enabled =
+                        memory.skill_embed_enabled.unwrap_or(false);
                     memory_provider_config.summary_threshold = memory.summary_threshold;
                     memory_provider_config.retention_days = memory.retention_days;
                     Arc::new(SqliteMemoryProvider::new(memory_provider_config).await?)
@@ -447,24 +471,36 @@ pub(crate) async fn load_markdown_source(source: Option<&str>) -> Result<Option<
     }
 
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        tracing::info!("Fetching markdown from URL: {}", trimmed);
         let response = reqwest::get(trimmed)
             .await
-            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!("HTTP request to {} failed: {}", trimmed, e);
+                ButterflyBotError::Config(e.to_string())
+            })?;
         if !response.status().is_success() {
+            tracing::error!("HTTP {} from {}", response.status(), trimmed);
             return Err(ButterflyBotError::Config(format!(
-                "Failed to fetch markdown from {}",
-                trimmed
+                "Failed to fetch markdown from {} (HTTP {})",
+                trimmed,
+                response.status()
             )));
         }
         let text = response
             .text()
             .await
             .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+        tracing::info!("Fetched {} bytes from {}", text.len(), trimmed);
         return Ok(Some(text));
     }
 
+    tracing::info!("Loading markdown from local file: {}", trimmed);
     let text = fs::read_to_string(trimmed)
         .await
-        .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+        .map_err(|e| {
+            tracing::error!("Failed to read local file {}: {}", trimmed, e);
+            ButterflyBotError::Config(e.to_string())
+        })?;
+    tracing::info!("Loaded {} bytes from {}", text.len(), trimmed);
     Ok(Some(text))
 }

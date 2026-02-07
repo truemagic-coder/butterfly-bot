@@ -1,7 +1,7 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -18,6 +18,7 @@ use futures::TryStreamExt;
 use lru::LruCache;
 use serde_json::json;
 use time::{macros::format_description, OffsetDateTime};
+use tracing::info;
 
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::providers::{LlmProvider, MemoryProvider};
@@ -242,6 +243,7 @@ pub struct SqliteMemoryProvider {
     summarizer: Option<Arc<dyn LlmProvider>>,
     summary_threshold: usize,
     retention_days: Option<u32>,
+    skill_embed_enabled: bool,
     embedding_cache: Arc<tokio::sync::Mutex<LruCache<String, Vec<f32>>>>,
 }
 
@@ -256,6 +258,7 @@ impl Clone for SqliteMemoryProvider {
             summarizer: self.summarizer.clone(),
             summary_threshold: self.summary_threshold,
             retention_days: self.retention_days,
+            skill_embed_enabled: self.skill_embed_enabled,
             embedding_cache: Arc::clone(&self.embedding_cache),
         }
     }
@@ -268,6 +271,7 @@ pub struct SqliteMemoryProviderConfig {
     pub embedding_model: Option<String>,
     pub reranker: Option<Arc<dyn LlmProvider>>,
     pub summarizer: Option<Arc<dyn LlmProvider>>,
+    pub skill_embed_enabled: bool,
     pub summary_threshold: Option<usize>,
     pub retention_days: Option<u32>,
 }
@@ -281,6 +285,7 @@ impl SqliteMemoryProviderConfig {
             embedding_model: None,
             reranker: None,
             summarizer: None,
+            skill_embed_enabled: false,
             summary_threshold: None,
             retention_days: None,
         }
@@ -314,6 +319,7 @@ impl SqliteMemoryProvider {
             summarizer: config.summarizer,
             summary_threshold: config.summary_threshold.unwrap_or(12),
             retention_days: config.retention_days,
+            skill_embed_enabled: config.skill_embed_enabled,
             embedding_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(256).unwrap(),
             ))),
@@ -430,21 +436,59 @@ impl MemoryProvider for SqliteMemoryProvider {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
         if let (Some(lancedb), Some(embedder)) = (&self.lancedb, &self.embedder) {
-            let vectors = embedder
-                .embed(vec![content.to_string()], self.embedding_model.as_deref())
-                .await?;
-            if let Some(vector) = vectors.into_iter().next() {
-                let dim = vector.len() as i32;
-                let table = lancedb.get_or_create_table(dim).await?;
-                let batch = build_lancedb_batch(row_id.id, user_id, role, content, ts, vector)?;
-                let schema = batch.schema();
-                let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
-                table
-                    .add(batches)
-                    .execute()
+            let lancedb = lancedb.clone();
+            let embedder = embedder.clone();
+            let embedding_model = self.embedding_model.clone();
+            let content = content.to_string();
+            let role = role.to_string();
+            let user_id = user_id.to_string();
+            let row_id = row_id.id;
+            let ts = ts;
+            tokio::spawn(async move {
+                let start = Instant::now();
+                let vectors = match embedder
+                    .embed(vec![content.clone()], embedding_model.as_deref())
                     .await
-                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-            }
+                {
+                    Ok(v) => v,
+                    Err(err) => {
+                        info!("Embedding failed: {}", err);
+                        return;
+                    }
+                };
+                let elapsed = start.elapsed();
+                info!(
+                    "Embedding computed in {:?} (role={}, chars={}, model={:?})",
+                    elapsed,
+                    role,
+                    content.len(),
+                    embedding_model
+                );
+                if let Some(vector) = vectors.into_iter().next() {
+                    let dim = vector.len() as i32;
+                    let table = match lancedb.get_or_create_table(dim).await {
+                        Ok(t) => t,
+                        Err(err) => {
+                            info!("LanceDB table error: {}", err);
+                            return;
+                        }
+                    };
+                    let batch = match build_lancedb_batch(row_id, &user_id, &role, &content, ts, vector) {
+                        Ok(b) => b,
+                        Err(err) => {
+                            info!("LanceDB batch error: {}", err);
+                            return;
+                        }
+                    };
+                    let schema = batch.schema();
+                    let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+                    if let Err(err) = table.add(batches).execute().await {
+                        info!("LanceDB add error: {}", err);
+                        return;
+                    }
+                    info!("Vector stored in LanceDB (dim={}, role={})", dim, role);
+                }
+            });
         }
 
         if role == "assistant" {
@@ -469,6 +513,7 @@ impl MemoryProvider for SqliteMemoryProvider {
         let mut conn = self.conn().await?;
         let mut query = messages::table
             .filter(messages::user_id.eq(user_id))
+            .filter(messages::role.ne("skill"))
             .order(messages::timestamp.desc())
             .select((messages::role, messages::content, messages::timestamp))
             .into_boxed();
@@ -563,7 +608,7 @@ impl SqliteMemoryProvider {
         };
         let mut conn = self.conn().await?;
         let rows: Vec<SearchRow> = diesel::sql_query(
-            "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role = 'user'\n             ORDER BY timestamp DESC\n             LIMIT ?3",
+                "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role IN ('user','skill')\n             ORDER BY timestamp DESC\n             LIMIT ?3",
         )
         .bind::<Text, _>(user_id)
         .bind::<Text, _>(query)

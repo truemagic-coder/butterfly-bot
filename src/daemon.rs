@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -67,6 +68,7 @@ struct WakeupJob {
     ui_event_tx: broadcast::Sender<UiEvent>,
     audit_log_path: Option<String>,
     heartbeat_source: Option<String>,
+    db_path: String,
 }
 
 struct ScheduledTasksJob {
@@ -165,16 +167,25 @@ impl ScheduledJob for WakeupJob {
 
     async fn run(&self) -> Result<()> {
         let now = now_ts();
-        if let Some(source) = &self.heartbeat_source {
+        let dynamic_source = Config::from_store(&self.db_path)
+            .ok()
+            .and_then(|cfg| cfg.heartbeat_file)
+            .or_else(|| self.heartbeat_source.clone());
+        if let Some(source) = &dynamic_source {
             match load_markdown_source(Some(source.as_str())).await {
                 Ok(markdown) => {
                     let agent = self.agent.read().await.clone();
-                    agent.set_heartbeat_markdown(markdown).await;
+                    agent.set_heartbeat_markdown(markdown.clone()).await;
+                    let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                        "ok"
+                    } else {
+                        "empty"
+                    };
                     let event = UiEvent {
                         event_type: "wakeup".to_string(),
                         user_id: "system".to_string(),
                         tool: "heartbeat".to_string(),
-                        status: "ok".to_string(),
+                        status: status.to_string(),
                         payload: json!({"source": source}),
                         timestamp: now_ts(),
                     };
@@ -193,6 +204,16 @@ impl ScheduledJob for WakeupJob {
                 }
             }
         }
+
+        // Autonomous heartbeat processing
+        {
+            let agent = self.agent.read().await.clone();
+            let ui_event_tx = self.ui_event_tx.clone();
+            tokio::spawn(async move {
+                run_autonomy_tick(agent, ui_event_tx, "system".to_string(), "wakeup").await;
+            });
+        }
+
         let tasks = self.store.list_due(now, 32).await?;
         for task in tasks {
             let agent = self.agent.read().await.clone();
@@ -273,6 +294,17 @@ struct MemorySearchRequest {
 }
 
 #[derive(Deserialize)]
+struct PreloadBootRequest {
+    user_id: String,
+}
+
+#[derive(Serialize)]
+struct PreloadBootResponse {
+    skill_status: String,
+    heartbeat_status: String,
+}
+
+#[derive(Deserialize)]
 struct ReminderStreamQuery {
     user_id: String,
 }
@@ -298,6 +330,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/process_text", post(process_text))
         .route("/process_text_stream", post(process_text_stream))
         .route("/memory_search", post(memory_search))
+    .route("/preload_boot", post(preload_boot))
         .route("/reminder_stream", get(reminder_stream))
         .route("/ui_events", get(ui_events))
         .route("/reload_config", post(reload_config))
@@ -392,6 +425,84 @@ async fn process_text_stream(
         .header("content-type", "text/plain; charset=utf-8")
         .body(body)
         .unwrap()
+}
+
+async fn preload_boot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<PreloadBootRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let agent = state.agent.read().await.clone();
+    let db_path = state.db_path.clone();
+    let ui_event_tx = state.ui_event_tx.clone();
+    let user_id = payload.user_id.clone();
+
+    tokio::spawn(async move {
+        let skill_status = match agent.preload_skill(&user_id).await {
+            Ok(()) => "ok".to_string(),
+            Err(err) => format!("error: {err}"),
+        };
+        let _ = ui_event_tx.send(UiEvent {
+            event_type: "boot".to_string(),
+            user_id: user_id.clone(),
+            tool: "skill".to_string(),
+            status: skill_status.clone(),
+            payload: json!({"user_id": user_id, "status": skill_status}),
+            timestamp: now_ts(),
+        });
+
+        let heartbeat_status = if let Ok(config) = Config::from_store(&db_path) {
+            let source = config.heartbeat_file;
+            if let Some(source) = source {
+                match load_markdown_source(Some(source.as_str())).await {
+                    Ok(markdown) => {
+                        agent.set_heartbeat_markdown(markdown.clone()).await;
+                        if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                            "ok".to_string()
+                        } else {
+                            "empty".to_string()
+                        }
+                    }
+                    Err(err) => format!("error: {err}"),
+                }
+            } else {
+                "missing".to_string()
+            }
+        } else {
+            "config_error".to_string()
+        };
+
+        let _ = ui_event_tx.send(UiEvent {
+            event_type: "boot".to_string(),
+            user_id: user_id.clone(),
+            tool: "heartbeat".to_string(),
+            status: heartbeat_status.clone(),
+            payload: json!({"status": heartbeat_status}),
+            timestamp: now_ts(),
+        });
+
+        if heartbeat_status == "ok" || heartbeat_status == "empty" {
+            let agent = agent.clone();
+            let ui_event_tx = ui_event_tx.clone();
+            let user_id = user_id.clone();
+            tokio::spawn(async move {
+                run_autonomy_tick(agent, ui_event_tx, user_id, "boot").await;
+            });
+        }
+    });
+
+    (
+        StatusCode::OK,
+        Json(PreloadBootResponse {
+            skill_status: "started".to_string(),
+            heartbeat_status: "started".to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn memory_search(
@@ -518,7 +629,11 @@ async fn ui_events(
             match receiver.recv().await {
                 Ok(event) => {
                     if let Some(filter) = &filter_user {
-                        if event.user_id != *filter {
+                        if event.user_id != *filter
+                            && event.user_id != "system"
+                            && event.event_type != "boot"
+                            && event.event_type != "autonomy"
+                        {
                             continue;
                         }
                     }
@@ -574,7 +689,7 @@ pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()
 
 fn default_config(db_path: &str) -> Config {
     let base_url = "http://localhost:11434/v1".to_string();
-    let model = "ministral-3:14b".to_string();
+    let model = "gpt-oss:20b".to_string();
     let memory = Some(MemoryConfig {
         enabled: Some(true),
         sqlite_path: Some(db_path.to_string()),
@@ -582,6 +697,7 @@ fn default_config(db_path: &str) -> Config {
         summary_model: Some(model.clone()),
         embedding_model: Some("embeddinggemma:latest".to_string()),
         rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+        skill_embed_enabled: Some(false),
         summary_threshold: None,
         retention_days: None,
     });
@@ -611,11 +727,24 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     if Config::from_store(db_path).is_err() {
+        tracing::warn!("No config in store; writing default config for {}", db_path);
         let default_config = default_config(db_path);
         config_store::save_config(db_path, &default_config)?;
     }
 
     let config = Config::from_store(db_path).ok();
+
+    // ── Log which skill_file and heartbeat_file the daemon sees ──
+    if let Some(cfg) = &config {
+        tracing::info!(
+            "Daemon config: skill_file={:?}, heartbeat_file={:?}",
+            cfg.skill_file,
+            cfg.heartbeat_file
+        );
+    } else {
+        tracing::error!("Daemon could not load any config from store!");
+    }
+
     let tick_seconds = config
         .as_ref()
         .and_then(|cfg| cfg.brains.as_ref())
@@ -625,6 +754,23 @@ where
         .unwrap_or(60);
 
     let (ui_event_tx, _) = broadcast::channel(256);
+    if let Some(path) = ui_event_log_path(config.as_ref()) {
+        let mut rx = ui_event_tx.subscribe();
+        let path = path.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        let _ = write_ui_event_log(&path, &event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
     let agent = Arc::new(RwLock::new(Arc::new(
         ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?,
     )));
@@ -655,6 +801,7 @@ where
         ui_event_tx: ui_event_tx.clone(),
         audit_log_path: wakeup_audit_log_path(config.as_ref()),
         heartbeat_source: config.as_ref().and_then(|cfg| cfg.heartbeat_file.clone()),
+        db_path: db_path.to_string(),
     }));
     let tasks_poll_seconds = config
         .as_ref()
@@ -696,6 +843,81 @@ where
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
     Ok(())
+}
+
+async fn run_autonomy_tick(
+    agent: Arc<crate::client::ButterflyBot>,
+    ui_event_tx: broadcast::Sender<UiEvent>,
+    user_id: String,
+    source: &str,
+) {
+    let _ = ui_event_tx.send(UiEvent {
+        event_type: "autonomy".to_string(),
+        user_id: user_id.clone(),
+        tool: "heartbeat".to_string(),
+        status: "started".to_string(),
+        payload: json!({"source": source}),
+        timestamp: now_ts(),
+    });
+
+    let options = ProcessOptions {
+        prompt: Some("AUTONOMY MODE: Follow the skill + heartbeat. Execute required actions using tools. If nothing is required, reply with 'no-op'. Log actions via tool calls.".to_string()),
+        images: Vec::new(),
+        output_format: OutputFormat::Text,
+        image_detail: "auto".to_string(),
+        json_schema: None,
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(120),
+        async {
+            agent
+                .process(
+                    &user_id,
+                    UserInput::Text("Autonomous heartbeat tick".to_string()),
+                    options,
+                )
+                .await
+        },
+    )
+    .await;
+
+    let (status, payload): (String, serde_json::Value) = match result {
+        Ok(Ok(ProcessResult::Text(text))) => {
+            let trimmed = text.trim();
+            let status = if trimmed.is_empty() {
+                "no-op"
+            } else if trimmed.eq_ignore_ascii_case("no-op") || trimmed.eq_ignore_ascii_case("noop") {
+                "no-op"
+            } else {
+                "ok"
+            };
+            (
+                status.to_string(),
+                json!({"output": text, "source": source}),
+            )
+        }
+        Ok(Ok(_)) => (
+            "error".to_string(),
+            json!({"error": "Unexpected non-text response", "source": source}),
+        ),
+        Ok(Err(err)) => (
+            "error".to_string(),
+            json!({"error": err.to_string(), "source": source}),
+        ),
+        Err(_) => (
+            "error".to_string(),
+            json!({"error": "autonomy timeout", "source": source}),
+        ),
+    };
+
+    let _ = ui_event_tx.send(UiEvent {
+        event_type: "autonomy".to_string(),
+        user_id,
+        tool: "heartbeat".to_string(),
+        status,
+        payload,
+        timestamp: now_ts(),
+    });
 }
 
 fn now_ts() -> i64 {
@@ -746,6 +968,30 @@ fn write_wakeup_audit_log(
         .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
     use std::io::Write;
     writeln!(file, "{line}").map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    Ok(())
+}
+
+fn ui_event_log_path(config: Option<&Config>) -> Option<String> {
+    config
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| tools.get("settings"))
+        .and_then(|settings| settings.get("ui_event_log_path"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some("./data/ui_events.log".to_string()))
+}
+
+fn write_ui_event_log(path: &str, event: &UiEvent) -> Result<()> {
+    config_store::ensure_parent_dir(path)?;
+    let payload = serde_json::to_string(event)
+        .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    writeln!(file, "{}", payload).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     Ok(())
 }
 

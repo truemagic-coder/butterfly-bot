@@ -29,6 +29,11 @@ struct ProcessTextRequest {
     prompt: Option<String>,
 }
 
+#[derive(Clone, Serialize)]
+struct PreloadBootRequest {
+    user_id: String,
+}
+
 #[derive(Clone)]
 struct ChatMessage {
     id: u64,
@@ -209,6 +214,10 @@ fn app_view() -> Element {
     let ui_events_listening = use_signal(|| false);
 
     let tools_loaded = use_signal(|| false);
+    let boot_ready = use_signal(|| false);
+    let boot_status = use_signal(String::new);
+    let boot_skill_ready = use_signal(|| false);
+    let boot_heartbeat_ready = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
     let config_json_text = use_signal(String::new);
@@ -244,6 +253,7 @@ fn app_view() -> Element {
         let error = error.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
+        let boot_ready = boot_ready.clone();
 
         use_callback(move |_| {
             let daemon_url = daemon_url();
@@ -265,6 +275,11 @@ fn app_view() -> Element {
 
                 if *busy.read() {
                     error.set("A request is already in progress. Please wait.".to_string());
+                    return;
+                }
+
+                if !*boot_ready.read() {
+                    error.set("Initializing skill/heartbeat. Please wait...".to_string());
                     return;
                 }
 
@@ -463,7 +478,6 @@ fn app_view() -> Element {
             let user_id = user_id;
             let mut messages = messages;
             let mut next_id = next_id;
-
             reminders_listening.set(true);
             let client = reqwest::Client::new();
             loop {
@@ -550,6 +564,10 @@ fn app_view() -> Element {
         let user_id = user_id.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
+        let mut boot_ready = boot_ready.clone();
+        let mut boot_status = boot_status.clone();
+        let mut boot_skill_ready = boot_skill_ready.clone();
+        let mut boot_heartbeat_ready = boot_heartbeat_ready.clone();
 
         spawn(async move {
             let mut ui_events_listening = ui_events_listening;
@@ -558,7 +576,6 @@ fn app_view() -> Element {
             let user_id = user_id;
             let mut messages = messages;
             let mut next_id = next_id;
-
             ui_events_listening.set(true);
             let client = reqwest::Client::new();
             loop {
@@ -599,6 +616,10 @@ fn app_view() -> Element {
                             if line.starts_with("data:") {
                                 line = line.trim_start_matches("data:").trim().to_string();
                                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                    let event_type = value
+                                        .get("event_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool");
                                     let tool = value
                                         .get("tool")
                                         .and_then(|v| v.as_str())
@@ -607,9 +628,27 @@ fn app_view() -> Element {
                                         .get("status")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
+
+                                    // Always update boot readiness for boot/skill/heartbeat events
+                                    if (event_type == "boot" || tool == "skill") && status == "ok" {
+                                        boot_skill_ready.set(true);
+                                    }
+                                    if (event_type == "boot" || tool == "heartbeat") && status == "ok" {
+                                        boot_heartbeat_ready.set(true);
+                                    }
+                                    if *boot_skill_ready.read() && *boot_heartbeat_ready.read() {
+                                        boot_ready.set(true);
+                                        boot_status.set("Skill + heartbeat ready".to_string());
+                                    }
+
                                     let show_success =
                                         std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
-                                    if !show_success && (status == "success" || status == "ok") {
+                                    if event_type != "boot"
+                                        && event_type != "autonomy"
+                                        && event_type != "tool"
+                                        && !show_success
+                                        && (status == "success" || status == "ok")
+                                    {
                                         if let Some(payload) = value.get("payload") {
                                             if payload.get("error").is_none() {
                                                 continue;
@@ -618,14 +657,22 @@ fn app_view() -> Element {
                                             continue;
                                         }
                                     }
-                                    let mut text = format!("🔧 {tool}: {status}");
+
+                                    let prefix = if event_type == "autonomy" {
+                                        "🤖"
+                                    } else {
+                                        "🔧"
+                                    };
+                                    let mut text = format!("{prefix} {tool}: {status}");
                                     if let Some(payload) = value.get("payload") {
                                         if let Some(error) =
                                             payload.get("error").and_then(|v| v.as_str())
                                         {
                                             text.push_str(&format!(" — {error}"));
-                                        } else if let Some(output) =
-                                            payload.get("output").and_then(|v| v.as_str())
+                                        } else if let Some(output) = payload
+                                            .get("output")
+                                            .or_else(|| payload.get("response"))
+                                            .and_then(|v| v.as_str())
                                         {
                                             let trimmed = if output.len() > 400 {
                                                 format!("{}…", &output[..400])
@@ -658,6 +705,10 @@ fn app_view() -> Element {
         let tools_loaded = tools_loaded.clone();
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
+        let mut boot_status = boot_status.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
         let search_provider = search_provider.clone();
         let search_model = search_model.clone();
         let search_citations = search_citations.clone();
@@ -838,6 +889,39 @@ fn app_view() -> Element {
                 }
                 Err(err) => {
                     search_api_key_status.set(format!("Vault error: {err}"));
+                }
+            }
+
+            // Preload skill into memory and heartbeat into agent.
+            boot_status.set("Initializing skill + heartbeat...".to_string());
+            let client = reqwest::Client::new();
+            let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+            let mut request = client.post(&url).json(&PreloadBootRequest {
+                user_id: user_id(),
+            });
+            let token_value = token();
+            if !token_value.trim().is_empty() {
+                request = request.header("authorization", format!("Bearer {token_value}"));
+            }
+            match request.send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    boot_status.set("Boot preload started...".to_string());
+                    let mut boot_ready = boot_ready.clone();
+                    let mut boot_status = boot_status.clone();
+                    spawn(async move {
+                        sleep(Duration::from_secs(15)).await;
+                        if !*boot_ready.read() {
+                            boot_status.set("Boot preload timed out; continuing".to_string());
+                            boot_ready.set(true);
+                        }
+                    });
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                }
+                Err(err) => {
+                    boot_status.set(format!("Boot preload error: {err}"));
                 }
             }
 
@@ -1422,6 +1506,9 @@ fn app_view() -> Element {
                 div { class: "error", "{error}" }
             }
             if *active_tab.read() == UiTab::Chat {
+                if !*boot_ready.read() && !boot_status.read().is_empty() {
+                    div { class: "hint", "{boot_status}" }
+                }
                 div { class: "chat", id: "chat-scroll",
                     for message in messages
                         .read()
@@ -1470,7 +1557,7 @@ fn app_view() -> Element {
                             }
                             button {
                                 class: "send",
-                                disabled: *busy.read(),
+                                disabled: *busy.read() || !*boot_ready.read(),
                                 onclick: move |_| on_send.call(()),
                                 "Send"
                             }

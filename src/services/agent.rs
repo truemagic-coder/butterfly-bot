@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_stream::try_stream;
 use futures::stream::BoxStream;
@@ -7,9 +7,15 @@ use futures::StreamExt;
 use serde::Serialize;
 use serde_json::json;
 
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+use tracing::{debug, error, info, warn};
+
 use crate::brain::manager::BrainManager;
 use crate::domains::agent::AIAgent;
 use crate::error::{ButterflyBotError, Result};
+use crate::factories::agent_factory::load_markdown_source;
 use crate::interfaces::brain::{BrainContext, BrainEvent};
 use crate::interfaces::providers::{LlmProvider, ToolCall};
 use crate::plugins::registry::ToolRegistry;
@@ -20,7 +26,11 @@ pub struct AgentService {
     llm_provider: Arc<dyn LlmProvider>,
     pub tool_registry: Arc<ToolRegistry>,
     agent: AIAgent,
+    skill_source: Option<String>,
+    skill_markdown: RwLock<Option<String>>,
     heartbeat_markdown: RwLock<Option<String>>,
+    last_skill_refresh: RwLock<Option<Instant>>,
+    skill_refresh_guard: tokio::sync::Mutex<()>,
     brain_manager: Arc<BrainManager>,
     started: RwLock<bool>,
     ui_event_tx: Option<broadcast::Sender<UiEvent>>,
@@ -43,6 +53,8 @@ impl AgentService {
     pub fn new(
         llm_provider: Arc<dyn LlmProvider>,
         agent: AIAgent,
+        skill_source: Option<String>,
+        skill_markdown: Option<String>,
         heartbeat_markdown: Option<String>,
         brain_manager: Arc<BrainManager>,
         ui_event_tx: Option<broadcast::Sender<UiEvent>>,
@@ -51,7 +63,11 @@ impl AgentService {
             llm_provider,
             tool_registry: Arc::new(ToolRegistry::new()),
             agent,
+            skill_source,
+            skill_markdown: RwLock::new(skill_markdown),
             heartbeat_markdown: RwLock::new(heartbeat_markdown),
+            last_skill_refresh: RwLock::new(None),
+            skill_refresh_guard: tokio::sync::Mutex::new(()),
             brain_manager,
             started: RwLock::new(false),
             ui_event_tx,
@@ -61,6 +77,83 @@ impl AgentService {
     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
         let mut guard = self.heartbeat_markdown.write().await;
         *guard = heartbeat_markdown;
+    }
+
+    pub async fn refresh_skill_for_user(&self, user_id: &str) -> Result<bool> {
+        self.refresh_skill(user_id).await
+    }
+
+    pub async fn get_skill_markdown(&self) -> Option<String> {
+        let guard = self.skill_markdown.read().await;
+        guard.clone()
+    }
+
+    async fn refresh_skill(&self, user_id: &str) -> Result<bool> {
+        // Debounce refresh to avoid stampede on boot.
+        let refresh_interval = Duration::from_secs(30);
+        if let Some(last) = *self.last_skill_refresh.read().await {
+            if last.elapsed() < refresh_interval {
+                return Ok(true);
+            }
+        }
+
+        let _guard = self.skill_refresh_guard.lock().await;
+        if let Some(last) = *self.last_skill_refresh.read().await {
+            if last.elapsed() < refresh_interval {
+                return Ok(true);
+            }
+        }
+
+        let Some(source) = &self.skill_source else {
+            warn!("No skill_source configured – the agent has no skill file");
+            // Still allow the agent to run, but log clearly.
+            return Ok(false);
+        };
+        if source.trim().is_empty() {
+            warn!("skill_source is blank – the agent has no skill file");
+            return Ok(false);
+        }
+
+        info!("Refreshing skill from {}", source);
+        match load_markdown_source(Some(source)).await {
+            Ok(Some(text)) if !text.trim().is_empty() => {
+                info!("Skill loaded OK from {} ({} bytes)", source, text.len());
+                let mut guard = self.skill_markdown.write().await;
+                *guard = Some(text.clone());
+                let mut last_guard = self.last_skill_refresh.write().await;
+                *last_guard = Some(Instant::now());
+                self.emit_tool_event(
+                    user_id,
+                    "skill",
+                    "ok",
+                    json!({"source": source, "length": text.len()}),
+                );
+                Ok(true)
+            }
+            Ok(_) => {
+                error!("Skill source {} returned empty content", source);
+                self.emit_tool_event(
+                    user_id,
+                    "skill",
+                    "error",
+                    json!({"source": source, "error": "empty skill markdown"}),
+                );
+                Ok(false)
+            }
+            Err(err) => {
+                error!("Failed to load skill from {}: {}", source, err);
+                self.emit_tool_event(
+                    user_id,
+                    "skill",
+                    "error",
+                    json!({"source": source, "error": err.to_string()}),
+                );
+                Err(ButterflyBotError::Config(format!(
+                    "Failed to load skill markdown from {}: {}",
+                    source, err
+                )))
+            }
+        }
     }
 
     fn emit_tool_event(&self, user_id: &str, tool: &str, status: &str, payload: serde_json::Value) {
@@ -105,9 +198,31 @@ impl AgentService {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             .as_secs();
 
+        // NOTE: refresh_skill() is called by callers BEFORE this method.
+        // Do NOT re-fetch here – it swallows errors and causes silent failures.
+
+        let skill_guard = self.skill_markdown.read().await;
+        let has_skill = skill_guard.as_ref().map_or(false, |s| !s.trim().is_empty());
+        let instructions = &self.agent.instructions;
+
+        if has_skill {
+            debug!("Skill markdown loaded; system prompt will reference memory only");
+        } else {
+            warn!("No skill markdown loaded; system prompt will use defaults only");
+        }
+
+        let instructions_block = if has_skill {
+            format!(
+                "{}\n\nSKILL NOTE: The full skill file is stored in memory as SKILL_DOC. Use it as authoritative guidance.",
+                instructions
+            )
+        } else {
+            instructions.to_string()
+        };
+
         let mut system_prompt = format!(
             "You are {}, an AI assistant with the following instructions:\n\n{}\n\nCurrent time (unix seconds): {}",
-            self.agent.name, self.agent.instructions, now
+            self.agent.name, instructions_block, now
         );
 
         let heartbeat_guard = self.heartbeat_markdown.read().await;
@@ -119,8 +234,42 @@ impl AgentService {
         }
 
         system_prompt.push_str(
+            "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n",
+        );
+        system_prompt.push_str(
+            "\n\nPLANNING LOOP:\n- At the start of each run, read the SKILL and HEARTBEAT sections and create an ordered plan.\n- Convert the plan into tasks/todos in order using the planning/todo/tasks tools when available.\n- Work through tasks in order; after each tool call, update the plan/todos if new information appears.\n- Re-check the HEARTBEAT before ending a cycle and revise the plan/todos if required.\n",
+        );
+
+        let mcp_available = self.tool_registry.has_mcp_servers().await;
+
+        let tool_names = self
+            .tool_registry
+            .get_agent_tools(&self.agent.name)
+            .await
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        let tool_list = if tool_names.is_empty() {
+            "none".to_string()
+        } else {
+            tool_names.join(", ")
+        };
+
+        system_prompt.push_str(
             "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n",
         );
+        system_prompt.push_str(
+            "- Do NOT rely on memory or prior responses to decide whether a tool is usable or whether credentials exist. Tool availability and credentials can change at any time.\n- When a tool is relevant to the current request, attempt the tool call and let the tool response determine success/failure.\n",
+        );
+        system_prompt.push_str(&format!(
+            "\nAVAILABLE TOOLS (use ONLY these exact names): {tool_list}\n"
+        ));
+
+        if !mcp_available {
+            system_prompt.push_str(
+                "\n\nTOOL AVAILABILITY:\n- MCP is not configured in settings. Do not use the `mcp` tool.\n",
+            );
+        }
 
         Ok(system_prompt)
     }
@@ -171,6 +320,10 @@ impl AgentService {
         memory_context: &str,
         prompt_override: Option<&str>,
     ) -> Result<String> {
+        let skill_loaded = self.refresh_skill(user_id).await?;
+        if !skill_loaded {
+            warn!("Proceeding without skill file for user {}", user_id);
+        }
         let system_prompt = self.get_agent_system_prompt().await?;
         let mut full_prompt = String::new();
         if !memory_context.is_empty() {
@@ -186,7 +339,7 @@ impl AgentService {
             full_prompt.push_str("\n\n");
         }
         full_prompt.push_str(
-            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Then respond only to the CURRENT USER MESSAGE below. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
+            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the skill or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
         );
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
@@ -213,6 +366,10 @@ impl AgentService {
     ) -> BoxStream<'a, Result<String>> {
         Box::pin(try_stream! {
             self.ensure_brain_started(user_id).await?;
+            let skill_loaded = self.refresh_skill(user_id).await?;
+            if !skill_loaded {
+                warn!("Proceeding without skill file for user {} (stream)", user_id);
+            }
             let ctx = BrainContext {
                 agent_name: self.agent.name.clone(),
                 user_id: Some(user_id.to_string()),
@@ -396,6 +553,22 @@ impl AgentService {
         let mut last_text = String::new();
         let mut tool_specs = Vec::new();
 
+        let tool_names = tools
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect::<Vec<_>>();
+        let tool_list = if tool_names.is_empty() {
+            "none".to_string()
+        } else {
+            tool_names.join(", ")
+        };
+        prompt.push_str(&format!(
+            "\n\nAVAILABLE TOOLS (use ONLY these exact names): {tool_list}\n"
+        ));
+        prompt.push_str(
+            "If you need a tool not listed, respond with 'no-op' and explain what is missing.\n",
+        );
+
         for tool in &tools {
             tool_specs.push(serde_json::json!({
                 "type": "function",
@@ -440,6 +613,12 @@ impl AgentService {
             let tool = tools.iter().find(|t| t.name() == call.name);
             match tool {
                 Some(tool) => {
+                    let redacted_args = redact_value(&call.arguments);
+                    info!(
+                        tool = %call.name,
+                        args = %serde_json::to_string(&redacted_args).unwrap_or_default(),
+                        "Tool call"
+                    );
                     let mut args = call.arguments.clone();
                     if let serde_json::Value::Object(ref mut map) = args {
                         if !map.contains_key("user_id") {
@@ -456,6 +635,13 @@ impl AgentService {
                                 .audit_tool_call(&call.name, "success")
                                 .await;
                             let result_clone = result.clone();
+                            let redacted_result = redact_value(&result_clone);
+                            info!(
+                                tool = %call.name,
+                                status = "success",
+                                result = %serde_json::to_string(&redacted_result).unwrap_or_default(),
+                                "Tool result"
+                            );
                             self.emit_tool_event(
                                 user_id,
                                 &call.name,
@@ -469,10 +655,46 @@ impl AgentService {
                             }));
                         }
                         Err(err) => {
+                            let err_message = err.to_string();
+                            let should_skip = matches!(err, ButterflyBotError::Runtime(_))
+                                && (err_message.contains("No MCP servers configured")
+                                    || err_message.contains("Unknown MCP server")
+                                    || err_message.contains("Missing GitHub PAT"));
+                            if should_skip {
+                                let _ = self
+                                    .tool_registry
+                                    .audit_tool_call(&call.name, "skipped")
+                                    .await;
+                                info!(
+                                    tool = %call.name,
+                                    status = "skipped",
+                                    error = %redact_string(&err_message),
+                                    "Tool result"
+                                );
+                                self.emit_tool_event(
+                                    user_id,
+                                    &call.name,
+                                    "skipped",
+                                    serde_json::json!({ "args": call.arguments.clone(), "error": err_message }),
+                                );
+                                results.push(serde_json::json!({
+                                    "tool": call.name,
+                                    "status": "skipped",
+                                    "error": err_message,
+                                }));
+                                continue;
+                            }
+
                             let _ = self
                                 .tool_registry
                                 .audit_tool_call(&call.name, "error")
                                 .await;
+                            info!(
+                                tool = %call.name,
+                                status = "error",
+                                error = %redact_string(&err_message),
+                                "Tool result"
+                            );
                             self.emit_tool_event(
                                 user_id,
                                 &call.name,
@@ -488,6 +710,11 @@ impl AgentService {
                         .tool_registry
                         .audit_tool_call(&call.name, "not_found")
                         .await;
+                    info!(
+                        tool = %call.name,
+                        status = "not_found",
+                        "Tool result"
+                    );
                     self.emit_tool_event(
                         user_id,
                         &call.name,
@@ -504,6 +731,66 @@ impl AgentService {
         }
         Ok(results)
     }
+}
+
+static BEARER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\bbearer\s+[^\s\x22\x27]+").unwrap());
+static KEY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(sk-|xai-|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_\-]+")
+        .unwrap()
+});
+
+fn redact_string(input: &str) -> String {
+    let mut out = BEARER_RE
+        .replace_all(input, "Bearer [REDACTED]")
+        .to_string();
+    out = KEY_RE
+        .replace_all(&out, "$1[REDACTED]")
+        .to_string();
+    truncate_string(&out, 2000)
+}
+
+fn redact_value(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Null => serde_json::Value::Null,
+        serde_json::Value::Bool(v) => serde_json::Value::Bool(*v),
+        serde_json::Value::Number(v) => serde_json::Value::Number(v.clone()),
+        serde_json::Value::String(v) => serde_json::Value::String(redact_string(v)),
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items.iter().map(redact_value).collect::<Vec<serde_json::Value>>(),
+        ),
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in map {
+                if is_sensitive_key(key) {
+                    out.insert(key.clone(), serde_json::Value::String("[REDACTED]".to_string()));
+                } else {
+                    out.insert(key.clone(), redact_value(value));
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+    }
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    lower.contains("authorization")
+        || lower.contains("api_key")
+        || lower.contains("apikey")
+        || lower.contains("token")
+        || lower.contains("secret")
+        || lower.contains("password")
+        || lower.contains("pat")
+}
+
+fn truncate_string(value: &str, max_len: usize) -> String {
+    if value.len() <= max_len {
+        return value.to_string();
+    }
+    let mut out = value.chars().take(max_len).collect::<String>();
+    out.push_str("…[truncated]");
+    out
 }
 
 fn now_ts() -> i64 {

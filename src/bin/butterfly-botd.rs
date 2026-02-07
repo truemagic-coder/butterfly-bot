@@ -1,3 +1,5 @@
+use butterfly_bot::config::Config;
+use butterfly_bot::config_store;
 use butterfly_bot::daemon;
 use butterfly_bot::error::Result;
 use clap::Parser;
@@ -18,6 +20,11 @@ struct Cli {
 
     #[arg(long, env = "BUTTERFLY_BOT_TOKEN", default_value = "")]
     token: String,
+
+    /// Path to a JSON config file to import into the store on startup.
+    /// This ensures the daemon always uses the latest config.
+    #[arg(long)]
+    config: Option<String>,
 }
 
 #[tokio::main]
@@ -26,6 +33,14 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info,lance=warn,lancedb=warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
+
+    // If --config is given, import it into the store before starting.
+    if let Some(config_path) = &cli.config {
+        tracing::info!("Importing config from {} into store", config_path);
+        let config = Config::from_file(config_path)?;
+        config_store::save_config(&cli.db, &config)?;
+        tracing::info!("Config imported successfully (skill_file={:?})", config.skill_file);
+    }
 
     daemon::run(&cli.host, cli.port, &cli.db, &cli.token).await
 }

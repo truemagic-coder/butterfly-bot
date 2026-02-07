@@ -20,6 +20,7 @@ pub struct MemoryConfig {
     pub summary_model: Option<String>,
     pub embedding_model: Option<String>,
     pub rerank_model: Option<String>,
+    pub skill_embed_enabled: Option<bool>,
     pub summary_threshold: Option<usize>,
     pub retention_days: Option<u32>,
 }

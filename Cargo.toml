@@ -51,6 +51,7 @@ keyring = { version = "3.6", features = ["sync-secret-service"] }
 axum = "0.7"
 bytes = "1.7"
 sha2 = "0.10"
+md-5 = "0.10"
 notify-rust = { version = "4.11", features = ["d"] }
 dioxus = { version = "0.7.3", features = ["desktop"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
