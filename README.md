@@ -142,7 +142,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Requirements
 
-- Rust 1.93 or newer
+- Rust 1.93+
 - Certain system libraries for the host OS
 - Mac or Linux or Windows (WSL)
 
