@@ -236,7 +236,7 @@ If no key is set, storage falls back to plaintext SQLite.
 
 ### MCP Tool
 
-The MCP tool supports both `SSE` or `HTTP` connections, custom headers, and multiple servers at once.
+The MCP tool supports connection type, custom headers, and multiple servers at once.
 
 There are many high-quality MCP server providers like: 
 
@@ -245,8 +245,6 @@ There are many high-quality MCP server providers like:
 * [VAPI.AI](https://vapi.ai) - Voice Agent Telephony 
 
 * [GitHub](https://github.com) - Coding
-
-Configure MCP servers under `tools.mcp.servers` (supports `type`: `sse` or `http`):
 
 Config fields:
 - `tools.mcp.servers` (required to use MCP)
