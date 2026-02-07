@@ -12,13 +12,13 @@ use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
 use serde_json::Value;
+use std::env;
+use std::thread;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::html::styled_line_to_highlighted_html;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
-use std::env;
-use std::thread;
 use tokio::fs;
 use tokio::time::{sleep, timeout, Duration};
 
@@ -61,9 +61,7 @@ async fn load_markdown_source(source: &str) -> Result<String, String> {
         return Ok(String::new());
     }
     if is_url_source(trimmed) {
-        let response = reqwest::get(trimmed)
-            .await
-            .map_err(|err| err.to_string())?;
+        let response = reqwest::get(trimmed).await.map_err(|err| err.to_string())?;
         if !response.status().is_success() {
             return Err(format!("Failed to fetch {trimmed}"));
         }
@@ -118,12 +116,12 @@ fn highlight_json_html(input: &str) -> String {
     let mut highlighter = HighlightLines::new(syntax, theme);
     let mut out = String::new();
     for line in LinesWithEndings::from(input) {
-        let ranges = highlighter.highlight_line(line, &SYNTAX_SET).unwrap_or_default();
-        let html = styled_line_to_highlighted_html(
-            &ranges[..],
-            syntect::html::IncludeBackground::No,
-        )
-        .unwrap_or_default();
+        let ranges = highlighter
+            .highlight_line(line, &SYNTAX_SET)
+            .unwrap_or_default();
+        let html =
+            styled_line_to_highlighted_html(&ranges[..], syntect::html::IncludeBackground::No)
+                .unwrap_or_default();
         out.push_str(&html);
     }
     out
@@ -609,7 +607,8 @@ fn app_view() -> Element {
                                         .get("status")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
-                                    let show_success = std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
+                                    let show_success =
+                                        std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
                                     if !show_success && (status == "success" || status == "ok") {
                                         if let Some(payload) = value.get("payload") {
                                             if payload.get("error").is_none() {
@@ -740,8 +739,7 @@ fn app_view() -> Element {
                                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                     .collect();
                             }
-                            if let Some(value) =
-                                perms.get("default_deny").and_then(|v| v.as_bool())
+                            if let Some(value) = perms.get("default_deny").and_then(|v| v.as_bool())
                             {
                                 default_deny = value;
                             }
@@ -847,72 +845,72 @@ fn app_view() -> Element {
         });
     }
 
-        let on_format_config = {
+    let on_format_config = {
+        let settings_error = settings_error.clone();
+        let settings_status = settings_status.clone();
+        let config_json_text = config_json_text.clone();
+
+        use_callback(move |_| {
             let settings_error = settings_error.clone();
             let settings_status = settings_status.clone();
             let config_json_text = config_json_text.clone();
 
-            use_callback(move |_| {
-                let settings_error = settings_error.clone();
-                let settings_status = settings_status.clone();
-                let config_json_text = config_json_text.clone();
+            spawn(async move {
+                let mut settings_error = settings_error;
+                let mut settings_status = settings_status;
+                let mut config_json_text = config_json_text;
 
-                spawn(async move {
-                    let mut settings_error = settings_error;
-                    let mut settings_status = settings_status;
-                    let mut config_json_text = config_json_text;
+                settings_error.set(String::new());
+                settings_status.set(String::new());
 
-                    settings_error.set(String::new());
-                    settings_status.set(String::new());
-
-                    let raw = config_json_text();
-                    match serde_json::from_str::<Value>(&raw) {
-                        Ok(value) => {
-                            let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw);
-                            config_json_text.set(pretty);
-                            settings_status.set("Formatted JSON.".to_string());
-                        }
-                        Err(err) => {
-                            settings_error.set(format!("Invalid JSON: {err}"));
-                        }
+                let raw = config_json_text();
+                match serde_json::from_str::<Value>(&raw) {
+                    Ok(value) => {
+                        let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw);
+                        config_json_text.set(pretty);
+                        settings_status.set("Formatted JSON.".to_string());
                     }
-                });
-            })
-        };
+                    Err(err) => {
+                        settings_error.set(format!("Invalid JSON: {err}"));
+                    }
+                }
+            });
+        })
+    };
 
-        let on_validate_config = {
+    let on_validate_config = {
+        let settings_error = settings_error.clone();
+        let settings_status = settings_status.clone();
+        let config_json_text = config_json_text.clone();
+
+        use_callback(move |_| {
             let settings_error = settings_error.clone();
             let settings_status = settings_status.clone();
             let config_json_text = config_json_text.clone();
 
-            use_callback(move |_| {
-                let settings_error = settings_error.clone();
-                let settings_status = settings_status.clone();
-                let config_json_text = config_json_text.clone();
+            spawn(async move {
+                let mut settings_error = settings_error;
+                let mut settings_status = settings_status;
+                let config_json_text = config_json_text;
 
-                spawn(async move {
-                    let mut settings_error = settings_error;
-                    let mut settings_status = settings_status;
-                    let config_json_text = config_json_text;
+                settings_error.set(String::new());
+                settings_status.set(String::new());
 
-                    settings_error.set(String::new());
-                    settings_status.set(String::new());
-
-                    let raw = config_json_text();
-                    let value: Value = match serde_json::from_str(&raw) {
-                        Ok(value) => value,
-                        Err(err) => {
-                            settings_error.set(format!("Invalid JSON: {err}"));
-                            return;
-                        }
-                    };
-                    match serde_json::from_value::<crate::config::Config>(value) {
-                        Ok(_) => settings_status.set("Config is valid.".to_string()),
-                        Err(err) => settings_error.set(format!("Invalid config: {err}")),
+                let raw = config_json_text();
+                let value: Value = match serde_json::from_str(&raw) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        settings_error.set(format!("Invalid JSON: {err}"));
+                        return;
                     }
-                });
-            })
-        };
+                };
+                match serde_json::from_value::<crate::config::Config>(value) {
+                    Ok(_) => settings_status.set("Config is valid.".to_string()),
+                    Err(err) => settings_error.set(format!("Invalid config: {err}")),
+                }
+            });
+        })
+    };
 
     let on_save_config = {
         let settings_error = settings_error.clone();
@@ -1124,7 +1122,9 @@ fn app_view() -> Element {
                         Ok(text) if !text.trim().is_empty() => {
                             heartbeat_status.set("Heartbeat URL is reachable.".to_string())
                         }
-                        Ok(_) => heartbeat_error.set("Heartbeat URL returned empty content.".to_string()),
+                        Ok(_) => {
+                            heartbeat_error.set("Heartbeat URL returned empty content.".to_string())
+                        }
                         Err(err) => heartbeat_error.set(format!("Heartbeat URL error: {err}")),
                     }
                     return;

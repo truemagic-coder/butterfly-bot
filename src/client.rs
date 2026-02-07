@@ -113,6 +113,8 @@ impl ButterflyBot {
 
     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
         let agent_service = self.query_service.agent_service();
-        agent_service.set_heartbeat_markdown(heartbeat_markdown).await;
+        agent_service
+            .set_heartbeat_markdown(heartbeat_markdown)
+            .await;
     }
 }

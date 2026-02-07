@@ -138,10 +138,8 @@ impl Tool for TodoTool {
                             created.push(created_item);
                         }
                         Value::Object(map) => {
-                            let title = map
-                                .get("title")
-                                .and_then(|v| v.as_str())
-                                .ok_or_else(|| {
+                            let title =
+                                map.get("title").and_then(|v| v.as_str()).ok_or_else(|| {
                                     ButterflyBotError::Runtime("Missing item title".to_string())
                                 })?;
                             let notes = map.get("notes").and_then(|v| v.as_str());

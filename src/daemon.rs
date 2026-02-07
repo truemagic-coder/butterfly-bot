@@ -654,9 +654,7 @@ where
         interval: Duration::from_secs(wakeup_poll_seconds.max(1)),
         ui_event_tx: ui_event_tx.clone(),
         audit_log_path: wakeup_audit_log_path(config.as_ref()),
-        heartbeat_source: config
-            .as_ref()
-            .and_then(|cfg| cfg.heartbeat_file.clone()),
+        heartbeat_source: config.as_ref().and_then(|cfg| cfg.heartbeat_file.clone()),
     }));
     let tasks_poll_seconds = config
         .as_ref()

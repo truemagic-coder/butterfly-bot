@@ -50,9 +50,11 @@ async fn routing_and_agent_service() {
     let registry = service.tool_registry.clone();
     let tool = Arc::new(DummyTool::new("tool1"));
     assert!(registry.register_tool(tool).await);
-    assert!(registry
-        .assign_tool_to_agent(service.agent_name(), "tool1")
-        .await);
+    assert!(
+        registry
+            .assign_tool_to_agent(service.agent_name(), "tool1")
+            .await
+    );
 
     let response = service
         .generate_response("u1", "query", "history", Some("prompt"))
@@ -130,9 +132,11 @@ async fn routing_and_agent_service() {
     let registry = looping_service.tool_registry.clone();
     let tool = Arc::new(DummyTool::new("tool1"));
     assert!(registry.register_tool(tool).await);
-    assert!(registry
-        .assign_tool_to_agent(looping_service.agent_name(), "tool1")
-        .await);
+    assert!(
+        registry
+            .assign_tool_to_agent(looping_service.agent_name(), "tool1")
+            .await
+    );
 
     let response = looping_service
         .generate_response("u1", "query", "", None)
@@ -191,7 +195,10 @@ async fn agent_service_dispatches_brain_events() {
     };
     let service = AgentService::new(llm, agent, None, brain, None);
 
-    let response = service.generate_response("u1", "hello", "", None).await.unwrap();
+    let response = service
+        .generate_response("u1", "hello", "", None)
+        .await
+        .unwrap();
     assert_eq!(response, "");
 
     let guard = events.lock().unwrap();

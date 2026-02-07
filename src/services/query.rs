@@ -199,12 +199,7 @@ impl QueryService {
         } else {
             let response = self
                 .agent_service
-                .generate_response(
-                    user_id,
-                    &text,
-                    &memory_context,
-                    options.prompt.as_deref(),
-                )
+                .generate_response(user_id, &text, &memory_context, options.prompt.as_deref())
                 .await?;
             ProcessResult::Text(response)
         };
@@ -362,7 +357,7 @@ async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64;
-        let items = store.peek_due_reminders(user_id, now_ts, 5).await.ok()?;
+    let items = store.peek_due_reminders(user_id, now_ts, 5).await.ok()?;
     if items.is_empty() {
         return None;
     }
@@ -455,5 +450,4 @@ impl QueryService {
         };
         Ok(Some(response))
     }
-
 }

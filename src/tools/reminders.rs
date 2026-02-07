@@ -145,9 +145,7 @@ impl Tool for RemindersTool {
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing title".to_string()))?;
                 let due_at = Self::parse_due_at_optional(&params);
                 let item = store.create_reminder(user_id, title, due_at).await?;
-                if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                    || cfg!(debug_assertions)
-                {
+                if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok() || cfg!(debug_assertions) {
                     let path = self
                         .sqlite_path
                         .read()

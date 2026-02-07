@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-
 use crate::brain::manager::BrainManager;
 use crate::brain::plugins::abstraction_extraction::AbstractionExtractionBrain;
 use crate::brain::plugins::age_detection::AgeDetectionBrain;
@@ -81,8 +80,8 @@ use crate::tools::search_internet::SearchInternetTool;
 use crate::tools::tasks::TasksTool;
 use crate::tools::todo::TodoTool;
 use crate::tools::wakeup::WakeupTool;
-use tokio::sync::broadcast;
 use tokio::fs;
+use tokio::sync::broadcast;
 
 pub struct ButterflyBotFactory;
 

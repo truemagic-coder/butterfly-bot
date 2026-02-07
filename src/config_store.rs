@@ -24,8 +24,8 @@ pub fn ensure_parent_dir(path: &str) -> Result<()> {
 }
 
 fn open_conn(db_path: &str) -> Result<SqliteConnection> {
-    let mut conn =
-        SqliteConnection::establish(db_path).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    let mut conn = SqliteConnection::establish(db_path)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     crate::db::apply_sqlcipher_key_sync(&mut conn)?;
     Ok(conn)
 }
