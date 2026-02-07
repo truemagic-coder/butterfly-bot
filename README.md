@@ -109,11 +109,17 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Requirements
 
-- Rust 1.93 or newer
-- 16GB+ of RAM 
-- Linux (Ubuntu recommended) or Mac or Windows (WSL)
+### Linux or Windows (WSL)
+- Rust 1.93+
+- Ubuntu recommended
+- 16GB+ RAM with 8GB+ VRAM
 - Certain system libraries for Linux
-- 8GB+ of VRAM
+
+### Mac
+- Rust 1.93+
+- Mac Tahoe
+- 16GB+ RAM
+- M2 Pro+
 
 ### Models Used
 
@@ -127,10 +133,10 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Test Systems
 
-- AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3
-- MSI Raider GE68-HX-14V on Ubuntu 24.04.3
-- Both provide instant results for Ollama chatting with memory
-- Not tested yet on Mac or Windows (WSL)
+- AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant response)
+- MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
+- Mac M2 Pro Mini with 16GB RAM (10-20 seconds per response)
+- Not tested on Windows (WSL)
 
 ## OpenAI 
 
