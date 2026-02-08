@@ -20,6 +20,7 @@ pub struct MemoryConfig {
     pub summary_model: Option<String>,
     pub embedding_model: Option<String>,
     pub rerank_model: Option<String>,
+    pub openai: Option<OpenAiConfig>,
     pub skill_embed_enabled: Option<bool>,
     pub summary_threshold: Option<usize>,
     pub retention_days: Option<u32>,
@@ -30,6 +31,7 @@ pub struct Config {
     pub openai: Option<OpenAiConfig>,
     pub skill_file: Option<String>,
     pub heartbeat_file: Option<String>,
+    pub prompt_file: Option<String>,
     pub memory: Option<MemoryConfig>,
     pub tools: Option<Value>,
     pub brains: Option<Value>,
@@ -62,6 +64,15 @@ impl Config {
             if openai.api_key.is_none() {
                 if let Some(secret) = crate::vault::get_secret("openai_api_key")? {
                     openai.api_key = Some(secret);
+                }
+            }
+        }
+        if let Some(memory) = &mut self.memory {
+            if let Some(openai) = &mut memory.openai {
+                if openai.api_key.is_none() {
+                    if let Some(secret) = crate::vault::get_secret("memory_openai_api_key")? {
+                        openai.api_key = Some(secret);
+                    }
                 }
             }
         }

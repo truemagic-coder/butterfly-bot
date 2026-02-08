@@ -36,6 +36,7 @@ async fn query_service_and_client() {
         None,
         None,
         None,
+        None,
         brain,
         None,
     ));
@@ -127,6 +128,7 @@ async fn query_service_and_client() {
         None,
         None,
         None,
+        None,
         brain,
         None,
     ));
@@ -164,6 +166,7 @@ async fn query_service_and_client() {
         }),
         skill_file: None,
         heartbeat_file: None,
+        prompt_file: None,
         memory: None,
         tools: None,
         brains: None,

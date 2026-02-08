@@ -24,6 +24,7 @@ async fn make_agent(server: &MockServer) -> ButterflyBot {
         }),
         skill_file: None,
         heartbeat_file: None,
+        prompt_file: None,
         memory: None,
         tools: None,
         brains: None,

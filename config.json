@@ -6,6 +6,7 @@
   },
   "skill_file": "./skill.md",
   "heartbeat_file": "./heartbeat.md",
+  "prompt_file": "./prompt.md",
   "memory": {
     "enabled": true,
     "sqlite_path": "./data/butterfly-bot.db",
@@ -13,6 +14,11 @@
     "summary_model": "gpt-oss:20b",
     "embedding_model": "embeddinggemma:latest",
     "rerank_model": "qllama/bge-reranker-v2-m3",
+    "openai": {
+      "api_key": null,
+      "model": "gpt-oss:20b",
+      "base_url": "http://localhost:11434/v1"
+    },
     "summary_threshold": null,
     "retention_days": null
   },

@@ -171,6 +171,9 @@ impl ScheduledJob for WakeupJob {
             .ok()
             .and_then(|cfg| cfg.heartbeat_file)
             .or_else(|| self.heartbeat_source.clone());
+        let prompt_source = Config::from_store(&self.db_path)
+            .ok()
+            .and_then(|cfg| cfg.prompt_file);
         if let Some(source) = &dynamic_source {
             match load_markdown_source(Some(source.as_str())).await {
                 Ok(markdown) => {
@@ -196,6 +199,40 @@ impl ScheduledJob for WakeupJob {
                         event_type: "wakeup".to_string(),
                         user_id: "system".to_string(),
                         tool: "heartbeat".to_string(),
+                        status: "error".to_string(),
+                        payload: json!({"source": source, "error": err.to_string()}),
+                        timestamp: now_ts(),
+                    };
+                    let _ = self.ui_event_tx.send(event);
+                }
+            }
+        }
+
+        if let Some(source) = &prompt_source {
+            match load_markdown_source(Some(source.as_str())).await {
+                Ok(markdown) => {
+                    let agent = self.agent.read().await.clone();
+                    agent.set_prompt_markdown(markdown.clone()).await;
+                    let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                        "ok"
+                    } else {
+                        "empty"
+                    };
+                    let event = UiEvent {
+                        event_type: "wakeup".to_string(),
+                        user_id: "system".to_string(),
+                        tool: "prompt".to_string(),
+                        status: status.to_string(),
+                        payload: json!({"source": source}),
+                        timestamp: now_ts(),
+                    };
+                    let _ = self.ui_event_tx.send(event);
+                }
+                Err(err) => {
+                    let event = UiEvent {
+                        event_type: "wakeup".to_string(),
+                        user_id: "system".to_string(),
+                        tool: "prompt".to_string(),
                         status: "error".to_string(),
                         payload: json!({"source": source, "error": err.to_string()}),
                         timestamp: now_ts(),
@@ -697,6 +734,7 @@ fn default_config(db_path: &str) -> Config {
         summary_model: Some(model.clone()),
         embedding_model: Some("embeddinggemma:latest".to_string()),
         rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+        openai: None,
         skill_embed_enabled: Some(false),
         summary_threshold: None,
         retention_days: None,
@@ -710,6 +748,7 @@ fn default_config(db_path: &str) -> Config {
         }),
         skill_file: Some("./skill.md".to_string()),
         heartbeat_file: Some("./heartbeat.md".to_string()),
+        prompt_file: None,
         memory,
         tools: None,
         brains: None,

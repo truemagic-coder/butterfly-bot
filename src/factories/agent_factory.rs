@@ -99,7 +99,7 @@ impl ButterflyBotFactory {
         let memory_config = config.memory.clone();
         let config_value =
             serde_json::to_value(&config).map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-        let (api_key, model, base_url) = if let Some(openai) = config.openai {
+        let (api_key, model, base_url) = if let Some(openai) = config.openai.clone() {
             let api_key = openai
                 .api_key
                 .filter(|key| !key.trim().is_empty())
@@ -118,12 +118,40 @@ impl ButterflyBotFactory {
             ));
         };
 
+        let (memory_api_key, memory_model, memory_base_url) = memory_config
+            .as_ref()
+            .and_then(|mem| mem.openai.clone())
+            .map(|openai| {
+                let api_key = openai
+                    .api_key
+                    .filter(|key| !key.trim().is_empty())
+                    .or_else(|| {
+                        if openai.base_url.is_some() {
+                            Some("ollama".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| {
+                        ButterflyBotError::Config(
+                            "Missing memory OpenAI API key".to_string(),
+                        )
+                    })?;
+                Ok::<_, ButterflyBotError>((api_key, openai.model, openai.base_url))
+            })
+            .transpose()?
+            .unwrap_or((api_key.clone(), model.clone(), base_url.clone()));
+
         let llm = Arc::new(OpenAiProvider::new(
             api_key.clone(),
             model,
             base_url.clone(),
         ));
-        let llm_for_memory = llm.clone();
+        let llm_for_memory = Arc::new(OpenAiProvider::new(
+            memory_api_key.clone(),
+            memory_model.clone(),
+            memory_base_url.clone(),
+        ));
 
         let skill_source = config.skill_file.clone();
         tracing::info!(
@@ -132,6 +160,7 @@ impl ButterflyBotFactory {
         );
         let skill_markdown = load_markdown_source(skill_source.as_deref()).await?;
         let heartbeat_markdown = load_markdown_source(config.heartbeat_file.as_deref()).await?;
+        let prompt_markdown = load_markdown_source(config.prompt_file.as_deref()).await?;
         match &skill_markdown {
             Some(text) if !text.trim().is_empty() => {
                 tracing::info!(
@@ -316,6 +345,7 @@ impl ButterflyBotFactory {
             skill_source,
             Some(instructions_for_prompt),
             heartbeat_markdown,
+            prompt_markdown,
             brain_manager,
             ui_event_tx,
         );
@@ -410,17 +440,17 @@ impl ButterflyBotFactory {
                         .unwrap_or_else(|| "./data/lancedb".to_string());
                     let reranker = memory.rerank_model.as_ref().map(|rerank_model| {
                         Arc::new(OpenAiProvider::new(
-                            api_key.clone(),
+                            memory_api_key.clone(),
                             Some(rerank_model.clone()),
-                            base_url.clone(),
+                            memory_base_url.clone(),
                         ))
                             as Arc<dyn crate::interfaces::providers::LlmProvider>
                     });
                     let summarizer = memory.summary_model.as_ref().map(|summary_model| {
                         Arc::new(OpenAiProvider::new(
-                            api_key.clone(),
+                            memory_api_key.clone(),
                             Some(summary_model.clone()),
-                            base_url.clone(),
+                            memory_base_url.clone(),
                         ))
                             as Arc<dyn crate::interfaces::providers::LlmProvider>
                     });

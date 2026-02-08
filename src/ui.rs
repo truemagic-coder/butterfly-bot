@@ -13,6 +13,7 @@ use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -134,7 +135,6 @@ fn highlight_json_html(input: &str) -> String {
 
 pub fn launch_ui() {
     force_dbusrs();
-    start_local_daemon();
     launch(app_view);
 }
 
@@ -157,9 +157,27 @@ fn force_dbusrs() {
 #[cfg(not(target_os = "linux"))]
 fn force_dbusrs() {}
 
-fn start_local_daemon() {
+struct DaemonControl {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
+
+fn daemon_control() -> &'static Mutex<Option<DaemonControl>> {
+    static CONTROL: OnceLock<Mutex<Option<DaemonControl>>> = OnceLock::new();
+    CONTROL.get_or_init(|| Mutex::new(None))
+}
+
+fn start_local_daemon() -> Result<(), String> {
     if env::var("BUTTERFLY_BOT_DISABLE_DAEMON").is_ok() {
-        return;
+        return Err("Daemon disabled by BUTTERFLY_BOT_DISABLE_DAEMON".to_string());
+    }
+
+    let control = daemon_control();
+    let mut guard = control
+        .lock()
+        .map_err(|_| "Daemon lock unavailable".to_string())?;
+    if guard.is_some() {
+        return Ok(());
     }
 
     let daemon_url =
@@ -169,13 +187,43 @@ fn start_local_daemon() {
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
     let token = env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default();
 
-    thread::spawn(move || {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let thread = thread::spawn(move || {
         if let Ok(runtime) = tokio::runtime::Runtime::new() {
             runtime.block_on(async move {
-                let _ = crate::daemon::run(&host, port, &db_path, &token).await;
+                let shutdown = async move {
+                    let _ = shutdown_rx.await;
+                };
+                let _ =
+                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown)
+                        .await;
             });
         }
     });
+
+    *guard = Some(DaemonControl {
+        shutdown: shutdown_tx,
+        thread,
+    });
+
+    Ok(())
+}
+
+fn stop_local_daemon() -> Result<(), String> {
+    let control = daemon_control();
+    let mut guard = control
+        .lock()
+        .map_err(|_| "Daemon lock unavailable".to_string())?;
+    if let Some(control) = guard.take() {
+        let _ = control.shutdown.send(());
+        thread::spawn(move || {
+            let _ = control.thread.join();
+        });
+        Ok(())
+    } else {
+        Err("Daemon is not running".to_string())
+    }
 }
 
 fn parse_daemon_address(daemon: &str) -> (String, u16) {
@@ -208,6 +256,8 @@ fn app_view() -> Element {
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
     let messages = use_signal(Vec::<ChatMessage>::new);
+    let daemon_running = use_signal(|| false);
+    let daemon_status = use_signal(String::new);
     let next_id = use_signal(|| 1u64);
     let active_tab = use_signal(|| UiTab::Chat);
     let reminders_listening = use_signal(|| false);
@@ -391,69 +441,10 @@ fn app_view() -> Element {
                             error.set(format!("Request failed ({status}): {text}"));
                         }
                     }
-                    Err(_err) => {
-                        start_local_daemon();
-                        sleep(Duration::from_millis(400)).await;
-                        match make_request(&client, &url, &token, &body).send().await {
-                            Ok(response) => {
-                                let mut messages = messages.clone();
-                                let mut error = error.clone();
-                                if response.status().is_success() {
-                                    let mut stream = response.bytes_stream();
-                                    loop {
-                                        let next_chunk =
-                                            match timeout(stream_timeout_duration(), stream.next())
-                                                .await
-                                            {
-                                                Ok(value) => value,
-                                                Err(_) => {
-                                                    error.set(
-                                                        "Stream timed out waiting for response."
-                                                            .to_string(),
-                                                    );
-                                                    break;
-                                                }
-                                            };
-                                        let Some(chunk) = next_chunk else {
-                                            break;
-                                        };
-                                        match chunk {
-                                            Ok(bytes) => {
-                                                if let Ok(text_chunk) = std::str::from_utf8(&bytes)
-                                                {
-                                                    if !text_chunk.is_empty() {
-                                                        let mut list = messages.write();
-                                                        if let Some(last) = list
-                                                            .iter_mut()
-                                                            .rev()
-                                                            .find(|msg| msg.id == bot_message_id)
-                                                        {
-                                                            last.text.push_str(text_chunk);
-                                                        }
-                                                    }
-                                                }
-                                                scroll_chat_to_bottom().await;
-                                            }
-                                            Err(err) => {
-                                                error.set(format!("Stream error: {err}"));
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    let status = response.status();
-                                    let text = response.text().await.unwrap_or_else(|_| {
-                                        "Unable to read error body".to_string()
-                                    });
-                                    error.set(format!("Request failed ({status}): {text}"));
-                                }
-                            }
-                            Err(err) => {
-                                error.set(format!(
-                                    "Request failed: {err}. Daemon unreachable at {daemon_url}."
-                                ));
-                            }
-                        }
+                    Err(err) => {
+                        let _ = error.set(format!(
+                            "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start in Config > Daemon."
+                        ));
                     }
                 }
 
@@ -463,11 +454,116 @@ fn app_view() -> Element {
     };
     let on_send_key = on_send.clone();
 
-    if !*reminders_listening.read() {
+    let on_daemon_start = {
+        let daemon_status = daemon_status.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+
+        use_callback(move |_| {
+            let daemon_status = daemon_status.clone();
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let user_id = user_id.clone();
+            let boot_ready = boot_ready.clone();
+            let boot_status = boot_status.clone();
+            spawn(async move {
+                let mut daemon_status = daemon_status;
+                let mut daemon_running = daemon_running;
+                let mut boot_ready = boot_ready;
+                let mut boot_status = boot_status;
+                let result = start_local_daemon();
+                match result {
+                    Ok(()) => {
+                        daemon_running.set(true);
+                        daemon_status.set("Daemon started.".to_string());
+                        boot_ready.set(false);
+                        boot_status.set("Starting daemon…".to_string());
+
+                        let client = reqwest::Client::new();
+                        let url = format!(
+                            "{}/preload_boot",
+                            daemon_url().trim_end_matches('/')
+                        );
+                        let mut request = client.post(&url).json(&PreloadBootRequest {
+                            user_id: user_id(),
+                        });
+                        let token_value = token();
+                        if !token_value.trim().is_empty() {
+                            request =
+                                request.header("authorization", format!("Bearer {token_value}"));
+                        }
+                        match request.send().await {
+                            Ok(resp) if resp.status().is_success() => {
+                                boot_status.set("Boot preload started…".to_string());
+                            }
+                            Ok(resp) => {
+                                let status = resp.status();
+                                boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                            }
+                            Err(err) => {
+                                boot_status.set(format!("Boot preload error: {err}"));
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        daemon_status.set(err);
+                    }
+                }
+            });
+        })
+    };
+
+    let on_daemon_stop = {
+        let daemon_status = daemon_status.clone();
+        let daemon_running = daemon_running.clone();
+        let reminders_listening = reminders_listening.clone();
+        let ui_events_listening = ui_events_listening.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+
+        use_callback(move |_| {
+            let daemon_status = daemon_status.clone();
+            let daemon_running = daemon_running.clone();
+            let reminders_listening = reminders_listening.clone();
+            let ui_events_listening = ui_events_listening.clone();
+            let boot_ready = boot_ready.clone();
+            let boot_status = boot_status.clone();
+            spawn(async move {
+                let mut daemon_status = daemon_status;
+                let mut daemon_running = daemon_running;
+                let mut reminders_listening = reminders_listening;
+                let mut ui_events_listening = ui_events_listening;
+                let mut boot_ready = boot_ready;
+                let mut boot_status = boot_status;
+                let result = stop_local_daemon();
+                match result {
+                    Ok(()) => {
+                        daemon_running.set(false);
+                        reminders_listening.set(false);
+                        ui_events_listening.set(false);
+                        boot_ready.set(false);
+                        boot_status.set("Daemon stopped. Start it to preload skill + heartbeat.".to_string());
+                        daemon_status.set("Daemon stopped.".to_string());
+                    }
+                    Err(err) => {
+                        daemon_status.set(err);
+                    }
+                }
+            });
+        })
+    };
+
+    if *daemon_running.read() && !*reminders_listening.read() {
         let reminders_listening = reminders_listening.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
+        let daemon_running = daemon_running.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
 
@@ -476,11 +572,16 @@ fn app_view() -> Element {
             let daemon_url = daemon_url;
             let token = token;
             let user_id = user_id;
+            let daemon_running = daemon_running;
             let mut messages = messages;
             let mut next_id = next_id;
             reminders_listening.set(true);
             let client = reqwest::Client::new();
             loop {
+                if !*daemon_running.read() {
+                    reminders_listening.set(false);
+                    break;
+                }
                 let url = format!(
                     "{}/reminder_stream?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -557,28 +658,38 @@ fn app_view() -> Element {
         });
     }
 
-    if !*ui_events_listening.read() {
+    if *daemon_running.read() && !*ui_events_listening.read() {
         let ui_events_listening = ui_events_listening.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
-        let mut boot_ready = boot_ready.clone();
-        let mut boot_status = boot_status.clone();
-        let mut boot_skill_ready = boot_skill_ready.clone();
-        let mut boot_heartbeat_ready = boot_heartbeat_ready.clone();
+        let daemon_running = daemon_running.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+        let boot_skill_ready = boot_skill_ready.clone();
+        let boot_heartbeat_ready = boot_heartbeat_ready.clone();
 
         spawn(async move {
             let mut ui_events_listening = ui_events_listening;
             let daemon_url = daemon_url;
             let token = token;
             let user_id = user_id;
+            let daemon_running = daemon_running;
             let mut messages = messages;
             let mut next_id = next_id;
+            let mut boot_ready = boot_ready;
+            let mut boot_status = boot_status;
+            let mut boot_skill_ready = boot_skill_ready;
+            let mut boot_heartbeat_ready = boot_heartbeat_ready;
             ui_events_listening.set(true);
             let client = reqwest::Client::new();
             loop {
+                if !*daemon_running.read() {
+                    ui_events_listening.set(false);
+                    break;
+                }
                 let url = format!(
                     "{}/ui_events?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -892,36 +1003,42 @@ fn app_view() -> Element {
                 }
             }
 
-            // Preload skill into memory and heartbeat into agent.
-            boot_status.set("Initializing skill + heartbeat...".to_string());
-            let client = reqwest::Client::new();
-            let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
-            let mut request = client.post(&url).json(&PreloadBootRequest {
-                user_id: user_id(),
-            });
-            let token_value = token();
-            if !token_value.trim().is_empty() {
-                request = request.header("authorization", format!("Bearer {token_value}"));
-            }
-            match request.send().await {
-                Ok(resp) if resp.status().is_success() => {
-                    boot_status.set("Boot preload started...".to_string());
-                    let mut boot_ready = boot_ready.clone();
-                    let mut boot_status = boot_status.clone();
-                    spawn(async move {
-                        sleep(Duration::from_secs(15)).await;
-                        if !*boot_ready.read() {
-                            boot_status.set("Boot preload timed out; continuing".to_string());
-                            boot_ready.set(true);
-                        }
-                    });
+            if !*daemon_running.read() {
+                boot_status.set("Daemon is stopped. Start it to preload skill + heartbeat.".to_string());
+            } else {
+                // Preload skill into memory and heartbeat into agent.
+                boot_status.set("Initializing skill + heartbeat...".to_string());
+                let client = reqwest::Client::new();
+                let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                let mut request = client.post(&url).json(&PreloadBootRequest {
+                    user_id: user_id(),
+                });
+                let token_value = token();
+                if !token_value.trim().is_empty() {
+                    request = request.header("authorization", format!("Bearer {token_value}"));
                 }
-                Ok(resp) => {
-                    let status = resp.status();
-                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
-                }
-                Err(err) => {
-                    boot_status.set(format!("Boot preload error: {err}"));
+                match request.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        boot_status.set("Boot preload started...".to_string());
+                        let mut boot_ready = boot_ready.clone();
+                        let mut boot_status = boot_status.clone();
+                        spawn(async move {
+                            let mut boot_ready = boot_ready;
+                            let mut boot_status = boot_status;
+                            sleep(Duration::from_secs(15)).await;
+                            if !*boot_ready.read() {
+                                boot_status.set("Boot preload timed out; continuing".to_string());
+                                boot_ready.set(true);
+                            }
+                        });
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                    }
+                    Err(err) => {
+                        boot_status.set(format!("Boot preload error: {err}"));
+                    }
                 }
             }
 
@@ -1571,6 +1688,25 @@ fn app_view() -> Element {
                         div { class: "hint", "Loading config…" }
                     }
                     if *tools_loaded.read() {
+                        div { class: "settings-card",
+                            label { "Daemon" }
+                            p { class: "hint", "Start/stop the local daemon for this UI session." }
+                            div { class: "config-actions",
+                                button {
+                                    onclick: move |_| on_daemon_start.call(()),
+                                    disabled: *daemon_running.read(),
+                                    "Start"
+                                }
+                                button {
+                                    onclick: move |_| on_daemon_stop.call(()),
+                                    disabled: !*daemon_running.read(),
+                                    "Stop"
+                                }
+                            }
+                            if !daemon_status.read().is_empty() {
+                                p { class: "hint", "{daemon_status}" }
+                            }
+                        }
                         div { class: "settings-card",
                             label { "Config (JSON)" }
                             div { class: "config-head",

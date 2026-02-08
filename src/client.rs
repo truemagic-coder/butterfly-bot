@@ -98,6 +98,11 @@ impl ButterflyBot {
         agent_service.set_heartbeat_markdown(heartbeat_markdown).await;
     }
 
+    pub async fn set_prompt_markdown(&self, prompt_markdown: Option<String>) {
+        let agent_service = self.query_service.agent_service();
+        agent_service.set_prompt_markdown(prompt_markdown).await;
+    }
+
     pub async fn register_tool(&self, tool: Arc<dyn Tool>) -> Result<bool> {
         let agent_service = self.query_service.agent_service();
         let registry = agent_service.tool_registry.clone();

@@ -29,6 +29,7 @@ pub struct AgentService {
     skill_source: Option<String>,
     skill_markdown: RwLock<Option<String>>,
     heartbeat_markdown: RwLock<Option<String>>,
+    prompt_markdown: RwLock<Option<String>>,
     last_skill_refresh: RwLock<Option<Instant>>,
     skill_refresh_guard: tokio::sync::Mutex<()>,
     brain_manager: Arc<BrainManager>,
@@ -56,6 +57,7 @@ impl AgentService {
         skill_source: Option<String>,
         skill_markdown: Option<String>,
         heartbeat_markdown: Option<String>,
+        prompt_markdown: Option<String>,
         brain_manager: Arc<BrainManager>,
         ui_event_tx: Option<broadcast::Sender<UiEvent>>,
     ) -> Self {
@@ -66,6 +68,7 @@ impl AgentService {
             skill_source,
             skill_markdown: RwLock::new(skill_markdown),
             heartbeat_markdown: RwLock::new(heartbeat_markdown),
+            prompt_markdown: RwLock::new(prompt_markdown),
             last_skill_refresh: RwLock::new(None),
             skill_refresh_guard: tokio::sync::Mutex::new(()),
             brain_manager,
@@ -77,6 +80,11 @@ impl AgentService {
     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
         let mut guard = self.heartbeat_markdown.write().await;
         *guard = heartbeat_markdown;
+    }
+
+    pub async fn set_prompt_markdown(&self, prompt_markdown: Option<String>) {
+        let mut guard = self.prompt_markdown.write().await;
+        *guard = prompt_markdown;
     }
 
     pub async fn refresh_skill_for_user(&self, user_id: &str) -> Result<bool> {
@@ -233,11 +241,19 @@ impl AgentService {
             }
         }
 
+        let prompt_guard = self.prompt_markdown.read().await;
+        if let Some(prompt) = &*prompt_guard {
+            if !prompt.trim().is_empty() {
+                system_prompt.push_str("\n\nCUSTOM PROMPT (markdown):\n");
+                system_prompt.push_str(prompt);
+            }
+        }
+
         system_prompt.push_str(
             "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n",
         );
         system_prompt.push_str(
-            "\n\nPLANNING LOOP:\n- At the start of each run, read the SKILL and HEARTBEAT sections and create an ordered plan.\n- Convert the plan into tasks/todos in order using the planning/todo/tasks tools when available.\n- Work through tasks in order; after each tool call, update the plan/todos if new information appears.\n- Re-check the HEARTBEAT before ending a cycle and revise the plan/todos if required.\n",
+            "\n\nREACT LOOP:\n- Use a simple Reason → Act → Observe → Respond cycle.\n- Before calling any tool, explicitly state the next action in plain text (e.g., 'Action: call http_call to fetch /agents/status') and briefly explain why.\n- If a tool is needed, make ONE tool call at a time, then use the observation to decide next action.\n- If no tool is needed, provide the final response directly.\n",
         );
 
         let mcp_available = self.tool_registry.has_mcp_servers().await;
@@ -566,7 +582,16 @@ impl AgentService {
             "\n\nAVAILABLE TOOLS (use ONLY these exact names): {tool_list}\n"
         ));
         prompt.push_str(
+            "Use a ReAct loop: Reason → Action → Observation → Respond.\n",
+        );
+        prompt.push_str(
             "If you need a tool not listed, respond with 'no-op' and explain what is missing.\n",
+        );
+        prompt.push_str(
+            "Before any tool call, write an explicit Action line and a brief reason (e.g., 'Action: call http_call to fetch /agents/status because ...').\n",
+        );
+        prompt.push_str(
+            "When using tools, call ONLY ONE tool per step. If no tool is needed, respond with the final answer.\n",
         );
 
         for tool in &tools {
@@ -576,6 +601,18 @@ impl AgentService {
                 "description": tool.description(),
                 "parameters": tool.parameters(),
             }));
+        }
+
+        if !tools.is_empty() {
+            prompt.push_str("\nTOOL SUMMARIES:\n");
+            for tool in &tools {
+                let desc = tool.description().trim();
+                if desc.is_empty() {
+                    prompt.push_str(&format!("- {}\n", tool.name()));
+                } else {
+                    prompt.push_str(&format!("- {}: {}\n", tool.name(), desc));
+                }
+            }
         }
 
         for _ in 0..5 {
@@ -590,13 +627,33 @@ impl AgentService {
                 return Ok(last_text);
             }
 
-            let results = self
-                .execute_tool_calls(&response.tool_calls, &tools, user_id)
-                .await?;
+            let has_action_line = response
+                .text
+                .lines()
+                .any(|line| line.trim_start().starts_with("Action:"));
+
+            let first_call = response.tool_calls.first().cloned().into_iter().collect::<Vec<_>>();
+            if !has_action_line {
+                if let Some(call) = first_call.first() {
+                    let action_line = format_tool_action_line(call);
+                    last_text = action_line.clone();
+                    prompt.push_str("\n\nASSISTANT ACTION:\n");
+                    prompt.push_str(&action_line);
+                    prompt.push_str("\n");
+                } else {
+                    prompt.push_str(
+                        "\n\nYou must write an explicit Action line and brief reason BEFORE any tool call. Try again and do not call tools until you do.\n",
+                    );
+                    continue;
+                }
+            }
+
+            let results = self.execute_tool_calls(&first_call, &tools, user_id).await?;
             let serialized = serde_json::to_string_pretty(&results)
                 .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
-            prompt.push_str("\n\nTOOL_RESULTS:\n");
+            prompt.push_str("\n\nOBSERVATION:\n");
             prompt.push_str(&serialized);
+            prompt.push_str("\n\nContinue the ReAct loop. If done, provide the final response.\n");
         }
 
         Ok(last_text)
@@ -750,6 +807,22 @@ fn redact_string(input: &str) -> String {
     truncate_string(&out, 2000)
 }
 
+fn format_tool_action_line(call: &ToolCall) -> String {
+    let mut reason = "perform a required step".to_string();
+    if call.name == "http_call" {
+        if let serde_json::Value::Object(map) = &call.arguments {
+            if let Some(url) = map.get("url").and_then(|v| v.as_str()) {
+                reason = format!("fetch {}", url);
+            } else if let Some(endpoint) = map.get("endpoint").and_then(|v| v.as_str()) {
+                reason = format!("fetch {}", endpoint);
+            }
+        }
+    }
+    let redacted_args = redact_value(&call.arguments);
+    let args_str = serde_json::to_string(&redacted_args).unwrap_or_default();
+    format!("Action: call {} with {} because we need to {}.", call.name, args_str, reason)
+}
+
 fn redact_value(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Null => serde_json::Value::Null,
@@ -784,13 +857,8 @@ fn is_sensitive_key(key: &str) -> bool {
         || lower.contains("pat")
 }
 
-fn truncate_string(value: &str, max_len: usize) -> String {
-    if value.len() <= max_len {
-        return value.to_string();
-    }
-    let mut out = value.chars().take(max_len).collect::<String>();
-    out.push_str("…[truncated]");
-    out
+fn truncate_string(value: &str, _max_len: usize) -> String {
+    value.to_string()
 }
 
 fn now_ts() -> i64 {

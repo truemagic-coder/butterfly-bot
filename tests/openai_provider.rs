@@ -653,6 +653,7 @@ async fn openai_provider_variants_and_agent_process() {
         }),
         skill_file: None,
         heartbeat_file: None,
+        prompt_file: None,
         memory: None,
         tools: None,
         brains: None,
