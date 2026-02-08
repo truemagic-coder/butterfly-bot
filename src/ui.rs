@@ -227,6 +227,19 @@ fn stop_local_daemon() -> Result<(), String> {
     }
 }
 
+fn normalize_daemon_url(daemon: &str) -> String {
+    let trimmed = daemon.trim();
+    let (scheme, rest) = if let Some(value) = trimmed.strip_prefix("https://") {
+        ("https://", value)
+    } else if let Some(value) = trimmed.strip_prefix("http://") {
+        ("http://", value)
+    } else {
+        ("http://", trimmed)
+    };
+    let host_port = rest.split('/').next().unwrap_or("127.0.0.1:7878");
+    format!("{scheme}{host_port}")
+}
+
 fn parse_daemon_address(daemon: &str) -> (String, u16) {
     let trimmed = daemon.trim();
     let without_scheme = trimmed
@@ -247,7 +260,9 @@ fn app_view() -> Element {
     let db_path =
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
     let daemon_url = use_signal(|| {
-        env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string())
+        let raw =
+            env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
+        normalize_daemon_url(&raw)
     });
     let token = use_signal(|| env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default());
     let user_id =
@@ -489,29 +504,48 @@ fn app_view() -> Element {
                         boot_ready.set(false);
                         boot_status.set("Starting daemon…".to_string());
 
+                        // Wait for daemon to be ready (retry up to 10 times with 500ms delay)
                         let client = reqwest::Client::new();
-                        let url = format!(
-                            "{}/preload_boot",
-                            daemon_url().trim_end_matches('/')
-                        );
-                        let mut request = client.post(&url).json(&PreloadBootRequest {
-                            user_id: user_id(),
-                        });
-                        let token_value = token();
-                        if !token_value.trim().is_empty() {
-                            request =
-                                request.header("authorization", format!("Bearer {token_value}"));
+                        let mut daemon_ready = false;
+                        for i in 0..10 {
+                            sleep(Duration::from_millis(500)).await;
+                            let health_url = format!("{}/health", daemon_url().trim_end_matches('/'));
+                            if let Ok(resp) = client.get(&health_url).send().await {
+                                if resp.status().is_success() {
+                                    daemon_ready = true;
+                                    break;
+                                }
+                            }
+                            boot_status.set(format!("Waiting for daemon... ({}/10)", i + 1));
                         }
-                        match request.send().await {
-                            Ok(resp) if resp.status().is_success() => {
-                                boot_status.set("Boot preload started…".to_string());
+
+                        if !daemon_ready {
+                            boot_status.set("Daemon started but not responding. Continuing without preload.".to_string());
+                            boot_ready.set(true);
+                        } else {
+                            let url = format!(
+                                "{}/preload_boot",
+                                daemon_url().trim_end_matches('/')
+                            );
+                            let mut request = client.post(&url).json(&PreloadBootRequest {
+                                user_id: user_id(),
+                            });
+                            let token_value = token();
+                            if !token_value.trim().is_empty() {
+                                request =
+                                    request.header("authorization", format!("Bearer {token_value}"));
                             }
-                            Ok(resp) => {
-                                let status = resp.status();
-                                boot_status.set(format!("Boot preload failed: HTTP {status}"));
-                            }
-                            Err(err) => {
-                                boot_status.set(format!("Boot preload error: {err}"));
+                            match request.send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    boot_status.set("Boot preload started…".to_string());
+                                }
+                                Ok(resp) => {
+                                    let status = resp.status();
+                                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                                }
+                                Err(err) => {
+                                    boot_status.set(format!("Boot preload error: {err}"));
+                                }
                             }
                         }
                     }
@@ -822,6 +856,7 @@ fn app_view() -> Element {
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
         let boot_status = boot_status.clone();
+        let boot_ready = boot_ready.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
@@ -853,6 +888,7 @@ fn app_view() -> Element {
             let mut settings_status = settings_status;
             let mut config_json_text = config_json_text;
             let mut boot_status = boot_status;
+            let mut boot_ready = boot_ready;
             let mut search_provider = search_provider;
             let mut search_model = search_model;
             let mut search_citations = search_citations;
@@ -1060,10 +1096,12 @@ fn app_view() -> Element {
                     }
                     Ok(resp) => {
                         let status = resp.status();
-                        boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                        boot_status.set(format!("Boot preload failed: HTTP {status}. Continuing without preload."));
+                        boot_ready.set(true);
                     }
                     Err(err) => {
-                        boot_status.set(format!("Boot preload error: {err}"));
+                        boot_status.set(format!("Boot preload error: {err}. Continuing without preload."));
+                        boot_ready.set(true);
                     }
                 }
             }

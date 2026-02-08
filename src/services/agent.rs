@@ -250,10 +250,10 @@ impl AgentService {
         }
 
         system_prompt.push_str(
-            "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n",
+            "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n- ALWAYS organize work using the planning, todo, and tasks tools. Do not just execute actions in isolation — create plans for goals, todos for action items, and scheduled tasks for recurring work.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
         );
         system_prompt.push_str(
-            "\n\nREACT LOOP:\n- Use a simple Reason → Act → Observe → Respond cycle.\n- Before calling any tool, explicitly state the next action in plain text (e.g., 'Action: call http_call to fetch /agents/status') and briefly explain why.\n- If a tool is needed, make ONE tool call at a time, then use the observation to decide next action.\n- If no tool is needed, provide the final response directly.\n",
+            "\n\nREACT LOOP:\n- Use a Thought → Plan → Action → Observation → Summary cycle.\n- THOUGHT: Before doing anything, explain what you understand about the current situation and what needs to happen.\n- PLAN: List the concrete steps you will take, naming the specific tools.\n- ACTION: Before calling any tool, explicitly state the next action in plain text (e.g., 'Action: call planning with action list to check existing plans') and briefly explain why.\n- OBSERVATION: After each tool result, state what you learned and decide the next action.\n- SUMMARY: When done, summarize actions taken, results, and next steps.\n- Make ONE tool call at a time, then use the observation to decide next action.\n- If no tool is needed, provide the final response directly.\n",
         );
 
         let mcp_available = self.tool_registry.has_mcp_servers().await;
@@ -272,7 +272,7 @@ impl AgentService {
         };
 
         system_prompt.push_str(
-            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n",
+            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- When there are individual action items to track, you MUST use the `todo` tool to create and manage them.\n- When something needs to happen on a schedule or at a specific time, you MUST use the `tasks` tool.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
         );
         system_prompt.push_str(
             "- Do NOT rely on memory or prior responses to decide whether a tool is usable or whether credentials exist. Tool availability and credentials can change at any time.\n- When a tool is relevant to the current request, attempt the tool call and let the tool response determine success/failure.\n",
@@ -355,7 +355,7 @@ impl AgentService {
             full_prompt.push_str("\n\n");
         }
         full_prompt.push_str(
-            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the skill or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
+            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the skill or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. When working on any multi-step objective, use the `planning` tool to create/update plans, the `todo` tool to track action items, and the `tasks` tool for scheduled work. Always explain your thinking before acting. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
         );
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
