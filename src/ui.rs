@@ -54,6 +54,7 @@ enum UiTab {
     Config,
     Skill,
     Heartbeat,
+    Prompt,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -279,6 +280,10 @@ fn app_view() -> Element {
     let heartbeat_path = use_signal(|| "./heartbeat.md".to_string());
     let heartbeat_status = use_signal(String::new);
     let heartbeat_error = use_signal(String::new);
+    let prompt_text = use_signal(String::new);
+    let prompt_path = use_signal(|| "./prompt.md".to_string());
+    let prompt_status = use_signal(String::new);
+    let prompt_error = use_signal(String::new);
 
     let search_provider = use_signal(|| "openai".to_string());
     let search_model = use_signal(String::new);
@@ -749,7 +754,7 @@ fn app_view() -> Element {
                                     }
                                     if *boot_skill_ready.read() && *boot_heartbeat_ready.read() {
                                         boot_ready.set(true);
-                                        boot_status.set("Skill + heartbeat ready".to_string());
+                                        let _ = boot_status.set("Skill + heartbeat ready".to_string());
                                     }
 
                                     let show_success =
@@ -816,7 +821,7 @@ fn app_view() -> Element {
         let tools_loaded = tools_loaded.clone();
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
-        let mut boot_status = boot_status.clone();
+        let boot_status = boot_status.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
@@ -837,6 +842,9 @@ fn app_view() -> Element {
         let heartbeat_text = heartbeat_text.clone();
         let heartbeat_path = heartbeat_path.clone();
         let heartbeat_error = heartbeat_error.clone();
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_error = prompt_error.clone();
         let db_path = db_path.clone();
 
         spawn(async move {
@@ -844,6 +852,7 @@ fn app_view() -> Element {
             let mut tools_loaded = tools_loaded;
             let mut settings_status = settings_status;
             let mut config_json_text = config_json_text;
+            let mut boot_status = boot_status;
             let mut search_provider = search_provider;
             let mut search_model = search_model;
             let mut search_citations = search_citations;
@@ -860,7 +869,10 @@ fn app_view() -> Element {
             let mut skill_error = skill_error;
             let mut heartbeat_text = heartbeat_text;
             let mut heartbeat_path = heartbeat_path;
-            let mut heartbeat_error = heartbeat_error;
+            let heartbeat_error = heartbeat_error;
+            let prompt_text = prompt_text;
+            let prompt_path = prompt_path;
+            let prompt_error = prompt_error;
 
             let config = match crate::config::Config::from_store(&db_path) {
                 Ok(value) => value,
@@ -974,10 +986,24 @@ fn app_view() -> Element {
                 .heartbeat_file
                 .clone()
                 .unwrap_or_else(|| "./heartbeat.md".to_string());
+            let mut heartbeat_error = heartbeat_error;
             heartbeat_path.set(heartbeat_source.clone());
             match load_markdown_source(&heartbeat_source).await {
                 Ok(text) => heartbeat_text.set(text),
                 Err(err) => heartbeat_error.set(format!("Heartbeat error: {err}")),
+            }
+
+            let mut prompt_path = prompt_path;
+            let mut prompt_text = prompt_text;
+            let mut prompt_error = prompt_error;
+            let prompt_source = config
+                .prompt_file
+                .clone()
+                .unwrap_or_else(|| "./prompt.md".to_string());
+            prompt_path.set(prompt_source.clone());
+            match load_markdown_source(&prompt_source).await {
+                Ok(text) => prompt_text.set(text),
+                Err(err) => prompt_error.set(format!("Prompt error: {err}")),
             }
 
             search_default_deny.set(default_deny);
@@ -1020,8 +1046,8 @@ fn app_view() -> Element {
                 match request.send().await {
                     Ok(resp) if resp.status().is_success() => {
                         boot_status.set("Boot preload started...".to_string());
-                        let mut boot_ready = boot_ready.clone();
-                        let mut boot_status = boot_status.clone();
+                        let boot_ready = boot_ready.clone();
+                        let boot_status = boot_status.clone();
                         spawn(async move {
                             let mut boot_ready = boot_ready;
                             let mut boot_status = boot_status;
@@ -1386,10 +1412,101 @@ fn app_view() -> Element {
         })
     };
 
+    let on_validate_prompt = {
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_status = prompt_status.clone();
+        let prompt_error = prompt_error.clone();
+
+        use_callback(move |_| {
+            let prompt_text = prompt_text.clone();
+            let prompt_path = prompt_path.clone();
+            let prompt_status = prompt_status.clone();
+            let prompt_error = prompt_error.clone();
+
+            spawn(async move {
+                let mut prompt_status = prompt_status;
+                let mut prompt_error = prompt_error;
+
+                prompt_status.set(String::new());
+                prompt_error.set(String::new());
+
+                let source = prompt_path();
+                if source.trim().is_empty() {
+                    prompt_error.set("Prompt path or URL is empty.".to_string());
+                    return;
+                }
+
+                if is_url_source(&source) {
+                    match load_markdown_source(&source).await {
+                        Ok(text) if !text.trim().is_empty() => {
+                            prompt_status.set("Prompt URL is reachable.".to_string())
+                        }
+                        Ok(_) => prompt_error.set("Prompt URL returned empty content.".to_string()),
+                        Err(err) => prompt_error.set(format!("Prompt URL error: {err}")),
+                    }
+                    return;
+                }
+
+                let content = prompt_text();
+                if content.trim().is_empty() {
+                    prompt_error.set("Prompt markdown is empty.".to_string());
+                    return;
+                }
+                prompt_status.set("Prompt markdown looks valid.".to_string());
+            });
+        })
+    };
+
+    let on_save_prompt = {
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_status = prompt_status.clone();
+        let prompt_error = prompt_error.clone();
+
+        use_callback(move |_| {
+            let prompt_text = prompt_text.clone();
+            let prompt_path = prompt_path.clone();
+            let prompt_status = prompt_status.clone();
+            let prompt_error = prompt_error.clone();
+
+            spawn(async move {
+                let mut prompt_status = prompt_status;
+                let mut prompt_error = prompt_error;
+
+                prompt_status.set(String::new());
+                prompt_error.set(String::new());
+
+                let source = prompt_path();
+                if source.trim().is_empty() {
+                    prompt_error.set("Prompt path or URL is empty.".to_string());
+                    return;
+                }
+                if is_url_source(&source) {
+                    prompt_error.set("Prompt source is a URL and cannot be saved here.".to_string());
+                    return;
+                }
+
+                let content = prompt_text();
+                if content.trim().is_empty() {
+                    prompt_error.set("Prompt markdown is empty.".to_string());
+                    return;
+                }
+
+                if let Err(err) = fs::write(&source, content).await {
+                    prompt_error.set(format!("Failed to save prompt file: {err}"));
+                    return;
+                }
+                prompt_status.set("Prompt file saved.".to_string());
+            });
+        })
+    };
+
     let active_tab_chat = active_tab.clone();
     let active_tab_config = active_tab.clone();
     let active_tab_skill = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
+    let active_tab_prompt = active_tab.clone();
     let prompt_input = prompt.clone();
     let message_input = input.clone();
 
@@ -1616,6 +1733,14 @@ fn app_view() -> Element {
                             active_tab_heartbeat.set(UiTab::Heartbeat);
                         },
                         "Heartbeat"
+                    }
+                    button {
+                        class: if *active_tab.read() == UiTab::Prompt { "active" } else { "" },
+                        onclick: move |_| {
+                            let mut active_tab_prompt = active_tab_prompt.clone();
+                            active_tab_prompt.set(UiTab::Prompt);
+                        },
+                        "Prompt"
                     }
                 }
             }
@@ -1844,6 +1969,55 @@ fn app_view() -> Element {
                     }
                     if !heartbeat_status.read().is_empty() {
                         div { class: "status", "{heartbeat_status}" }
+                    }
+                }
+            }
+            if *active_tab.read() == UiTab::Prompt {
+                div { class: "settings",
+                    div { class: "settings-card",
+                        label { "Prompt (Markdown)" }
+                        p { class: "hint", "Source: {prompt_path}" }
+                        div { class: "config-head",
+                            label { "Editor" }
+                            label { "Preview" }
+                        }
+                        div { class: "config-grid",
+                            div { class: "config-panel",
+                                textarea {
+                                    id: "prompt-md",
+                                    value: "{prompt_text}",
+                                    rows: "18",
+                                    class: "config-editor",
+                                    oninput: move |evt| {
+                                        let mut prompt_text = prompt_text.clone();
+                                        prompt_text.set(evt.value());
+                                    },
+                                }
+                            }
+                            div { class: "config-panel",
+                                div {
+                                    class: "config-preview",
+                                    dangerous_inner_html: "{markdown_to_html(&prompt_text.read())}",
+                                }
+                            }
+                        }
+                        div { class: "config-actions",
+                            button { onclick: move |_| on_validate_prompt.call(()), "Validate" }
+                            button {
+                                disabled: is_url_source(&prompt_path.read()),
+                                onclick: move |_| on_save_prompt.call(()),
+                                "Save Prompt"
+                            }
+                        }
+                        if is_url_source(&prompt_path.read()) {
+                            p { class: "hint", "Remote URL sources are read-only." }
+                        }
+                    }
+                    if !prompt_error.read().is_empty() {
+                        div { class: "error", "{prompt_error}" }
+                    }
+                    if !prompt_status.read().is_empty() {
+                        div { class: "status", "{prompt_status}" }
                     }
                 }
             }

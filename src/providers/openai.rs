@@ -2,8 +2,8 @@ use async_stream::try_stream;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use futures::stream::BoxStream;
-use futures::StreamExt;
 use serde_json::Value;
+use reqwest::StatusCode;
 
 use async_openai::{
     config::OpenAIConfig,
@@ -32,23 +32,114 @@ use crate::interfaces::providers::{
     ChatEvent, ImageData, ImageInput, LlmProvider, LlmResponse, ToolCall,
 };
 
+enum ChatCreateResult {
+    Parsed(async_openai::types::chat::CreateChatCompletionResponse),
+    Raw(Value),
+}
+
 #[derive(Clone)]
 pub struct OpenAiProvider {
     model: String,
     client: Client<OpenAIConfig>,
+    api_key: String,
+    base_url: String,
 }
 
 impl OpenAiProvider {
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
         let model = model.unwrap_or_else(|| "gpt-5.2".to_string());
         let base_url = base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+        let api_key_for_config = api_key.clone();
+        let base_url_for_config = base_url.clone();
         let config = OpenAIConfig::new()
-            .with_api_key(api_key)
-            .with_api_base(base_url);
+            .with_api_key(api_key_for_config)
+            .with_api_base(base_url_for_config);
         Self {
             model,
             client: Client::with_config(config),
+            api_key,
+            base_url,
         }
+    }
+
+    async fn raw_chat_completion(
+        &self,
+        request: &async_openai::types::chat::CreateChatCompletionRequest,
+    ) -> Result<Value> {
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let client = reqwest::Client::new();
+        let response = client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
+        if status != StatusCode::OK {
+            return Err(ButterflyBotError::Http(format!(
+                "Chat completion failed ({status}): {body}"
+            )));
+        }
+        serde_json::from_str(&body)
+            .map_err(|e| ButterflyBotError::Serialization(e.to_string()))
+    }
+
+    async fn chat_create_with_fallback(
+        &self,
+        request: async_openai::types::chat::CreateChatCompletionRequest,
+    ) -> Result<ChatCreateResult> {
+        if let Ok(raw) = self.raw_chat_completion(&request).await {
+            return Ok(ChatCreateResult::Raw(raw));
+        }
+
+        match self.client.chat().create(request).await {
+            Ok(response) => Ok(ChatCreateResult::Parsed(response)),
+            Err(err) => Err(ButterflyBotError::Http(err.to_string())),
+        }
+    }
+
+    fn extract_text_from_value(response: &Value) -> Option<String> {
+        response
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("content"))
+            .and_then(|content| content.as_str())
+            .map(|text| text.to_string())
+    }
+
+    fn extract_tool_calls_from_value(response: &Value) -> Vec<ToolCall> {
+        let Some(calls) = response
+            .get("choices")
+            .and_then(|v| v.get(0))
+            .and_then(|choice| choice.get("message"))
+            .and_then(|message| message.get("tool_calls"))
+            .and_then(|calls| calls.as_array())
+        else {
+            return Vec::new();
+        };
+
+        calls
+            .iter()
+            .filter_map(|call| {
+                let function = call.get("function")?;
+                let name = function.get("name")?.as_str()?.to_string();
+                let arguments = function.get("arguments");
+                let arguments = match arguments {
+                    Some(Value::String(text)) => {
+                        serde_json::from_str(text).unwrap_or(Value::String(text.clone()))
+                    }
+                    Some(value) => value.clone(),
+                    None => Value::Null,
+                };
+                Some(ToolCall { name, arguments })
+            })
+            .collect()
     }
 
     fn build_system_message(system_prompt: &str) -> Result<Option<ChatCompletionRequestMessage>> {
@@ -264,14 +355,12 @@ impl LlmProvider for OpenAiProvider {
             .build()
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-
-        Self::extract_text_from_response(&response)
+        let response = self.chat_create_with_fallback(request).await?;
+        match response {
+            ChatCreateResult::Parsed(parsed) => Self::extract_text_from_response(&parsed),
+            ChatCreateResult::Raw(raw) => Self::extract_text_from_value(&raw)
+                .ok_or_else(|| ButterflyBotError::Runtime("Empty chat response".to_string())),
+        }
     }
 
     async fn embed(&self, inputs: Vec<String>, model: Option<&str>) -> Result<Vec<Vec<f32>>> {
@@ -315,15 +404,19 @@ impl LlmProvider for OpenAiProvider {
             .build()
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-
-        let text = Self::extract_text_from_response(&response).unwrap_or_default();
-        let tool_calls = Self::extract_tool_calls_from_response(&response);
+        let response = self.chat_create_with_fallback(request).await?;
+        let (text, tool_calls) = match response {
+            ChatCreateResult::Parsed(parsed) => {
+                let text = Self::extract_text_from_response(&parsed).unwrap_or_default();
+                let tool_calls = Self::extract_tool_calls_from_response(&parsed);
+                (text, tool_calls)
+            }
+            ChatCreateResult::Raw(raw) => {
+                let text = Self::extract_text_from_value(&raw).unwrap_or_default();
+                let tool_calls = Self::extract_tool_calls_from_value(&raw);
+                (text, tool_calls)
+            }
+        };
 
         Ok(LlmResponse { text, tool_calls })
     }
@@ -370,40 +463,35 @@ impl LlmProvider for OpenAiProvider {
                 .build()
                 .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-            let mut stream = provider
-                .client
-                .chat()
-                .create_stream(request)
-                .await
-                .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-
-            while let Some(item) = stream.next().await {
-                let response = item.map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-                for choice in response.choices {
-                    if let Some(delta) = choice.delta.content {
-                        if !delta.is_empty() {
-                            yield ChatEvent {
-                                event_type: "content".to_string(),
-                                delta: Some(delta),
-                                name: None,
-                                arguments_delta: None,
-                                finish_reason: None,
-                                error: None,
-                            };
-                        }
-                    }
-                    if let Some(reason) = choice.finish_reason {
-                        yield ChatEvent {
-                            event_type: "message_end".to_string(),
-                            delta: None,
-                            name: None,
-                            arguments_delta: None,
-                            finish_reason: Some(format!("{reason:?}")),
-                            error: None,
-                        };
-                    }
+            let response = provider.chat_create_with_fallback(request).await?;
+            let content = match response {
+                ChatCreateResult::Parsed(parsed) => {
+                    OpenAiProvider::extract_text_from_response(&parsed).unwrap_or_default()
                 }
+                ChatCreateResult::Raw(raw) => {
+                    OpenAiProvider::extract_text_from_value(&raw).unwrap_or_default()
+                }
+            };
+
+            if !content.is_empty() {
+                yield ChatEvent {
+                    event_type: "content".to_string(),
+                    delta: Some(content),
+                    name: None,
+                    arguments_delta: None,
+                    finish_reason: None,
+                    error: None,
+                };
             }
+
+            yield ChatEvent {
+                event_type: "message_end".to_string(),
+                delta: None,
+                name: None,
+                arguments_delta: None,
+                finish_reason: Some("stop".to_string()),
+                error: None,
+            };
         })
     }
 
@@ -450,14 +538,12 @@ impl LlmProvider for OpenAiProvider {
             .build()
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-
-        let content = Self::extract_text_from_response(&response)?;
+        let response = self.chat_create_with_fallback(request).await?;
+        let content = match response {
+            ChatCreateResult::Parsed(parsed) => Self::extract_text_from_response(&parsed)?,
+            ChatCreateResult::Raw(raw) => Self::extract_text_from_value(&raw)
+                .ok_or_else(|| ButterflyBotError::Runtime("Empty chat response".to_string()))?,
+        };
         let parsed = serde_json::from_str(&content)
             .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
         Ok(parsed)
@@ -538,13 +624,11 @@ impl LlmProvider for OpenAiProvider {
             .build()
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let response = self
-            .client
-            .chat()
-            .create(request)
-            .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
-
-        Self::extract_text_from_response(&response)
+        let response = self.chat_create_with_fallback(request).await?;
+        match response {
+            ChatCreateResult::Parsed(parsed) => Self::extract_text_from_response(&parsed),
+            ChatCreateResult::Raw(raw) => Self::extract_text_from_value(&raw)
+                .ok_or_else(|| ButterflyBotError::Runtime("Empty chat response".to_string())),
+        }
     }
 }
