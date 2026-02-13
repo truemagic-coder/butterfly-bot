@@ -206,9 +206,12 @@ fn app_view() -> Element {
     let next_id = use_signal(|| 1u64);
     let active_tab = use_signal(|| UiTab::Chat);
     let reminders_listening = use_signal(|| false);
+    let reminders_listener_started = use_signal(|| false);
     let ui_events_listening = use_signal(|| false);
+    let ui_events_listener_started = use_signal(|| false);
 
     let tools_loaded = use_signal(|| false);
+    let settings_load_started = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
     let config_json_text = use_signal(String::new);
@@ -448,7 +451,8 @@ fn app_view() -> Element {
     };
     let on_send_key = on_send.clone();
 
-    if !*reminders_listening.read() {
+    {
+        let reminders_listener_started = reminders_listener_started.clone();
         let reminders_listening = reminders_listening.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
@@ -456,17 +460,24 @@ fn app_view() -> Element {
         let messages = messages.clone();
         let next_id = next_id.clone();
 
-        spawn(async move {
-            let mut reminders_listening = reminders_listening;
-            let daemon_url = daemon_url;
-            let token = token;
-            let user_id = user_id;
-            let mut messages = messages;
-            let mut next_id = next_id;
+        use_effect(move || {
+            if *reminders_listener_started.read() {
+                return;
+            }
+            let mut started = reminders_listener_started.clone();
+            started.set(true);
 
-            reminders_listening.set(true);
-            let client = reqwest::Client::new();
-            loop {
+            spawn(async move {
+                let mut reminders_listening = reminders_listening;
+                let daemon_url = daemon_url;
+                let token = token;
+                let user_id = user_id;
+                let mut messages = messages;
+                let mut next_id = next_id;
+
+                reminders_listening.set(true);
+                let client = reqwest::Client::new();
+                loop {
                 let url = format!(
                     "{}/reminder_stream?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -538,12 +549,14 @@ fn app_view() -> Element {
                         }
                     }
                 }
-                sleep(Duration::from_secs(2)).await;
-            }
+                    sleep(Duration::from_secs(2)).await;
+                }
+            });
         });
     }
 
-    if !*ui_events_listening.read() {
+    {
+        let ui_events_listener_started = ui_events_listener_started.clone();
         let ui_events_listening = ui_events_listening.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
@@ -551,17 +564,24 @@ fn app_view() -> Element {
         let messages = messages.clone();
         let next_id = next_id.clone();
 
-        spawn(async move {
-            let mut ui_events_listening = ui_events_listening;
-            let daemon_url = daemon_url;
-            let token = token;
-            let user_id = user_id;
-            let mut messages = messages;
-            let mut next_id = next_id;
+        use_effect(move || {
+            if *ui_events_listener_started.read() {
+                return;
+            }
+            let mut started = ui_events_listener_started.clone();
+            started.set(true);
 
-            ui_events_listening.set(true);
-            let client = reqwest::Client::new();
-            loop {
+            spawn(async move {
+                let mut ui_events_listening = ui_events_listening;
+                let daemon_url = daemon_url;
+                let token = token;
+                let user_id = user_id;
+                let mut messages = messages;
+                let mut next_id = next_id;
+
+                ui_events_listening.set(true);
+                let client = reqwest::Client::new();
+                loop {
                 let url = format!(
                     "{}/ui_events?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -648,12 +668,14 @@ fn app_view() -> Element {
                         }
                     }
                 }
-                sleep(Duration::from_secs(2)).await;
-            }
+                    sleep(Duration::from_secs(2)).await;
+                }
+            });
         });
     }
 
-    if !*tools_loaded.read() {
+    {
+        let settings_load_started = settings_load_started.clone();
         let settings_error = settings_error.clone();
         let tools_loaded = tools_loaded.clone();
         let settings_status = settings_status.clone();
@@ -677,28 +699,36 @@ fn app_view() -> Element {
         let heartbeat_error = heartbeat_error.clone();
         let db_path = db_path.clone();
 
-        spawn(async move {
-            let mut settings_error = settings_error;
-            let mut tools_loaded = tools_loaded;
-            let mut settings_status = settings_status;
-            let mut config_json_text = config_json_text;
-            let mut search_provider = search_provider;
-            let mut search_model = search_model;
-            let mut search_citations = search_citations;
-            let mut search_grok_web = search_grok_web;
-            let mut search_grok_x = search_grok_x;
-            let mut search_grok_timeout = search_grok_timeout;
-            let mut search_network_allow = search_network_allow;
-            let mut search_default_deny = search_default_deny;
-            let mut search_api_key_status = search_api_key_status;
-            let mut reminders_sqlite_path = reminders_sqlite_path;
-            let mut memory_enabled = memory_enabled;
-            let mut skill_text = skill_text;
-            let mut skill_path = skill_path;
-            let mut skill_error = skill_error;
-            let mut heartbeat_text = heartbeat_text;
-            let mut heartbeat_path = heartbeat_path;
-            let mut heartbeat_error = heartbeat_error;
+        use_effect(move || {
+            if *settings_load_started.read() {
+                return;
+            }
+            let mut started = settings_load_started.clone();
+            started.set(true);
+            let db_path = db_path.clone();
+
+            spawn(async move {
+                let mut settings_error = settings_error;
+                let mut tools_loaded = tools_loaded;
+                let mut settings_status = settings_status;
+                let mut config_json_text = config_json_text;
+                let mut search_provider = search_provider;
+                let mut search_model = search_model;
+                let mut search_citations = search_citations;
+                let mut search_grok_web = search_grok_web;
+                let mut search_grok_x = search_grok_x;
+                let mut search_grok_timeout = search_grok_timeout;
+                let mut search_network_allow = search_network_allow;
+                let mut search_default_deny = search_default_deny;
+                let mut search_api_key_status = search_api_key_status;
+                let mut reminders_sqlite_path = reminders_sqlite_path;
+                let mut memory_enabled = memory_enabled;
+                let mut skill_text = skill_text;
+                let mut skill_path = skill_path;
+                let mut skill_error = skill_error;
+                let mut heartbeat_text = heartbeat_text;
+                let mut heartbeat_path = heartbeat_path;
+                let mut heartbeat_error = heartbeat_error;
 
             let config = match crate::config::Config::from_store(&db_path) {
                 Ok(value) => value,
@@ -841,7 +871,8 @@ fn app_view() -> Element {
                 }
             }
 
-            tools_loaded.set(true);
+                tools_loaded.set(true);
+            });
         });
     }
 
