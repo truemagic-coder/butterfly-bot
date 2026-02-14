@@ -1677,6 +1677,7 @@ dependencies = [
  "lancedb",
  "libsqlite3-sys",
  "lru",
+ "md-5",
  "notify-rust",
  "once_cell",
  "pulldown-cmark",

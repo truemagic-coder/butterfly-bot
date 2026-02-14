@@ -76,6 +76,17 @@ impl ToolRegistry {
         tools.keys().cloned().collect()
     }
 
+    pub async fn has_mcp_servers(&self) -> bool {
+        let config = self.config.read().await.clone();
+        config
+            .get("tools")
+            .and_then(|tools| tools.get("mcp"))
+            .and_then(|mcp| mcp.get("servers"))
+            .and_then(|servers| servers.as_array())
+            .map(|servers| !servers.is_empty())
+            .unwrap_or(false)
+    }
+
     pub async fn configure_all_tools(&self, config: serde_json::Value) -> Result<()> {
         {
             let mut cfg = self.config.write().await;

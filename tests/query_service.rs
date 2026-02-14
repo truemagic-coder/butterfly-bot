@@ -30,7 +30,16 @@ async fn query_service_and_client() {
         instructions: "inst".to_string(),
         specialization: "spec".to_string(),
     };
-    let service = Arc::new(AgentService::new(llm.clone(), agent, None, brain, None));
+    let service = Arc::new(AgentService::new(
+        llm.clone(),
+        agent,
+        None,
+        None,
+        None,
+        None,
+        brain,
+        None,
+    ));
     let memory = Arc::new(InMemoryMemoryProvider::new());
 
     let query = QueryService::new(service.clone(), Some(memory), None);
@@ -113,7 +122,16 @@ async fn query_service_and_client() {
         instructions: "inst".to_string(),
         specialization: "spec".to_string(),
     };
-    let service = Arc::new(AgentService::new(llm, agent, None, brain, None));
+    let service = Arc::new(AgentService::new(
+        llm,
+        agent,
+        None,
+        None,
+        None,
+        None,
+        brain,
+        None,
+    ));
     let query = QueryService::new(service, None, None);
     assert_eq!(query.get_user_history("user", 1).await.unwrap().len(), 0);
     query.delete_user_history("user").await.unwrap();
@@ -148,6 +166,7 @@ async fn query_service_and_client() {
         }),
         skill_file: None,
         heartbeat_file: None,
+        prompt_file: None,
         memory: None,
         tools: None,
         brains: None,

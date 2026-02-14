@@ -172,7 +172,13 @@ Config is stored in the OS keychain for top security and safety.
 
 - `skill_file` is a Markdown file (local path or URL) that defines the assistant’s identity, style, and rules.
 - `heartbeat_file` is optional Markdown (local path or URL) that is appended to the system prompt for ongoing guidance.
+- `prompt_file` is optional Markdown (local path or URL) for custom, non-skill instructions you want injected into the system prompt.
 - The heartbeat file is reloaded on every wakeup tick (using `tools.wakeup.poll_seconds`) so changes take effect without a restart.
+
+### Memory LLM Configuration
+
+- `memory.openai` lets memory operations (embeddings, summarization, reranking) use a different OpenAI-compatible provider than the main agent.
+- This is useful for running the agent on a remote provider (e.g., Cerebras) while keeping memory on a local Ollama instance.
 
 ### Full config.json
 
@@ -185,6 +191,7 @@ Config is stored in the OS keychain for top security and safety.
     },
     "skill_file": "./skill.md",
     "heartbeat_file": "./heartbeat.md",
+    "prompt_file": "./prompt.md",
     "memory": {
         "enabled": true,
         "sqlite_path": "./data/butterfly-bot.db",
@@ -192,6 +199,11 @@ Config is stored in the OS keychain for top security and safety.
         "summary_model": "ministral-3:14b",
         "embedding_model": "embeddinggemma:latest",
         "rerank_model": "qllama/bge-reranker-v2-m3",
+        "openai": {
+            "api_key": null,
+            "model": "ministral-3:14b",
+            "base_url": "http://localhost:11434/v1"
+        },
         "summary_threshold": null,
         "retention_days": null
     },

@@ -13,6 +13,7 @@ use pulldown_cmark::{html, Options, Parser};
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -27,6 +28,11 @@ struct ProcessTextRequest {
     user_id: String,
     text: String,
     prompt: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct PreloadBootRequest {
+    user_id: String,
 }
 
 #[derive(Clone)]
@@ -48,6 +54,7 @@ enum UiTab {
     Config,
     Skill,
     Heartbeat,
+    Prompt,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -129,7 +136,6 @@ fn highlight_json_html(input: &str) -> String {
 
 pub fn launch_ui() {
     force_dbusrs();
-    start_local_daemon();
     launch(app_view);
 }
 
@@ -152,9 +158,27 @@ fn force_dbusrs() {
 #[cfg(not(target_os = "linux"))]
 fn force_dbusrs() {}
 
-fn start_local_daemon() {
+struct DaemonControl {
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    thread: thread::JoinHandle<()>,
+}
+
+fn daemon_control() -> &'static Mutex<Option<DaemonControl>> {
+    static CONTROL: OnceLock<Mutex<Option<DaemonControl>>> = OnceLock::new();
+    CONTROL.get_or_init(|| Mutex::new(None))
+}
+
+fn start_local_daemon() -> Result<(), String> {
     if env::var("BUTTERFLY_BOT_DISABLE_DAEMON").is_ok() {
-        return;
+        return Err("Daemon disabled by BUTTERFLY_BOT_DISABLE_DAEMON".to_string());
+    }
+
+    let control = daemon_control();
+    let mut guard = control
+        .lock()
+        .map_err(|_| "Daemon lock unavailable".to_string())?;
+    if guard.is_some() {
+        return Ok(());
     }
 
     let daemon_url =
@@ -164,13 +188,56 @@ fn start_local_daemon() {
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
     let token = env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default();
 
-    thread::spawn(move || {
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let thread = thread::spawn(move || {
         if let Ok(runtime) = tokio::runtime::Runtime::new() {
             runtime.block_on(async move {
-                let _ = crate::daemon::run(&host, port, &db_path, &token).await;
+                let shutdown = async move {
+                    let _ = shutdown_rx.await;
+                };
+                let _ =
+                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown)
+                        .await;
             });
         }
     });
+
+    *guard = Some(DaemonControl {
+        shutdown: shutdown_tx,
+        thread,
+    });
+
+    Ok(())
+}
+
+fn stop_local_daemon() -> Result<(), String> {
+    let control = daemon_control();
+    let mut guard = control
+        .lock()
+        .map_err(|_| "Daemon lock unavailable".to_string())?;
+    if let Some(control) = guard.take() {
+        let _ = control.shutdown.send(());
+        thread::spawn(move || {
+            let _ = control.thread.join();
+        });
+        Ok(())
+    } else {
+        Err("Daemon is not running".to_string())
+    }
+}
+
+fn normalize_daemon_url(daemon: &str) -> String {
+    let trimmed = daemon.trim();
+    let (scheme, rest) = if let Some(value) = trimmed.strip_prefix("https://") {
+        ("https://", value)
+    } else if let Some(value) = trimmed.strip_prefix("http://") {
+        ("http://", value)
+    } else {
+        ("http://", trimmed)
+    };
+    let host_port = rest.split('/').next().unwrap_or("127.0.0.1:7878");
+    format!("{scheme}{host_port}")
 }
 
 fn parse_daemon_address(daemon: &str) -> (String, u16) {
@@ -193,7 +260,9 @@ fn app_view() -> Element {
     let db_path =
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
     let daemon_url = use_signal(|| {
-        env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string())
+        let raw =
+            env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
+        normalize_daemon_url(&raw)
     });
     let token = use_signal(|| env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default());
     let user_id =
@@ -203,6 +272,8 @@ fn app_view() -> Element {
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
     let messages = use_signal(Vec::<ChatMessage>::new);
+    let daemon_running = use_signal(|| false);
+    let daemon_status = use_signal(String::new);
     let next_id = use_signal(|| 1u64);
     let active_tab = use_signal(|| UiTab::Chat);
     let reminders_listening = use_signal(|| false);
@@ -212,6 +283,10 @@ fn app_view() -> Element {
 
     let tools_loaded = use_signal(|| false);
     let settings_load_started = use_signal(|| false);
+    let boot_ready = use_signal(|| false);
+    let boot_status = use_signal(String::new);
+    let boot_skill_ready = use_signal(|| false);
+    let boot_heartbeat_ready = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
     let config_json_text = use_signal(String::new);
@@ -223,6 +298,10 @@ fn app_view() -> Element {
     let heartbeat_path = use_signal(|| "./heartbeat.md".to_string());
     let heartbeat_status = use_signal(String::new);
     let heartbeat_error = use_signal(String::new);
+    let prompt_text = use_signal(String::new);
+    let prompt_path = use_signal(|| "./prompt.md".to_string());
+    let prompt_status = use_signal(String::new);
+    let prompt_error = use_signal(String::new);
 
     let search_provider = use_signal(|| "openai".to_string());
     let search_model = use_signal(String::new);
@@ -247,6 +326,7 @@ fn app_view() -> Element {
         let error = error.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
+        let boot_ready = boot_ready.clone();
 
         use_callback(move |_| {
             let daemon_url = daemon_url();
@@ -268,6 +348,11 @@ fn app_view() -> Element {
 
                 if *busy.read() {
                     error.set("A request is already in progress. Please wait.".to_string());
+                    return;
+                }
+
+                if !*boot_ready.read() {
+                    error.set("Initializing skill/heartbeat. Please wait...".to_string());
                     return;
                 }
 
@@ -379,69 +464,10 @@ fn app_view() -> Element {
                             error.set(format!("Request failed ({status}): {text}"));
                         }
                     }
-                    Err(_err) => {
-                        start_local_daemon();
-                        sleep(Duration::from_millis(400)).await;
-                        match make_request(&client, &url, &token, &body).send().await {
-                            Ok(response) => {
-                                let mut messages = messages.clone();
-                                let mut error = error.clone();
-                                if response.status().is_success() {
-                                    let mut stream = response.bytes_stream();
-                                    loop {
-                                        let next_chunk =
-                                            match timeout(stream_timeout_duration(), stream.next())
-                                                .await
-                                            {
-                                                Ok(value) => value,
-                                                Err(_) => {
-                                                    error.set(
-                                                        "Stream timed out waiting for response."
-                                                            .to_string(),
-                                                    );
-                                                    break;
-                                                }
-                                            };
-                                        let Some(chunk) = next_chunk else {
-                                            break;
-                                        };
-                                        match chunk {
-                                            Ok(bytes) => {
-                                                if let Ok(text_chunk) = std::str::from_utf8(&bytes)
-                                                {
-                                                    if !text_chunk.is_empty() {
-                                                        let mut list = messages.write();
-                                                        if let Some(last) = list
-                                                            .iter_mut()
-                                                            .rev()
-                                                            .find(|msg| msg.id == bot_message_id)
-                                                        {
-                                                            last.text.push_str(text_chunk);
-                                                        }
-                                                    }
-                                                }
-                                                scroll_chat_to_bottom().await;
-                                            }
-                                            Err(err) => {
-                                                error.set(format!("Stream error: {err}"));
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    let status = response.status();
-                                    let text = response.text().await.unwrap_or_else(|_| {
-                                        "Unable to read error body".to_string()
-                                    });
-                                    error.set(format!("Request failed ({status}): {text}"));
-                                }
-                            }
-                            Err(err) => {
-                                error.set(format!(
-                                    "Request failed: {err}. Daemon unreachable at {daemon_url}."
-                                ));
-                            }
-                        }
+                    Err(err) => {
+                        let _ = error.set(format!(
+                            "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start in Config > Daemon."
+                        ));
                     }
                 }
 
@@ -451,12 +477,136 @@ fn app_view() -> Element {
     };
     let on_send_key = on_send.clone();
 
+    let on_daemon_start = {
+        let daemon_status = daemon_status.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+
+        use_callback(move |_| {
+            let daemon_status = daemon_status.clone();
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let user_id = user_id.clone();
+            let boot_ready = boot_ready.clone();
+            let boot_status = boot_status.clone();
+            spawn(async move {
+                let mut daemon_status = daemon_status;
+                let mut daemon_running = daemon_running;
+                let mut boot_ready = boot_ready;
+                let mut boot_status = boot_status;
+                let result = start_local_daemon();
+                match result {
+                    Ok(()) => {
+                        daemon_running.set(true);
+                        daemon_status.set("Daemon started.".to_string());
+                        boot_ready.set(false);
+                        boot_status.set("Starting daemon…".to_string());
+
+                        // Wait for daemon to be ready (retry up to 10 times with 500ms delay)
+                        let client = reqwest::Client::new();
+                        let mut daemon_ready = false;
+                        for i in 0..10 {
+                            sleep(Duration::from_millis(500)).await;
+                            let health_url = format!("{}/health", daemon_url().trim_end_matches('/'));
+                            if let Ok(resp) = client.get(&health_url).send().await {
+                                if resp.status().is_success() {
+                                    daemon_ready = true;
+                                    break;
+                                }
+                            }
+                            boot_status.set(format!("Waiting for daemon... ({}/10)", i + 1));
+                        }
+
+                        if !daemon_ready {
+                            boot_status.set("Daemon started but not responding. Continuing without preload.".to_string());
+                            boot_ready.set(true);
+                        } else {
+                            let url = format!(
+                                "{}/preload_boot",
+                                daemon_url().trim_end_matches('/')
+                            );
+                            let mut request = client.post(&url).json(&PreloadBootRequest {
+                                user_id: user_id(),
+                            });
+                            let token_value = token();
+                            if !token_value.trim().is_empty() {
+                                request =
+                                    request.header("authorization", format!("Bearer {token_value}"));
+                            }
+                            match request.send().await {
+                                Ok(resp) if resp.status().is_success() => {
+                                    boot_status.set("Boot preload started…".to_string());
+                                }
+                                Ok(resp) => {
+                                    let status = resp.status();
+                                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                                }
+                                Err(err) => {
+                                    boot_status.set(format!("Boot preload error: {err}"));
+                                }
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        daemon_status.set(err);
+                    }
+                }
+            });
+        })
+    };
+
+    let on_daemon_stop = {
+        let daemon_status = daemon_status.clone();
+        let daemon_running = daemon_running.clone();
+        let reminders_listening = reminders_listening.clone();
+        let ui_events_listening = ui_events_listening.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+
+        use_callback(move |_| {
+            let daemon_status = daemon_status.clone();
+            let daemon_running = daemon_running.clone();
+            let reminders_listening = reminders_listening.clone();
+            let ui_events_listening = ui_events_listening.clone();
+            let boot_ready = boot_ready.clone();
+            let boot_status = boot_status.clone();
+            spawn(async move {
+                let mut daemon_status = daemon_status;
+                let mut daemon_running = daemon_running;
+                let mut reminders_listening = reminders_listening;
+                let mut ui_events_listening = ui_events_listening;
+                let mut boot_ready = boot_ready;
+                let mut boot_status = boot_status;
+                let result = stop_local_daemon();
+                match result {
+                    Ok(()) => {
+                        daemon_running.set(false);
+                        reminders_listening.set(false);
+                        ui_events_listening.set(false);
+                        boot_ready.set(false);
+                        boot_status.set("Daemon stopped. Start it to preload skill + heartbeat.".to_string());
+                        daemon_status.set("Daemon stopped.".to_string());
+                    }
+                    Err(err) => {
+                        daemon_status.set(err);
+                    }
+                }
+            });
+        })
+    };
+
     {
         let reminders_listener_started = reminders_listener_started.clone();
         let reminders_listening = reminders_listening.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
+        let daemon_running = daemon_running.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
 
@@ -478,6 +628,10 @@ fn app_view() -> Element {
                 reminders_listening.set(true);
                 let client = reqwest::Client::new();
                 loop {
+                if !*daemon_running.read() {
+                    reminders_listening.set(false);
+                    break;
+                }
                 let url = format!(
                     "{}/reminder_stream?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -563,6 +717,11 @@ fn app_view() -> Element {
         let user_id = user_id.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
+        let daemon_running = daemon_running.clone();
+        let mut boot_ready = boot_ready.clone();
+        let mut boot_status = boot_status.clone();
+        let mut boot_skill_ready = boot_skill_ready.clone();
+        let mut boot_heartbeat_ready = boot_heartbeat_ready.clone();
 
         use_effect(move || {
             if *ui_events_listener_started.read() {
@@ -582,6 +741,10 @@ fn app_view() -> Element {
                 ui_events_listening.set(true);
                 let client = reqwest::Client::new();
                 loop {
+                if !*daemon_running.read() {
+                    ui_events_listening.set(false);
+                    break;
+                }
                 let url = format!(
                     "{}/ui_events?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -619,6 +782,10 @@ fn app_view() -> Element {
                             if line.starts_with("data:") {
                                 line = line.trim_start_matches("data:").trim().to_string();
                                 if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                    let event_type = value
+                                        .get("event_type")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool");
                                     let tool = value
                                         .get("tool")
                                         .and_then(|v| v.as_str())
@@ -627,9 +794,27 @@ fn app_view() -> Element {
                                         .get("status")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
+
+                                    // Always update boot readiness for boot/skill/heartbeat events
+                                    if (event_type == "boot" || tool == "skill") && status == "ok" {
+                                        boot_skill_ready.set(true);
+                                    }
+                                    if (event_type == "boot" || tool == "heartbeat") && status == "ok" {
+                                        boot_heartbeat_ready.set(true);
+                                    }
+                                    if *boot_skill_ready.read() && *boot_heartbeat_ready.read() {
+                                        boot_ready.set(true);
+                                        let _ = boot_status.set("Skill + heartbeat ready".to_string());
+                                    }
+
                                     let show_success =
                                         std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
-                                    if !show_success && (status == "success" || status == "ok") {
+                                    if event_type != "boot"
+                                        && event_type != "autonomy"
+                                        && event_type != "tool"
+                                        && !show_success
+                                        && (status == "success" || status == "ok")
+                                    {
                                         if let Some(payload) = value.get("payload") {
                                             if payload.get("error").is_none() {
                                                 continue;
@@ -638,21 +823,24 @@ fn app_view() -> Element {
                                             continue;
                                         }
                                     }
-                                    let mut text = format!("🔧 {tool}: {status}");
+
+                                    let prefix = if event_type == "autonomy" {
+                                        "🤖"
+                                    } else {
+                                        "🔧"
+                                    };
+                                    let mut text = format!("{prefix} {tool}: {status}");
                                     if let Some(payload) = value.get("payload") {
                                         if let Some(error) =
                                             payload.get("error").and_then(|v| v.as_str())
                                         {
                                             text.push_str(&format!(" — {error}"));
-                                        } else if let Some(output) =
-                                            payload.get("output").and_then(|v| v.as_str())
+                                        } else if let Some(output) = payload
+                                            .get("output")
+                                            .or_else(|| payload.get("response"))
+                                            .and_then(|v| v.as_str())
                                         {
-                                            let trimmed = if output.len() > 400 {
-                                                format!("{}…", &output[..400])
-                                            } else {
-                                                output.to_string()
-                                            };
-                                            text.push_str(&format!(" — {trimmed}"));
+                                            text.push_str(&format!(" — {output}"));
                                         }
                                     }
                                     let id = next_id();
@@ -680,6 +868,11 @@ fn app_view() -> Element {
         let tools_loaded = tools_loaded.clone();
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
+        let boot_status = boot_status.clone();
+        let boot_ready = boot_ready.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
         let search_provider = search_provider.clone();
         let search_model = search_model.clone();
         let search_citations = search_citations.clone();
@@ -697,6 +890,9 @@ fn app_view() -> Element {
         let heartbeat_text = heartbeat_text.clone();
         let heartbeat_path = heartbeat_path.clone();
         let heartbeat_error = heartbeat_error.clone();
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_error = prompt_error.clone();
         let db_path = db_path.clone();
 
         use_effect(move || {
@@ -728,7 +924,12 @@ fn app_view() -> Element {
                 let mut skill_error = skill_error;
                 let mut heartbeat_text = heartbeat_text;
                 let mut heartbeat_path = heartbeat_path;
-                let mut heartbeat_error = heartbeat_error;
+                let heartbeat_error = heartbeat_error;
+                let mut boot_status = boot_status;
+                let mut boot_ready = boot_ready;
+                let prompt_path = prompt_path;
+                let prompt_text = prompt_text;
+                let prompt_error = prompt_error;
 
             let config = match crate::config::Config::from_store(&db_path) {
                 Ok(value) => value,
@@ -842,10 +1043,24 @@ fn app_view() -> Element {
                 .heartbeat_file
                 .clone()
                 .unwrap_or_else(|| "./heartbeat.md".to_string());
+            let mut heartbeat_error = heartbeat_error;
             heartbeat_path.set(heartbeat_source.clone());
             match load_markdown_source(&heartbeat_source).await {
                 Ok(text) => heartbeat_text.set(text),
                 Err(err) => heartbeat_error.set(format!("Heartbeat error: {err}")),
+            }
+
+            let mut prompt_path = prompt_path;
+            let mut prompt_text = prompt_text;
+            let mut prompt_error = prompt_error;
+            let prompt_source = config
+                .prompt_file
+                .clone()
+                .unwrap_or_else(|| "./prompt.md".to_string());
+            prompt_path.set(prompt_source.clone());
+            match load_markdown_source(&prompt_source).await {
+                Ok(text) => prompt_text.set(text),
+                Err(err) => prompt_error.set(format!("Prompt error: {err}")),
             }
 
             search_default_deny.set(default_deny);
@@ -871,7 +1086,48 @@ fn app_view() -> Element {
                 }
             }
 
-                tools_loaded.set(true);
+            if !*daemon_running.read() {
+                boot_status.set("Daemon is stopped. Start it to preload skill + heartbeat.".to_string());
+            } else {
+                // Preload skill into memory and heartbeat into agent.
+                boot_status.set("Initializing skill + heartbeat...".to_string());
+                let client = reqwest::Client::new();
+                let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                let mut request = client.post(&url).json(&PreloadBootRequest {
+                    user_id: user_id(),
+                });
+                let token_value = token();
+                if !token_value.trim().is_empty() {
+                    request = request.header("authorization", format!("Bearer {token_value}"));
+                }
+                match request.send().await {
+                    Ok(resp) if resp.status().is_success() => {
+                        boot_status.set("Boot preload started...".to_string());
+                        let boot_ready = boot_ready.clone();
+                        let boot_status = boot_status.clone();
+                        spawn(async move {
+                            let mut boot_ready = boot_ready;
+                            let mut boot_status = boot_status;
+                            sleep(Duration::from_secs(15)).await;
+                            if !*boot_ready.read() {
+                                boot_status.set("Boot preload timed out; continuing".to_string());
+                                boot_ready.set(true);
+                            }
+                        });
+                    }
+                    Ok(resp) => {
+                        let status = resp.status();
+                        boot_status.set(format!("Boot preload failed: HTTP {status}. Continuing without preload."));
+                        boot_ready.set(true);
+                    }
+                    Err(err) => {
+                        boot_status.set(format!("Boot preload error: {err}. Continuing without preload."));
+                        boot_ready.set(true);
+                    }
+                }
+            }
+
+            tools_loaded.set(true);
             });
         });
     }
@@ -1216,10 +1472,101 @@ fn app_view() -> Element {
         })
     };
 
+    let on_validate_prompt = {
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_status = prompt_status.clone();
+        let prompt_error = prompt_error.clone();
+
+        use_callback(move |_| {
+            let prompt_text = prompt_text.clone();
+            let prompt_path = prompt_path.clone();
+            let prompt_status = prompt_status.clone();
+            let prompt_error = prompt_error.clone();
+
+            spawn(async move {
+                let mut prompt_status = prompt_status;
+                let mut prompt_error = prompt_error;
+
+                prompt_status.set(String::new());
+                prompt_error.set(String::new());
+
+                let source = prompt_path();
+                if source.trim().is_empty() {
+                    prompt_error.set("Prompt path or URL is empty.".to_string());
+                    return;
+                }
+
+                if is_url_source(&source) {
+                    match load_markdown_source(&source).await {
+                        Ok(text) if !text.trim().is_empty() => {
+                            prompt_status.set("Prompt URL is reachable.".to_string())
+                        }
+                        Ok(_) => prompt_error.set("Prompt URL returned empty content.".to_string()),
+                        Err(err) => prompt_error.set(format!("Prompt URL error: {err}")),
+                    }
+                    return;
+                }
+
+                let content = prompt_text();
+                if content.trim().is_empty() {
+                    prompt_error.set("Prompt markdown is empty.".to_string());
+                    return;
+                }
+                prompt_status.set("Prompt markdown looks valid.".to_string());
+            });
+        })
+    };
+
+    let on_save_prompt = {
+        let prompt_text = prompt_text.clone();
+        let prompt_path = prompt_path.clone();
+        let prompt_status = prompt_status.clone();
+        let prompt_error = prompt_error.clone();
+
+        use_callback(move |_| {
+            let prompt_text = prompt_text.clone();
+            let prompt_path = prompt_path.clone();
+            let prompt_status = prompt_status.clone();
+            let prompt_error = prompt_error.clone();
+
+            spawn(async move {
+                let mut prompt_status = prompt_status;
+                let mut prompt_error = prompt_error;
+
+                prompt_status.set(String::new());
+                prompt_error.set(String::new());
+
+                let source = prompt_path();
+                if source.trim().is_empty() {
+                    prompt_error.set("Prompt path or URL is empty.".to_string());
+                    return;
+                }
+                if is_url_source(&source) {
+                    prompt_error.set("Prompt source is a URL and cannot be saved here.".to_string());
+                    return;
+                }
+
+                let content = prompt_text();
+                if content.trim().is_empty() {
+                    prompt_error.set("Prompt markdown is empty.".to_string());
+                    return;
+                }
+
+                if let Err(err) = fs::write(&source, content).await {
+                    prompt_error.set(format!("Failed to save prompt file: {err}"));
+                    return;
+                }
+                prompt_status.set("Prompt file saved.".to_string());
+            });
+        })
+    };
+
     let active_tab_chat = active_tab.clone();
     let active_tab_config = active_tab.clone();
     let active_tab_skill = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
+    let active_tab_prompt = active_tab.clone();
     let prompt_input = prompt.clone();
     let message_input = input.clone();
 
@@ -1447,12 +1794,23 @@ fn app_view() -> Element {
                         },
                         "Heartbeat"
                     }
+                    button {
+                        class: if *active_tab.read() == UiTab::Prompt { "active" } else { "" },
+                        onclick: move |_| {
+                            let mut active_tab_prompt = active_tab_prompt.clone();
+                            active_tab_prompt.set(UiTab::Prompt);
+                        },
+                        "Prompt"
+                    }
                 }
             }
             if !error.read().is_empty() {
                 div { class: "error", "{error}" }
             }
             if *active_tab.read() == UiTab::Chat {
+                if !*boot_ready.read() && !boot_status.read().is_empty() {
+                    div { class: "hint", "{boot_status}" }
+                }
                 div { class: "chat", id: "chat-scroll",
                     for message in messages
                         .read()
@@ -1501,7 +1859,7 @@ fn app_view() -> Element {
                             }
                             button {
                                 class: "send",
-                                disabled: *busy.read(),
+                                disabled: *busy.read() || !*boot_ready.read(),
                                 onclick: move |_| on_send.call(()),
                                 "Send"
                             }
@@ -1515,6 +1873,25 @@ fn app_view() -> Element {
                         div { class: "hint", "Loading config…" }
                     }
                     if *tools_loaded.read() {
+                        div { class: "settings-card",
+                            label { "Daemon" }
+                            p { class: "hint", "Start/stop the local daemon for this UI session." }
+                            div { class: "config-actions",
+                                button {
+                                    onclick: move |_| on_daemon_start.call(()),
+                                    disabled: *daemon_running.read(),
+                                    "Start"
+                                }
+                                button {
+                                    onclick: move |_| on_daemon_stop.call(()),
+                                    disabled: !*daemon_running.read(),
+                                    "Stop"
+                                }
+                            }
+                            if !daemon_status.read().is_empty() {
+                                p { class: "hint", "{daemon_status}" }
+                            }
+                        }
                         div { class: "settings-card",
                             label { "Config (JSON)" }
                             div { class: "config-head",
@@ -1652,6 +2029,55 @@ fn app_view() -> Element {
                     }
                     if !heartbeat_status.read().is_empty() {
                         div { class: "status", "{heartbeat_status}" }
+                    }
+                }
+            }
+            if *active_tab.read() == UiTab::Prompt {
+                div { class: "settings",
+                    div { class: "settings-card",
+                        label { "Prompt (Markdown)" }
+                        p { class: "hint", "Source: {prompt_path}" }
+                        div { class: "config-head",
+                            label { "Editor" }
+                            label { "Preview" }
+                        }
+                        div { class: "config-grid",
+                            div { class: "config-panel",
+                                textarea {
+                                    id: "prompt-md",
+                                    value: "{prompt_text}",
+                                    rows: "18",
+                                    class: "config-editor",
+                                    oninput: move |evt| {
+                                        let mut prompt_text = prompt_text.clone();
+                                        prompt_text.set(evt.value());
+                                    },
+                                }
+                            }
+                            div { class: "config-panel",
+                                div {
+                                    class: "config-preview",
+                                    dangerous_inner_html: "{markdown_to_html(&prompt_text.read())}",
+                                }
+                            }
+                        }
+                        div { class: "config-actions",
+                            button { onclick: move |_| on_validate_prompt.call(()), "Validate" }
+                            button {
+                                disabled: is_url_source(&prompt_path.read()),
+                                onclick: move |_| on_save_prompt.call(()),
+                                "Save Prompt"
+                            }
+                        }
+                        if is_url_source(&prompt_path.read()) {
+                            p { class: "hint", "Remote URL sources are read-only." }
+                        }
+                    }
+                    if !prompt_error.read().is_empty() {
+                        div { class: "error", "{prompt_error}" }
+                    }
+                    if !prompt_status.read().is_empty() {
+                        div { class: "status", "{prompt_status}" }
                     }
                 }
             }

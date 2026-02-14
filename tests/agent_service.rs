@@ -42,7 +42,7 @@ async fn routing_and_agent_service() {
         specialization: "spec".to_string(),
     };
 
-    let service = AgentService::new(llm, agent, None, brain_manager, None);
+    let service = AgentService::new(llm, agent, None, None, None, None, brain_manager, None);
 
     let system = service.get_agent_system_prompt().await.unwrap();
     assert!(system.contains("inst"));
@@ -128,7 +128,16 @@ async fn routing_and_agent_service() {
         instructions: "inst".to_string(),
         specialization: "spec".to_string(),
     };
-    let looping_service = AgentService::new(looping_llm, looping_agent, None, looping_brain, None);
+    let looping_service = AgentService::new(
+        looping_llm,
+        looping_agent,
+        None,
+        None,
+        None,
+        None,
+        looping_brain,
+        None,
+    );
     let registry = looping_service.tool_registry.clone();
     let tool = Arc::new(DummyTool::new("tool1"));
     assert!(registry.register_tool(tool).await);
@@ -193,7 +202,7 @@ async fn agent_service_dispatches_brain_events() {
         instructions: "inst".to_string(),
         specialization: "spec".to_string(),
     };
-    let service = AgentService::new(llm, agent, None, brain, None);
+    let service = AgentService::new(llm, agent, None, None, None, None, brain, None);
 
     let response = service
         .generate_response("u1", "hello", "", None)
@@ -225,7 +234,7 @@ async fn agent_service_brain_tick_dispatches() {
         instructions: "inst".to_string(),
         specialization: "spec".to_string(),
     };
-    let service = AgentService::new(llm, agent, None, brain, None);
+    let service = AgentService::new(llm, agent, None, None, None, None, brain, None);
 
     service.dispatch_brain_tick().await;
 
