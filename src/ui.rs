@@ -824,12 +824,7 @@ fn app_view() -> Element {
                                             .or_else(|| payload.get("response"))
                                             .and_then(|v| v.as_str())
                                         {
-                                            let trimmed = if output.len() > 400 {
-                                                format!("{}…", &output[..400])
-                                            } else {
-                                                output.to_string()
-                                            };
-                                            text.push_str(&format!(" — {trimmed}"));
+                                            text.push_str(&format!(" — {output}"));
                                         }
                                     }
                                     let id = next_id();

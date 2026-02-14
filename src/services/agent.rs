@@ -253,7 +253,7 @@ impl AgentService {
             "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n- ALWAYS organize work using the planning, todo, and tasks tools. Do not just execute actions in isolation — create plans for goals, todos for action items, and scheduled tasks for recurring work.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
         );
         system_prompt.push_str(
-            "\n\nREACT LOOP:\n- Use a Thought → Plan → Action → Observation → Summary cycle.\n- THOUGHT: Before doing anything, explain what you understand about the current situation and what needs to happen.\n- PLAN: List the concrete steps you will take, naming the specific tools.\n- ACTION: Before calling any tool, explicitly state the next action in plain text (e.g., 'Action: call planning with action list to check existing plans') and briefly explain why.\n- OBSERVATION: After each tool result, state what you learned and decide the next action.\n- SUMMARY: When done, summarize actions taken, results, and next steps.\n- Make ONE tool call at a time, then use the observation to decide next action.\n- If no tool is needed, provide the final response directly.\n",
+            "\n\nREACT LOOP — MANDATORY FORMAT (BRIEF):\n- Your response MUST start with 'Thought:' (1 sentence) before any tools.\n- Then 'Plan:' (short numbered list with tool names).\n- Then for each tool: 'Action: call X' before, 'Observation: Y' after.\n- End with 'Summary:' (2 sentences max).\n- KEEP IT SHORT to avoid truncation. One sentence per section where possible.\n- Make ONE tool call at a time.\n",
         );
 
         let mcp_available = self.tool_registry.has_mcp_servers().await;
@@ -272,7 +272,7 @@ impl AgentService {
         };
 
         system_prompt.push_str(
-            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- When there are individual action items to track, you MUST use the `todo` tool to create and manage them.\n- When something needs to happen on a schedule or at a specific time, you MUST use the `tasks` tool.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
+            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- When there are individual action items to track, you MUST use the `todo` tool to create and manage them.\n- When something needs to happen on a schedule or at a specific time, you MUST use the `tasks` tool.\n- When implementing code, writing functions, or building features, you MUST use the `coding` tool - it uses a specialized coding model optimized for development work.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
         );
         system_prompt.push_str(
             "- Do NOT rely on memory or prior responses to decide whether a tool is usable or whether credentials exist. Tool availability and credentials can change at any time.\n- When a tool is relevant to the current request, attempt the tool call and let the tool response determine success/failure.\n",
@@ -615,7 +615,7 @@ impl AgentService {
             }
         }
 
-        for _ in 0..5 {
+        for _ in 0..20 {
             let response = self
                 .llm_provider
                 .generate_with_tools(&prompt, system_prompt, tool_specs.clone())

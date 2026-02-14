@@ -726,7 +726,7 @@ pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()
 
 fn default_config(db_path: &str) -> Config {
     let base_url = "http://localhost:11434/v1".to_string();
-    let model = "gpt-oss:20b".to_string();
+    let model = "ministral-3:14b".to_string();
     let memory = Some(MemoryConfig {
         enabled: Some(true),
         sqlite_path: Some(db_path.to_string()),
@@ -900,14 +900,13 @@ async fn run_autonomy_tick(
     });
 
     let options = ProcessOptions {
-        prompt: Some("AUTONOMY MODE: You are running on a scheduled heartbeat tick. Follow these steps IN ORDER:\n\n\
-1. THINK: State what you know about the current situation. What does the heartbeat require? What has changed since last tick?\n\
-2. CHECK STATE: Call `planning` with action `list` to see all current plans. Call `todo` with action `list` (status: open) to see open items. Call `tasks` with action `list` to see scheduled tasks.\n\
-3. READ HEARTBEAT: Parse every section of the heartbeat. For each section, check if a corresponding plan exists. If not, create one with `planning` (action: create). For each actionable item, check if a todo exists. If not, create one with `todo`.\n\
-4. EXECUTE: Carry out the most urgent open todos using the appropriate tools (http_call, search_internet, etc.). After each action, mark the todo as complete.\n\
-5. SCHEDULE: If the heartbeat defines recurring checks (e.g., 'every 30 minutes', 'every hour'), ensure a `tasks` entry exists for each. Create missing ones with `tasks` (action: schedule).\n\
-6. SUMMARIZE: List what you did, what succeeded, what failed, and what's next.\n\n\
-If genuinely nothing needs doing after checking all state, reply with 'no-op'. But NEVER reply 'no-op' without first listing plans, todos, and checking the heartbeat.".to_string()),
+        prompt: Some("AUTONOMY MODE: Heartbeat tick. REQUIRED FORMAT (keep brief):\n\n\
+1. Thought (1 sentence): What needs doing.\n\
+2. Plan (short list): Main steps with tool names.\n\
+3. Actions: 'Action: call X' before each tool, 'Observation: Y' after.\n\
+4. Summary (2 sentences): What done, what's next.\n\n\
+Steps: List plans/todos/tasks → parse heartbeat → create missing items → execute urgent → mark complete.\n\n\
+If nothing needs doing, write 'Thought: Checked state, nothing new. Plan: No action. Summary: No-op.' DO NOT skip sections.".to_string()),
         images: Vec::new(),
         output_format: OutputFormat::Text,
         image_detail: "auto".to_string(),
