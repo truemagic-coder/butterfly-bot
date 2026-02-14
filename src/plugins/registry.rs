@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
+use crate::sandbox::{SandboxSettings, WasmRuntime};
 
 #[derive(Default)]
 pub struct ToolRegistry {
@@ -16,6 +17,8 @@ pub struct ToolRegistry {
     agent_tools: RwLock<HashMap<String, HashSet<String>>>,
     config: RwLock<serde_json::Value>,
     audit_log_path: RwLock<Option<String>>,
+    sandbox: RwLock<SandboxSettings>,
+    wasm_runtime: WasmRuntime,
 }
 
 impl ToolRegistry {
@@ -25,6 +28,8 @@ impl ToolRegistry {
             agent_tools: RwLock::new(HashMap::new()),
             config: RwLock::new(serde_json::Value::Object(Default::default())),
             audit_log_path: RwLock::new(Some("./data/tool_audit.log".to_string())),
+            sandbox: RwLock::new(SandboxSettings::default()),
+            wasm_runtime: WasmRuntime,
         }
     }
 
@@ -92,6 +97,10 @@ impl ToolRegistry {
             let mut cfg = self.config.write().await;
             *cfg = config.clone();
         }
+        {
+            let mut sandbox = self.sandbox.write().await;
+            *sandbox = SandboxSettings::from_root_config(&config);
+        }
         if let Some(settings) = config.get("tools").and_then(|v| v.get("settings")) {
             if let Some(path) = settings
                 .get("audit_log_path")
@@ -115,6 +124,30 @@ impl ToolRegistry {
         Ok(())
     }
 
+    pub async fn execute_tool(&self, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+        let tool = {
+            let tools = self.tools.read().await;
+            tools.get(tool_name).cloned()
+        }
+        .ok_or_else(|| ButterflyBotError::Runtime(format!("Tool not found: {tool_name}")))?;
+
+        let plan = {
+            let sandbox = self.sandbox.read().await;
+            sandbox.execution_plan(tool_name)
+        };
+
+        let _ = self
+            .audit_sandbox_decision(tool_name, plan.runtime.as_str(), &plan.reason)
+            .await;
+
+        match plan.runtime {
+            crate::sandbox::ToolRuntime::Native => tool.execute(params).await,
+            crate::sandbox::ToolRuntime::Wasm => {
+                self.wasm_runtime.execute(tool_name, &plan.tool_config, params).await
+            }
+        }
+    }
+
     pub async fn audit_tool_call(&self, tool_name: &str, status: &str) -> Result<()> {
         let path = self.audit_log_path.read().await.clone();
         let Some(path) = path else {
@@ -130,6 +163,39 @@ impl ToolRegistry {
             "timestamp": ts,
             "tool": tool_name,
             "status": status,
+        });
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        writeln!(file, "{}", payload).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn audit_sandbox_decision(
+        &self,
+        tool_name: &str,
+        runtime: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let path = self.audit_log_path.read().await.clone();
+        let Some(path) = path else {
+            return Ok(());
+        };
+        config_store::ensure_parent_dir(&path)?;
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+            .as_secs();
+        let payload = serde_json::json!({
+            "timestamp": ts,
+            "type": "sandbox_decision",
+            "tool": tool_name,
+            "runtime": runtime,
+            "reason": reason,
         });
 
         let mut file = OpenOptions::new()

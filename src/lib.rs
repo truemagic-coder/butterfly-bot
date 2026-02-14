@@ -12,6 +12,7 @@ pub mod planning;
 pub mod plugins;
 pub mod providers;
 pub mod reminders;
+pub mod sandbox;
 pub mod scheduler;
 pub mod services;
 pub mod tasks;

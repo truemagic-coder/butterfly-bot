@@ -536,7 +536,7 @@ impl QueryService {
             .tool_registry
             .get_tool("search_internet")
             .await;
-        let Some(tool) = tool else {
+        let Some(_tool) = tool else {
             return Ok(None);
         };
 
@@ -546,8 +546,10 @@ impl QueryService {
             text.to_string()
         };
 
-        let result = tool
-            .execute(serde_json::json!({"query": query, "user_id": user_id}))
+        let result = self
+            .agent_service
+            .tool_registry
+            .execute_tool("search_internet", serde_json::json!({"query": query, "user_id": user_id}))
             .await?;
         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status == "success" {

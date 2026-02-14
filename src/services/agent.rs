@@ -669,7 +669,7 @@ impl AgentService {
         for call in calls {
             let tool = tools.iter().find(|t| t.name() == call.name);
             match tool {
-                Some(tool) => {
+                Some(_tool) => {
                     let redacted_args = redact_value(&call.arguments);
                     info!(
                         tool = %call.name,
@@ -685,7 +685,7 @@ impl AgentService {
                             );
                         }
                     }
-                    match tool.execute(args).await {
+                    match self.tool_registry.execute_tool(&call.name, args).await {
                         Ok(result) => {
                             let _ = self
                                 .tool_registry

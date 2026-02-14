@@ -36,6 +36,8 @@
     │ (SQLCipher +   │  │ (MCP, HTTP,   │  │ (Ollama/OpenAI)  │
     │  LanceDB)      │  │ reminders,    │  │                  │
     │                │  │ tasks, etc.)  │  │                  │
+    │                │  │ + WASM sandbox│  │                  │
+    │                │  │   runtime     │  │                  │
     └────────────────┘  └───────────────┘  └──────────────────┘
 ```
 
@@ -237,6 +239,37 @@ Config is stored in the OS keychain for top security and safety.
         }
     }
 }
+```
+
+### Convention Mode (WASM sandbox defaults)
+
+- Butterfly Bot defaults to `tools.settings.sandbox.mode = non_main`.
+- High-risk tools (`coding`, `mcp`, `http_call`) run in WASM by default.
+- Per-tool `runtime` is optional.
+- Per-tool `wasm.module` is optional and defaults to `./wasm/<tool>_tool.wasm`.
+- Zero-config path: place modules at `./wasm/coding_tool.wasm`, `./wasm/mcp_tool.wasm`, and `./wasm/http_call_tool.wasm`.
+- Set `tools.settings.sandbox.mode = off` only when you explicitly want native runtime.
+
+```
+tool call
+   │
+   v
+┌───────────────────────────────┐
+│ Sandbox planner (default mode │
+│ is non_main)                  │
+└───────────────┬───────────────┘
+                │
+        ┌───────┴────────┐
+        │ high-risk tool?│
+        │ coding/mcp/http│
+        └───────┬────────┘
+            yes │ no
+                │
+      ┌─────────v─────────┐      ┌───────────────────┐
+      │ WASM runtime      │      │ Native runtime    │
+      │ ./wasm/<tool>_tool│      │ tool.execute(...) │
+      │ .wasm             │      └───────────────────┘
+      └───────────────────┘
 ```
 
 ## SQLCipher (encrypted storage)

@@ -59,6 +59,7 @@ lru = "0.12"
 rust-mcp-sdk = "0.8.3"
 rust-mcp-transport = "0.8.0"
 libsqlite3-sys = { version = "0.28", features = ["bundled-sqlcipher"] }
+wasmtime = "25"
 
 [features]
 default = []
