@@ -223,3 +223,72 @@ async fn daemon_doctor_requires_auth_and_returns_checks() {
     });
     assert!(has_db_check, "expected database_access check in doctor output");
 }
+
+#[tokio::test]
+async fn daemon_security_audit_requires_auth_and_returns_findings() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let reminder_db = NamedTempFile::new().unwrap();
+    let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/security_audit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/security_audit")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(value.get("overall").and_then(|v| v.as_str()).is_some());
+
+    let findings = value
+        .get("findings")
+        .and_then(|v| v.as_array())
+        .expect("findings array");
+    assert!(!findings.is_empty());
+
+    let has_token_finding = findings.iter().any(|entry| {
+        entry
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|id| id == "daemon_auth_token")
+            .unwrap_or(false)
+    });
+    assert!(
+        has_token_finding,
+        "expected daemon_auth_token finding in security audit output"
+    );
+}

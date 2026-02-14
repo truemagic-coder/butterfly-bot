@@ -49,6 +49,22 @@ struct DoctorResponse {
     checks: Vec<DoctorCheckResponse>,
 }
 
+#[derive(Clone, Deserialize)]
+struct SecurityAuditFindingResponse {
+    id: String,
+    severity: String,
+    status: String,
+    message: String,
+    fix_hint: Option<String>,
+    auto_fixable: bool,
+}
+
+#[derive(Clone, Deserialize)]
+struct SecurityAuditResponse {
+    overall: String,
+    findings: Vec<SecurityAuditFindingResponse>,
+}
+
 async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
     let client = reqwest::Client::new();
     let url = format!("{}/doctor", daemon_url.trim_end_matches('/'));
@@ -67,6 +83,31 @@ async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorR
     }
     response
         .json::<DoctorResponse>()
+        .await
+        .map_err(|err| err.to_string())
+}
+
+async fn run_security_audit_request(
+    daemon_url: String,
+    token: String,
+) -> Result<SecurityAuditResponse, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/security_audit", daemon_url.trim_end_matches('/'));
+    let mut request = client.post(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    response
+        .json::<SecurityAuditResponse>()
         .await
         .map_err(|err| err.to_string())
 }
@@ -330,6 +371,11 @@ fn app_view() -> Element {
     let doctor_running = use_signal(|| false);
     let doctor_overall = use_signal(String::new);
     let doctor_checks = use_signal(Vec::<DoctorCheckResponse>::new);
+    let security_audit_status = use_signal(String::new);
+    let security_audit_error = use_signal(String::new);
+    let security_audit_running = use_signal(|| false);
+    let security_audit_overall = use_signal(String::new);
+    let security_audit_findings = use_signal(Vec::<SecurityAuditFindingResponse>::new);
     let config_json_text = use_signal(String::new);
     let skill_text = use_signal(String::new);
     let skill_path = use_signal(|| "./skill.md".to_string());
@@ -646,6 +692,10 @@ fn app_view() -> Element {
         let doctor_error = doctor_error.clone();
         let doctor_overall = doctor_overall.clone();
         let doctor_checks = doctor_checks.clone();
+        let security_audit_status = security_audit_status.clone();
+        let security_audit_error = security_audit_error.clone();
+        let security_audit_overall = security_audit_overall.clone();
+        let security_audit_findings = security_audit_findings.clone();
 
         use_callback(move |_| {
             let daemon_status = daemon_status.clone();
@@ -658,6 +708,10 @@ fn app_view() -> Element {
             let doctor_error = doctor_error.clone();
             let doctor_overall = doctor_overall.clone();
             let doctor_checks = doctor_checks.clone();
+            let security_audit_status = security_audit_status.clone();
+            let security_audit_error = security_audit_error.clone();
+            let security_audit_overall = security_audit_overall.clone();
+            let security_audit_findings = security_audit_findings.clone();
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
@@ -669,6 +723,10 @@ fn app_view() -> Element {
                 let mut doctor_error = doctor_error;
                 let mut doctor_overall = doctor_overall;
                 let mut doctor_checks = doctor_checks;
+                let mut security_audit_status = security_audit_status;
+                let mut security_audit_error = security_audit_error;
+                let mut security_audit_overall = security_audit_overall;
+                let mut security_audit_findings = security_audit_findings;
                 let result = stop_local_daemon();
                 match result {
                     Ok(()) => {
@@ -682,6 +740,10 @@ fn app_view() -> Element {
                         doctor_error.set(String::new());
                         doctor_overall.set(String::new());
                         doctor_checks.set(Vec::new());
+                        security_audit_status.set(String::new());
+                        security_audit_error.set(String::new());
+                        security_audit_overall.set(String::new());
+                        security_audit_findings.set(Vec::new());
                     }
                     Err(err) => {
                         daemon_status.set(err);
@@ -1302,6 +1364,11 @@ fn app_view() -> Element {
         let doctor_running = doctor_running.clone();
         let doctor_overall = doctor_overall.clone();
         let doctor_checks = doctor_checks.clone();
+        let security_audit_status = security_audit_status.clone();
+        let security_audit_error = security_audit_error.clone();
+        let security_audit_running = security_audit_running.clone();
+        let security_audit_overall = security_audit_overall.clone();
+        let security_audit_findings = security_audit_findings.clone();
 
         use_callback(move |_| {
             let settings_error = settings_error.clone();
@@ -1315,6 +1382,11 @@ fn app_view() -> Element {
             let doctor_running = doctor_running.clone();
             let doctor_overall = doctor_overall.clone();
             let doctor_checks = doctor_checks.clone();
+            let security_audit_status = security_audit_status.clone();
+            let security_audit_error = security_audit_error.clone();
+            let security_audit_running = security_audit_running.clone();
+            let security_audit_overall = security_audit_overall.clone();
+            let security_audit_findings = security_audit_findings.clone();
 
             spawn(async move {
                 let mut settings_error = settings_error;
@@ -1325,6 +1397,11 @@ fn app_view() -> Element {
                 let mut doctor_running = doctor_running;
                 let mut doctor_overall = doctor_overall;
                 let mut doctor_checks = doctor_checks;
+                let mut security_audit_status = security_audit_status;
+                let mut security_audit_error = security_audit_error;
+                let mut security_audit_running = security_audit_running;
+                let mut security_audit_overall = security_audit_overall;
+                let mut security_audit_findings = security_audit_findings;
 
                 settings_error.set(String::new());
                 settings_status.set(String::new());
@@ -1388,6 +1465,26 @@ fn app_view() -> Element {
                                     }
                                 }
                                 doctor_running.set(false);
+
+                                security_audit_running.set(true);
+                                security_audit_error.set(String::new());
+                                security_audit_status.set("Running security audit…".to_string());
+                                match run_security_audit_request(daemon_url(), token()).await {
+                                    Ok(report) => {
+                                        let overall = report.overall.clone();
+                                        security_audit_overall.set(overall.clone());
+                                        security_audit_findings.set(report.findings);
+                                        security_audit_status.set(format!(
+                                            "Security audit complete ({overall})."
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        security_audit_error
+                                            .set(format!("Security audit failed: {err}"));
+                                        security_audit_status.set(String::new());
+                                    }
+                                }
+                                security_audit_running.set(false);
                             }
                             Ok(response) => {
                                 let status = response.status();
@@ -1423,7 +1520,7 @@ fn app_view() -> Element {
         let doctor_overall = doctor_overall.clone();
         let doctor_checks = doctor_checks.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let daemon_running = daemon_running.clone();
             let daemon_url = daemon_url.clone();
             let token = token.clone();
@@ -1463,6 +1560,61 @@ fn app_view() -> Element {
                 }
 
                 doctor_running.set(false);
+            });
+        })
+    };
+
+    let on_run_security_audit = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let security_audit_status = security_audit_status.clone();
+        let security_audit_error = security_audit_error.clone();
+        let security_audit_running = security_audit_running.clone();
+        let security_audit_overall = security_audit_overall.clone();
+        let security_audit_findings = security_audit_findings.clone();
+
+        use_callback(move |_: ()| {
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let security_audit_status = security_audit_status.clone();
+            let security_audit_error = security_audit_error.clone();
+            let security_audit_running = security_audit_running.clone();
+            let security_audit_overall = security_audit_overall.clone();
+            let security_audit_findings = security_audit_findings.clone();
+
+            spawn(async move {
+                let mut security_audit_status = security_audit_status;
+                let mut security_audit_error = security_audit_error;
+                let mut security_audit_running = security_audit_running;
+                let mut security_audit_overall = security_audit_overall;
+                let mut security_audit_findings = security_audit_findings;
+
+                if !*daemon_running.read() {
+                    security_audit_error
+                        .set("Daemon is not running. Start daemon first.".to_string());
+                    return;
+                }
+
+                security_audit_running.set(true);
+                security_audit_error.set(String::new());
+                security_audit_status.set("Running security audit…".to_string());
+
+                match run_security_audit_request(daemon_url(), token()).await {
+                    Ok(report) => {
+                        let overall = report.overall.clone();
+                        security_audit_overall.set(overall.clone());
+                        security_audit_findings.set(report.findings);
+                        security_audit_status.set(format!("Security audit complete ({overall})."));
+                    }
+                    Err(err) => {
+                        security_audit_error.set(format!("Security audit failed: {err}"));
+                        security_audit_status.set(String::new());
+                    }
+                }
+
+                security_audit_running.set(false);
             });
         })
     };
@@ -2133,6 +2285,38 @@ fn app_view() -> Element {
                                 }
                             }
                         }
+                        div { class: "settings-card",
+                            label { "Security Audit" }
+                            p { class: "hint", "Checks risky local settings and reports ranked findings." }
+                            div { class: "config-actions",
+                                button {
+                                    onclick: move |_| on_run_security_audit.call(()),
+                                    disabled: *security_audit_running.read() || !*daemon_running.read(),
+                                    if *security_audit_running.read() { "Running…" } else { "Run Security Audit" }
+                                }
+                            }
+                            if !security_audit_overall.read().is_empty() {
+                                p { class: "hint", "Overall risk: {security_audit_overall}" }
+                            }
+                            if !security_audit_findings.read().is_empty() {
+                                div {
+                                    class: "tool-list",
+                                    for finding in security_audit_findings.read().iter() {
+                                        div {
+                                            class: "settings-card",
+                                            label { "{finding.id}" }
+                                            p { class: "hint", "Severity: {finding.severity}" }
+                                            p { class: "hint", "Status: {finding.status}" }
+                                            p { class: "hint", "{finding.message}" }
+                                            p { class: "hint", "Auto-fixable: {finding.auto_fixable}" }
+                                            if let Some(hint) = &finding.fix_hint {
+                                                p { class: "hint", "Fix: {hint}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if !settings_error.read().is_empty() {
                             div { class: "error", "{settings_error}" }
                         }
@@ -2144,6 +2328,12 @@ fn app_view() -> Element {
                         }
                         if !doctor_status.read().is_empty() {
                             div { class: "status", "{doctor_status}" }
+                        }
+                        if !security_audit_error.read().is_empty() {
+                            div { class: "error", "{security_audit_error}" }
+                        }
+                        if !security_audit_status.read().is_empty() {
+                            div { class: "status", "{security_audit_status}" }
                         }
                     }
                 }

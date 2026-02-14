@@ -25,6 +25,7 @@ use crate::error::{ButterflyBotError, Result};
 use crate::factories::agent_factory::load_markdown_source;
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::{resolve_reminder_db_path, ReminderStore};
+use crate::sandbox::{SandboxMode, SandboxSettings, ToolRuntime};
 use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
@@ -377,10 +378,27 @@ struct DoctorResponse {
     checks: Vec<DoctorCheck>,
 }
 
+#[derive(Serialize, Clone)]
+struct SecurityAuditFinding {
+    id: String,
+    severity: String,
+    status: String,
+    message: String,
+    fix_hint: Option<String>,
+    auto_fixable: bool,
+}
+
+#[derive(Serialize)]
+struct SecurityAuditResponse {
+    overall: String,
+    findings: Vec<SecurityAuditFinding>,
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/doctor", post(doctor))
+        .route("/security_audit", post(security_audit))
         .route("/process_text", post(process_text))
         .route("/process_text_stream", post(process_text_stream))
         .route("/memory_search", post(memory_search))
@@ -420,6 +438,21 @@ async fn doctor(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
         .into_response()
 }
 
+async fn security_audit(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let findings = run_security_audit_checks(&state).await;
+    let overall = highest_severity(&findings);
+
+    (
+        StatusCode::OK,
+        Json(SecurityAuditResponse { overall, findings }),
+    )
+        .into_response()
+}
+
 fn doctor_check(name: &str, status: &str, message: String, fix_hint: Option<&str>) -> DoctorCheck {
     DoctorCheck {
         name: name.to_string(),
@@ -427,6 +460,217 @@ fn doctor_check(name: &str, status: &str, message: String, fix_hint: Option<&str
         message,
         fix_hint: fix_hint.map(str::to_string),
     }
+}
+
+fn security_finding(
+    id: &str,
+    severity: &str,
+    status: &str,
+    message: String,
+    fix_hint: Option<&str>,
+    auto_fixable: bool,
+) -> SecurityAuditFinding {
+    SecurityAuditFinding {
+        id: id.to_string(),
+        severity: severity.to_string(),
+        status: status.to_string(),
+        message,
+        fix_hint: fix_hint.map(str::to_string),
+        auto_fixable,
+    }
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        _ => 1,
+    }
+}
+
+fn highest_severity(findings: &[SecurityAuditFinding]) -> String {
+    findings
+        .iter()
+        .filter(|finding| finding.status != "pass")
+        .max_by_key(|finding| severity_rank(&finding.severity))
+        .map(|finding| finding.severity.clone())
+        .unwrap_or_else(|| "low".to_string())
+}
+
+async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding> {
+    let mut findings = Vec::new();
+
+    if state.token.trim().is_empty() {
+        findings.push(security_finding(
+            "daemon_auth_token",
+            "high",
+            "fail",
+            "Daemon auth token is empty; local endpoints are unprotected.".to_string(),
+            Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
+            false,
+        ));
+    } else {
+        findings.push(security_finding(
+            "daemon_auth_token",
+            "low",
+            "pass",
+            "Daemon auth token is configured.".to_string(),
+            None,
+            false,
+        ));
+    }
+
+    match Config::from_store(&state.db_path) {
+        Ok(config) => {
+            findings.push(security_finding(
+                "config_load",
+                "low",
+                "pass",
+                "Config loaded from store/keyring.".to_string(),
+                None,
+                false,
+            ));
+
+            let has_inline_api_key = config
+                .openai
+                .as_ref()
+                .and_then(|openai| openai.api_key.as_ref())
+                .map(|key| !key.trim().is_empty())
+                .unwrap_or(false)
+                || config
+                    .memory
+                    .as_ref()
+                    .and_then(|memory| memory.openai.as_ref())
+                    .and_then(|openai| openai.api_key.as_ref())
+                    .map(|key| !key.trim().is_empty())
+                    .unwrap_or(false);
+
+            if has_inline_api_key {
+                findings.push(security_finding(
+                    "inline_api_keys",
+                    "high",
+                    "warn",
+                    "API keys appear inline in config JSON; prefer keyring-backed secrets."
+                        .to_string(),
+                    Some("Remove inline keys and set secrets via `butterfly-bot secrets-set`."),
+                    false,
+                ));
+            } else {
+                findings.push(security_finding(
+                    "inline_api_keys",
+                    "low",
+                    "pass",
+                    "No inline API keys detected in loaded config.".to_string(),
+                    None,
+                    false,
+                ));
+            }
+
+            let root = json!({ "tools": config.tools.clone().unwrap_or(Value::Null) });
+            let sandbox = SandboxSettings::from_root_config(&root);
+
+            match sandbox.mode {
+                SandboxMode::Off => findings.push(security_finding(
+                    "sandbox_mode",
+                    "high",
+                    "fail",
+                    "Sandbox mode is off; high-risk tools can execute natively.".to_string(),
+                    Some("Set tools.settings.sandbox.mode to `non_main` or `all`."),
+                    false,
+                )),
+                SandboxMode::NonMain | SandboxMode::All => {
+                    let mode_label = match sandbox.mode {
+                        SandboxMode::Off => "off",
+                        SandboxMode::NonMain => "non_main",
+                        SandboxMode::All => "all",
+                    };
+                    findings.push(security_finding(
+                    "sandbox_mode",
+                    "low",
+                    "pass",
+                    format!("Sandbox mode is {mode_label}."),
+                    None,
+                    false,
+                ))
+                }
+            }
+
+            let high_risk_tools = ["coding", "mcp", "http_call"];
+            let mut native_tools = Vec::new();
+            for tool_name in high_risk_tools {
+                let plan = sandbox.execution_plan(tool_name);
+                if plan.runtime != ToolRuntime::Wasm {
+                    native_tools.push(tool_name);
+                }
+            }
+
+            if native_tools.is_empty() {
+                findings.push(security_finding(
+                    "high_risk_tool_runtime",
+                    "low",
+                    "pass",
+                    "High-risk tools resolve to WASM runtime.".to_string(),
+                    None,
+                    false,
+                ));
+            } else {
+                findings.push(security_finding(
+                    "high_risk_tool_runtime",
+                    "high",
+                    "fail",
+                    format!(
+                        "High-risk tools running native: {}.",
+                        native_tools.join(", ")
+                    ),
+                    Some("Set per-tool runtime to `wasm` and keep sandbox mode enabled."),
+                    false,
+                ));
+            }
+
+            let default_deny = config
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.get("settings"))
+                .and_then(|settings| settings.get("permissions"))
+                .and_then(|permissions| permissions.get("default_deny"))
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+
+            if default_deny {
+                findings.push(security_finding(
+                    "network_default_deny",
+                    "low",
+                    "pass",
+                    "Global tools network policy uses default_deny=true.".to_string(),
+                    None,
+                    false,
+                ));
+            } else {
+                findings.push(security_finding(
+                    "network_default_deny",
+                    "medium",
+                    "warn",
+                    "Global tools network policy default_deny is disabled or missing."
+                        .to_string(),
+                    Some("Set tools.settings.permissions.default_deny to true and allowlist required domains."),
+                    false,
+                ));
+            }
+        }
+        Err(err) => {
+            findings.push(security_finding(
+                "config_load",
+                "critical",
+                "fail",
+                format!("Config load failed: {err}"),
+                Some("Save a valid config in Config tab and rerun security audit."),
+                false,
+            ));
+        }
+    }
+
+    findings
 }
 
 async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {

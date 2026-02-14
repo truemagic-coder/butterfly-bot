@@ -176,6 +176,15 @@ Config is stored in the OS keychain for top security and safety.
 - Checks include config load/parse, vault resolution, DB read/write probe, provider reachability, and daemon auth token status.
 - Results are returned as pass/warn/fail with actionable fix hints so bug reports are easier to reproduce and resolve.
 
+### Security Audit (UI)
+
+- Use **Config → Security Audit → Run Security Audit** to run local security posture checks.
+- Findings are risk-ranked as **critical/high/medium/low** and include fix guidance.
+- The audit is intentionally **read-only**: no automatic config mutations are applied.
+- `auto_fixable` is currently informational and defaults to `false` because automatic hardening can create unintended downtime.
+- If a finding cannot be safely auto-remediated, guidance is presented as explicit manual steps.
+- See [docs/security-audit.md](docs/security-audit.md) for operating recommendations and limits.
+
 ### Skill & Heartbeat
 
 - `skill_file` is a Markdown file (local path or URL) that defines the assistant’s identity, style, and rules.
