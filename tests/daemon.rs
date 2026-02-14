@@ -157,3 +157,69 @@ async fn daemon_process_text_and_memory_search() {
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(value.get("results").and_then(|v| v.as_array()).is_some());
 }
+
+#[tokio::test]
+async fn daemon_doctor_requires_auth_and_returns_checks() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let reminder_db = NamedTempFile::new().unwrap();
+    let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/doctor")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/doctor")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(value.get("overall").and_then(|v| v.as_str()).is_some());
+
+    let checks = value
+        .get("checks")
+        .and_then(|v| v.as_array())
+        .expect("checks array");
+    assert!(!checks.is_empty());
+
+    let has_db_check = checks.iter().any(|entry| {
+        entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|name| name == "database_access")
+            .unwrap_or(false)
+    });
+    assert!(has_db_check, "expected database_access check in doctor output");
+}

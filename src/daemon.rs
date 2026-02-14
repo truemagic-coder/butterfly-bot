@@ -12,6 +12,8 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
+use diesel::prelude::*;
+use diesel::sqlite::SqliteConnection;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -361,9 +363,24 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Serialize, Clone)]
+struct DoctorCheck {
+    name: String,
+    status: String,
+    message: String,
+    fix_hint: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DoctorResponse {
+    overall: String,
+    checks: Vec<DoctorCheck>,
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/doctor", post(doctor))
         .route("/process_text", post(process_text))
         .route("/process_text_stream", post(process_text_stream))
         .route("/memory_search", post(memory_search))
@@ -378,6 +395,243 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".to_string(),
     })
+}
+
+async fn doctor(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let checks = run_doctor_checks(&state).await;
+    let has_fail = checks.iter().any(|check| check.status == "fail");
+    let has_warn = checks.iter().any(|check| check.status == "warn");
+    let overall = if has_fail {
+        "fail"
+    } else if has_warn {
+        "warn"
+    } else {
+        "pass"
+    };
+
+    (StatusCode::OK, Json(DoctorResponse {
+        overall: overall.to_string(),
+        checks,
+    }))
+        .into_response()
+}
+
+fn doctor_check(name: &str, status: &str, message: String, fix_hint: Option<&str>) -> DoctorCheck {
+    DoctorCheck {
+        name: name.to_string(),
+        status: status.to_string(),
+        message,
+        fix_hint: fix_hint.map(str::to_string),
+    }
+}
+
+async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+
+    if state.token.trim().is_empty() {
+        checks.push(doctor_check(
+            "daemon_auth_token",
+            "warn",
+            "Daemon auth token is empty; local endpoints are unprotected.".to_string(),
+            Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
+        ));
+    } else {
+        checks.push(doctor_check(
+            "daemon_auth_token",
+            "pass",
+            "Daemon auth token is configured.".to_string(),
+            None,
+        ));
+    }
+
+    match Config::from_store(&state.db_path) {
+        Ok(config) => {
+            checks.push(doctor_check(
+                "config_store",
+                "pass",
+                "Config loaded from store/keyring.".to_string(),
+                None,
+            ));
+
+            match config.clone().resolve_vault() {
+                Ok(_) => {
+                    checks.push(doctor_check(
+                        "vault_resolution",
+                        "pass",
+                        "Vault-backed secrets resolved successfully.".to_string(),
+                        None,
+                    ));
+                }
+                Err(err) => {
+                    checks.push(doctor_check(
+                        "vault_resolution",
+                        "fail",
+                        format!("Vault resolution failed: {err}"),
+                        Some("Verify OS keychain access and required secret keys."),
+                    ));
+                }
+            }
+
+            match check_provider_health(&config).await {
+                Ok(check) => checks.push(check),
+                Err(err) => checks.push(doctor_check(
+                    "provider_health",
+                    "fail",
+                    format!("Provider health check failed: {err}"),
+                    Some("Verify provider base_url/model and network access."),
+                )),
+            }
+        }
+        Err(err) => {
+            checks.push(doctor_check(
+                "config_store",
+                "fail",
+                format!("Config load failed: {err}"),
+                Some("Save a valid config in the Config tab and retry."),
+            ));
+            checks.push(doctor_check(
+                "vault_resolution",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+            checks.push(doctor_check(
+                "provider_health",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+        }
+    }
+
+    let db_path = state.db_path.clone();
+    let db_check = tokio::task::spawn_blocking(move || -> DoctorCheck {
+        if let Err(err) = crate::config_store::ensure_parent_dir(&db_path) {
+            return doctor_check(
+                "database_access",
+                "fail",
+                format!("Database directory check failed: {err}"),
+                Some("Verify filesystem permissions for DB path."),
+            );
+        }
+
+        let mut conn = match SqliteConnection::establish(&db_path) {
+            Ok(conn) => conn,
+            Err(err) => {
+                return doctor_check(
+                    "database_access",
+                    "fail",
+                    format!("Database open failed: {err}"),
+                    Some("Verify DB path and SQLite/SQLCipher availability."),
+                )
+            }
+        };
+
+        if let Err(err) = crate::db::apply_sqlcipher_key_sync(&mut conn) {
+            return doctor_check(
+                "database_access",
+                "fail",
+                format!("Database key apply failed: {err}"),
+                Some("Verify BUTTERFLY_BOT_DB_KEY or keychain db_encryption_key."),
+            );
+        }
+
+        let probe_result = diesel::sql_query(
+            "CREATE TABLE IF NOT EXISTS doctor_probe (id INTEGER PRIMARY KEY, ts INTEGER NOT NULL)",
+        )
+        .execute(&mut conn);
+
+        match probe_result {
+            Ok(_) => doctor_check(
+                "database_access",
+                "pass",
+                "Database opened and write probe succeeded.".to_string(),
+                None,
+            ),
+            Err(err) => doctor_check(
+                "database_access",
+                "fail",
+                format!("Database write probe failed: {err}"),
+                Some("Verify DB permissions and SQLCipher key configuration."),
+            ),
+        }
+    })
+    .await;
+
+    match db_check {
+        Ok(check) => checks.push(check),
+        Err(err) => checks.push(doctor_check(
+            "database_access",
+            "fail",
+            format!("Database check task failed: {err}"),
+            Some("Retry diagnostics; if persistent, inspect runtime logs."),
+        )),
+    }
+
+    checks
+}
+
+async fn check_provider_health(config: &Config) -> Result<DoctorCheck> {
+    let provider = config.openai.clone().or_else(|| {
+        config
+            .memory
+            .as_ref()
+            .and_then(|memory| memory.openai.clone())
+    });
+
+    let Some(provider) = provider else {
+        return Ok(doctor_check(
+            "provider_health",
+            "warn",
+            "No provider config found in openai or memory.openai.".to_string(),
+            Some("Set provider base_url/model in Config tab."),
+        ));
+    };
+
+    let base_url = provider.base_url.unwrap_or_default();
+    if base_url.trim().is_empty() {
+        return Ok(doctor_check(
+            "provider_health",
+            "fail",
+            "Provider base_url is empty.".to_string(),
+            Some("Set openai.base_url (or memory.openai.base_url)."),
+        ));
+    }
+
+    let models_url = format!("{}/models", base_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let result = tokio::time::timeout(Duration::from_secs(3), client.get(&models_url).send()).await;
+
+    match result {
+        Ok(Ok(response)) if response.status().is_success() => Ok(doctor_check(
+            "provider_health",
+            "pass",
+            format!("Provider responded successfully at {models_url}"),
+            None,
+        )),
+        Ok(Ok(response)) => Ok(doctor_check(
+            "provider_health",
+            "warn",
+            format!("Provider reachable but returned HTTP {}", response.status()),
+            Some("Check provider auth/token and model availability."),
+        )),
+        Ok(Err(err)) => Ok(doctor_check(
+            "provider_health",
+            "fail",
+            format!("Provider request failed: {err}"),
+            Some("Check base_url/network and that provider service is running."),
+        )),
+        Err(_) => Ok(doctor_check(
+            "provider_health",
+            "fail",
+            "Provider request timed out after 3s.".to_string(),
+            Some("Check provider responsiveness and network routing."),
+        )),
+    }
 }
 
 async fn process_text(

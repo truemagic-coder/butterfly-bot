@@ -10,7 +10,7 @@ use dioxus::prelude::*;
 use futures::StreamExt;
 use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
 use std::sync::{Mutex, OnceLock};
@@ -33,6 +33,42 @@ struct ProcessTextRequest {
 #[derive(Clone, Serialize)]
 struct PreloadBootRequest {
     user_id: String,
+}
+
+#[derive(Clone, Deserialize)]
+struct DoctorCheckResponse {
+    name: String,
+    status: String,
+    message: String,
+    fix_hint: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
+struct DoctorResponse {
+    overall: String,
+    checks: Vec<DoctorCheckResponse>,
+}
+
+async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/doctor", daemon_url.trim_end_matches('/'));
+    let mut request = client.post(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    response
+        .json::<DoctorResponse>()
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[derive(Clone)]
@@ -289,6 +325,11 @@ fn app_view() -> Element {
     let boot_heartbeat_ready = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
+    let doctor_status = use_signal(String::new);
+    let doctor_error = use_signal(String::new);
+    let doctor_running = use_signal(|| false);
+    let doctor_overall = use_signal(String::new);
+    let doctor_checks = use_signal(Vec::<DoctorCheckResponse>::new);
     let config_json_text = use_signal(String::new);
     let skill_text = use_signal(String::new);
     let skill_path = use_signal(|| "./skill.md".to_string());
@@ -485,6 +526,11 @@ fn app_view() -> Element {
         let user_id = user_id.clone();
         let boot_ready = boot_ready.clone();
         let boot_status = boot_status.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
 
         use_callback(move |_| {
             let daemon_status = daemon_status.clone();
@@ -494,11 +540,21 @@ fn app_view() -> Element {
             let user_id = user_id.clone();
             let boot_ready = boot_ready.clone();
             let boot_status = boot_status.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
                 let mut boot_ready = boot_ready;
                 let mut boot_status = boot_status;
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
                 let result = start_local_daemon();
                 match result {
                     Ok(()) => {
@@ -550,6 +606,25 @@ fn app_view() -> Element {
                                     boot_status.set(format!("Boot preload error: {err}"));
                                 }
                             }
+
+                            doctor_running.set(true);
+                            doctor_error.set(String::new());
+                            doctor_status.set("Running diagnostics…".to_string());
+                            match run_doctor_request(daemon_url(), token()).await {
+                                Ok(report) => {
+                                    let overall = report.overall.clone();
+                                    doctor_overall.set(overall.clone());
+                                    doctor_checks.set(report.checks);
+                                    doctor_status.set(format!(
+                                        "Diagnostics complete ({overall})."
+                                    ));
+                                }
+                                Err(err) => {
+                                    doctor_error.set(format!("Diagnostics failed: {err}"));
+                                    doctor_status.set(String::new());
+                                }
+                            }
+                            doctor_running.set(false);
                         }
                     }
                     Err(err) => {
@@ -567,6 +642,10 @@ fn app_view() -> Element {
         let ui_events_listening = ui_events_listening.clone();
         let boot_ready = boot_ready.clone();
         let boot_status = boot_status.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
 
         use_callback(move |_| {
             let daemon_status = daemon_status.clone();
@@ -575,6 +654,10 @@ fn app_view() -> Element {
             let ui_events_listening = ui_events_listening.clone();
             let boot_ready = boot_ready.clone();
             let boot_status = boot_status.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
@@ -582,6 +665,10 @@ fn app_view() -> Element {
                 let mut ui_events_listening = ui_events_listening;
                 let mut boot_ready = boot_ready;
                 let mut boot_status = boot_status;
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
                 let result = stop_local_daemon();
                 match result {
                     Ok(()) => {
@@ -591,6 +678,10 @@ fn app_view() -> Element {
                         boot_ready.set(false);
                         boot_status.set("Daemon stopped. Start it to preload skill + heartbeat.".to_string());
                         daemon_status.set("Daemon stopped.".to_string());
+                        doctor_status.set(String::new());
+                        doctor_error.set(String::new());
+                        doctor_overall.set(String::new());
+                        doctor_checks.set(Vec::new());
                     }
                     Err(err) => {
                         daemon_status.set(err);
@@ -1206,6 +1297,11 @@ fn app_view() -> Element {
         let db_path = db_path.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
 
         use_callback(move |_| {
             let settings_error = settings_error.clone();
@@ -1214,11 +1310,21 @@ fn app_view() -> Element {
             let db_path = db_path.clone();
             let daemon_url = daemon_url.clone();
             let token = token.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
 
             spawn(async move {
                 let mut settings_error = settings_error;
                 let mut settings_status = settings_status;
                 let mut config_json_text = config_json_text;
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
 
                 settings_error.set(String::new());
                 settings_status.set(String::new());
@@ -1264,6 +1370,24 @@ fn app_view() -> Element {
                         match request.send().await {
                             Ok(response) if response.status().is_success() => {
                                 settings_status.set("Config saved and reloaded.".to_string());
+                                doctor_running.set(true);
+                                doctor_error.set(String::new());
+                                doctor_status.set("Running diagnostics…".to_string());
+                                match run_doctor_request(daemon_url(), token()).await {
+                                    Ok(report) => {
+                                        let overall = report.overall.clone();
+                                        doctor_overall.set(overall.clone());
+                                        doctor_checks.set(report.checks);
+                                        doctor_status.set(format!(
+                                            "Diagnostics complete ({overall})."
+                                        ));
+                                    }
+                                    Err(err) => {
+                                        doctor_error.set(format!("Diagnostics failed: {err}"));
+                                        doctor_status.set(String::new());
+                                    }
+                                }
+                                doctor_running.set(false);
                             }
                             Ok(response) => {
                                 let status = response.status();
@@ -1285,6 +1409,60 @@ fn app_view() -> Element {
                     Ok(Err(err)) => settings_error.set(format!("Save failed: {err}")),
                     Err(err) => settings_error.set(format!("Save failed: {err}")),
                 }
+            });
+        })
+    };
+
+    let on_run_doctor = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
+
+        use_callback(move |_| {
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
+
+            spawn(async move {
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
+
+                if !*daemon_running.read() {
+                    doctor_error.set("Daemon is not running. Start daemon first.".to_string());
+                    return;
+                }
+
+                doctor_running.set(true);
+                doctor_error.set(String::new());
+                doctor_status.set("Running diagnostics…".to_string());
+
+                match run_doctor_request(daemon_url(), token()).await {
+                    Ok(report) => {
+                        let overall = report.overall.clone();
+                        doctor_overall.set(overall.clone());
+                        doctor_checks.set(report.checks);
+                        doctor_status.set(format!("Diagnostics complete ({overall})."));
+                    }
+                    Err(err) => {
+                        doctor_error.set(format!("Diagnostics failed: {err}"));
+                        doctor_status.set(String::new());
+                    }
+                }
+
+                doctor_running.set(false);
             });
         })
     };
@@ -1925,11 +2103,47 @@ fn app_view() -> Element {
                             }
                             p { class: "hint", "Saved to the OS keyring. Changes reload automatically." }
                         }
+                        div { class: "settings-card",
+                            label { "Diagnostics" }
+                            p { class: "hint", "Runs config, vault, DB, provider, and daemon auth checks." }
+                            div { class: "config-actions",
+                                button {
+                                    onclick: move |_| on_run_doctor.call(()),
+                                    disabled: *doctor_running.read() || !*daemon_running.read(),
+                                    if *doctor_running.read() { "Running…" } else { "Run Diagnostics" }
+                                }
+                            }
+                            if !doctor_overall.read().is_empty() {
+                                p { class: "hint", "Overall: {doctor_overall}" }
+                            }
+                            if !doctor_checks.read().is_empty() {
+                                div {
+                                    class: "tool-list",
+                                    for check in doctor_checks.read().iter() {
+                                        div {
+                                            class: "settings-card",
+                                            label { "{check.name}" }
+                                            p { class: "hint", "Status: {check.status}" }
+                                            p { class: "hint", "{check.message}" }
+                                            if let Some(hint) = &check.fix_hint {
+                                                p { class: "hint", "Fix: {hint}" }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if !settings_error.read().is_empty() {
                             div { class: "error", "{settings_error}" }
                         }
                         if !settings_status.read().is_empty() {
                             div { class: "status", "{settings_status}" }
+                        }
+                        if !doctor_error.read().is_empty() {
+                            div { class: "error", "{doctor_error}" }
+                        }
+                        if !doctor_status.read().is_empty() {
+                            div { class: "status", "{doctor_status}" }
                         }
                     }
                 }

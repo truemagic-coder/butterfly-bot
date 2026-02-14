@@ -170,6 +170,12 @@ Use the Config tab in the app to configure all settings via JSON. The config no 
 
 Config is stored in the OS keychain for top security and safety.
 
+### Diagnostics (Doctor)
+
+- Use **Config → Diagnostics → Run Diagnostics** to run health checks in the app UX.
+- Checks include config load/parse, vault resolution, DB read/write probe, provider reachability, and daemon auth token status.
+- Results are returned as pass/warn/fail with actionable fix hints so bug reports are easier to reproduce and resolve.
+
 ### Skill & Heartbeat
 
 - `skill_file` is a Markdown file (local path or URL) that defines the assistant’s identity, style, and rules.
