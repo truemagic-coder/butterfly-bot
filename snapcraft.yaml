@@ -4,7 +4,7 @@ version: '0.1.0'
 summary: Always-on personal-ops AI assistant
 license: MIT
 description: |
-  Butterfly Bot is a local-first AI assistant with daemon, CLI, and desktop UI,
+  Butterfly Bot is a local-first AI assistant with daemon and desktop UI,
   including bundled WASM tool modules for sandboxed tool execution.
 
 grade: devel

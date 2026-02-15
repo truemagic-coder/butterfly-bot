@@ -1,7 +1,6 @@
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use std::fs;
-use std::path::Path;
 
 use crate::error::{ButterflyBotError, Result};
 
@@ -239,15 +238,6 @@ impl Config {
             brains: None,
         }
         .apply_security_defaults()
-    }
-
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        std::hint::black_box(path.as_ref());
-        let content = fs::read_to_string(path.as_ref())
-            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-        let config: Config =
-            serde_json::from_str(&content).map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-        Ok(config.apply_security_defaults())
     }
 
     pub fn from_store(db_path: &str) -> Result<Self> {

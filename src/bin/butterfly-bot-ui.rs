@@ -3,10 +3,6 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "butterfly-bot-ui")]
 struct UiCli {
-    /// Optional config JSON to import into the app database before launch.
-    #[arg(long, env = "BUTTERFLY_BOT_CONFIG")]
-    config: Option<String>,
-
     /// Database path for settings/config storage.
     #[arg(
         long,
@@ -26,11 +22,6 @@ struct UiCli {
 
 fn main() -> butterfly_bot::Result<()> {
     let cli = UiCli::parse();
-
-    if let Some(config_path) = cli.config.as_ref() {
-        let config = butterfly_bot::config::Config::from_file(config_path)?;
-        butterfly_bot::config_store::save_config(&cli.db, &config)?;
-    }
 
     if butterfly_bot::config::Config::from_store(&cli.db).is_err() {
         let defaults = butterfly_bot::config::Config::convention_defaults(&cli.db);

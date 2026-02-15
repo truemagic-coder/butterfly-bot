@@ -15,15 +15,6 @@ use crate::Result;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SandboxMode {
-    Off,
-    #[default]
-    NonMain,
-    All,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum ToolRuntime {
     #[default]
     Wasm,
@@ -88,8 +79,6 @@ impl ToolSandboxConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SandboxSettings {
     #[serde(default)]
-    pub mode: SandboxMode,
-    #[serde(default)]
     pub tools: HashMap<String, ToolSandboxConfig>,
 }
 
@@ -112,12 +101,7 @@ impl SandboxSettings {
         if tool_config.capabilities.allow.is_empty() {
             tool_config.capabilities.allow = Self::default_capabilities_for_tool(tool_name);
         }
-        let mode_label = match self.mode {
-            SandboxMode::Off => "off",
-            SandboxMode::All => "all",
-            SandboxMode::NonMain => "non_main",
-        };
-        let reason = format!("wasm_only_policy (configured sandbox.mode={mode_label})");
+        let reason = "wasm_only_policy".to_string();
 
         ExecutionPlan {
             runtime: ToolRuntime::Wasm,
@@ -185,20 +169,11 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    use super::{SandboxMode, SandboxSettings, ToolRuntime, ToolSandboxConfig, WasmRuntime};
-
-    #[test]
-    fn default_mode_is_non_main() {
-        let settings = SandboxSettings::default();
-        assert_eq!(settings.mode, SandboxMode::NonMain);
-    }
+    use super::{SandboxSettings, ToolRuntime, ToolSandboxConfig, WasmRuntime};
 
     #[test]
     fn wasm_only_policy_routes_all_tools_to_wasm() {
-        let settings = SandboxSettings {
-            mode: SandboxMode::NonMain,
-            ..Default::default()
-        };
+        let settings = SandboxSettings::default();
 
         assert_eq!(settings.execution_plan("coding").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("mcp").runtime, ToolRuntime::Wasm);
@@ -250,7 +225,6 @@ mod tests {
             "tools": {
                 "settings": {
                     "sandbox": {
-                        "mode": "non_main",
                         "tools": {
                             "coding": {
                                 "runtime": "native"
@@ -272,7 +246,6 @@ mod tests {
             "tools": {
                 "settings": {
                     "sandbox": {
-                        "mode": "all",
                         "tools": {
                             "github": {
                                 "runtime": "wasm"
@@ -291,9 +264,7 @@ mod tests {
         let root_off = serde_json::json!({
             "tools": {
                 "settings": {
-                    "sandbox": {
-                        "mode": "off"
-                    }
+                    "sandbox": {}
                 }
             }
         });

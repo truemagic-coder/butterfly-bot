@@ -329,18 +329,13 @@ async fn query_service_and_client() {
         })
         .await;
 
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(
-        tmp.path(),
-        json!({
-            "openai": {"api_key":"key","model":"gpt-4o-mini","base_url": server.base_url()},
-            "heartbeat_source": {"type": "database", "markdown": ""},
-            "prompt_source": {"type": "database", "markdown": ""}
-        })
-        .to_string(),
-    )
+    let config: butterfly_bot::config::Config = serde_json::from_value(json!({
+        "openai": {"api_key":"key","model":"gpt-4o-mini","base_url": server.base_url()},
+        "heartbeat_source": {"type": "database", "markdown": ""},
+        "prompt_source": {"type": "database", "markdown": ""}
+    }))
     .unwrap();
-    let agent = ButterflyBot::from_config_path(tmp.path()).await.unwrap();
+    let agent = ButterflyBot::from_config(config).await.unwrap();
     let mut stream = agent.process_text_stream("user", "hello", None);
     let chunk = stream.next().await.unwrap().unwrap();
     assert_eq!(chunk, "mock text");

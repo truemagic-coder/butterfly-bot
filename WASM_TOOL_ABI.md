@@ -87,7 +87,6 @@ Output bytes must be UTF-8 JSON.
   "tools": {
     "settings": {
       "sandbox": {
-        "mode": "all",
         "tools": {
           "coding": {
             "wasm": {
@@ -113,7 +112,6 @@ Output bytes must be UTF-8 JSON.
 ## Notes
 
 - Tool runtime is WASM-only for all built-in tools.
-- `sandbox.mode` values are accepted for compatibility but do not bypass WASM execution.
 - Per-tool `runtime` is ignored; tool execution remains WASM-only.
 - Per-tool `wasm.module` is optional. If omitted, module path defaults to `./wasm/<tool>_tool.wasm`.
 - `timeout_ms` interrupts long-running WASM execution by epoch deadline.

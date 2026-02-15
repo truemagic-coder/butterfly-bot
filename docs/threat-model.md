@@ -131,7 +131,7 @@ Primary goals:
 
 - Threat: built-in tool actions execute outside intended sandbox constraints.
 - Mitigations:
-  - Tool runtime planner enforces WASM-only execution for built-in tools regardless of configured sandbox mode.
+  - Tool runtime planner enforces WASM-only execution for built-in tools.
   - Security audit validates the WASM-only runtime invariant across built-in tools.
   - Daemon startup validates tool WASM modules (magic header and non-stub checks) before serving requests.
   - Guardrails/policy checks enforce explicit execution intent.

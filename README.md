@@ -304,7 +304,6 @@ Config is stored in the OS keychain for top security and safety.
 
 - Tool execution is WASM-only for all built-in tools.
 - Startup now validates WASM module integrity (magic header) for registered tools and fails fast on invalid/corrupted binaries.
-- `tools.settings.sandbox.mode` remains accepted as config but does not bypass WASM-only execution.
 - Per-tool `runtime` config is ignored; tool execution is WASM-only.
 - Per-tool `wasm.module` is optional and defaults to `./wasm/<tool>_tool.wasm`.
 - Zero-config path: place modules at `./wasm/<tool>_tool.wasm` for each tool you run.

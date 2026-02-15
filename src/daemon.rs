@@ -577,9 +577,9 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
             "daemon_auth_token",
             "medium",
             "warn",
-            "Daemon auth token is empty; protected endpoints fail closed until a token is configured."
+            "Daemon auth token is empty; this is unexpected because token bootstrap is automatic and protected endpoints fail closed."
                 .to_string(),
-            Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
+            Some("Restart the app/daemon to re-run token bootstrap and verify keyring/secret-store availability."),
             false,
         ));
     } else {
@@ -641,20 +641,6 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
 
             let root = json!({ "tools": config.tools.clone().unwrap_or(Value::Null) });
             let sandbox = SandboxSettings::from_root_config(&root);
-
-            let mode_label = match sandbox.mode {
-                crate::sandbox::SandboxMode::Off => "off",
-                crate::sandbox::SandboxMode::NonMain => "non_main",
-                crate::sandbox::SandboxMode::All => "all",
-            };
-            findings.push(security_finding(
-                "sandbox_mode",
-                "low",
-                "pass",
-                format!("WASM-only policy enforced (configured sandbox mode: {mode_label})."),
-                None,
-                false,
-            ));
 
             let built_in_tools = [
                 "coding",
@@ -754,9 +740,9 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
         checks.push(doctor_check(
             "daemon_auth_token",
             "warn",
-            "Daemon auth token is empty; protected endpoints fail closed until a token is configured."
+            "Daemon auth token is empty; this is unexpected because token bootstrap is automatic and protected endpoints fail closed."
                 .to_string(),
-            Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
+            Some("Restart the app/daemon to re-run token bootstrap and verify keyring/secret-store availability."),
         ));
     } else {
         checks.push(doctor_check(

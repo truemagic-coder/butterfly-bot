@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use futures::stream::BoxStream;
@@ -42,12 +41,6 @@ impl ButterflyBot {
     ) -> Result<Self> {
         let config = Config::from_store(db_path)?.resolve_vault()?;
         let agent = Self::from_config_with_events(config, ui_event_tx).await?;
-        Ok(agent)
-    }
-
-    pub async fn from_config_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let config = Config::from_file(path)?;
-        let agent = Self::from_config(config).await?;
         Ok(agent)
     }
 

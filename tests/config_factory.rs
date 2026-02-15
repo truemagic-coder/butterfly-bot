@@ -8,18 +8,12 @@ use butterfly_bot::factories::agent_factory::ButterflyBotFactory;
 
 #[tokio::test]
 async fn config_from_file_and_factory_errors() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(
-        tmp.path(),
-        json!({
-            "openai": {"api_key":"key","model":null,"base_url":null},
-            "heartbeat_source": {"type": "database", "markdown": ""},
-            "prompt_source": {"type": "database", "markdown": ""}
-        })
-        .to_string(),
-    )
+    let config: Config = serde_json::from_value(json!({
+        "openai": {"api_key":"key","model":null,"base_url":null},
+        "heartbeat_source": {"type": "database", "markdown": ""},
+        "prompt_source": {"type": "database", "markdown": ""}
+    }))
     .unwrap();
-    let config = Config::from_file(tmp.path()).unwrap();
     let _ = ButterflyBotFactory::create_from_config(config)
         .await
         .unwrap();
@@ -58,12 +52,9 @@ async fn config_from_file_and_factory_errors() {
         .unwrap();
     assert!(matches!(err, ButterflyBotError::Config(_)));
 
-    let bad = tempfile::NamedTempFile::new().unwrap();
-    std::fs::write(bad.path(), "{bad}").unwrap();
-    let err = Config::from_file(bad.path()).unwrap_err();
-    assert!(matches!(err, ButterflyBotError::Config(_)));
-
-    let err = Config::from_file("/nope/not-found.json").unwrap_err();
+    let err = serde_json::from_str::<Config>("{bad}")
+        .map_err(|e| ButterflyBotError::Config(e.to_string()))
+        .unwrap_err();
     assert!(matches!(err, ButterflyBotError::Config(_)));
 
     let missing = Config {
