@@ -1,6 +1,7 @@
 [package]
 name = "butterfly-bot"
 version = "0.1.0"
+description = "Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead."
 edition = "2021"
 license = "MIT"
 autobins = false
