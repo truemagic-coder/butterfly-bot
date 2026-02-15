@@ -2,7 +2,7 @@
 
 Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
 
-Open the app, start the daemon, and run your workflow loop end-to-end: plan → task → reminder → completion, with memory, automation, and full local visibility.
+Open the app, provide the prompt, and watch your always-on agent run with memory, tools, and full visibility.
 
 Why users pick it:
 
@@ -52,12 +52,6 @@ Why users pick it:
     │                │  │   runtime     │  │                  │
     └────────────────┘  └───────────────┘  └──────────────────┘
 ```
-
-### How this enables an always-on agent
-
-- The agent is always-on only while the daemon is running. The daemon owns the scheduler, wakeups, and tool execution.
-- If the UI shuts down and the daemon is also stopped, the agent will pause until the daemon is started again.
-- Persistent memory and task queues live in the daemon’s storage, preserving context across restarts and long idle periods.
 
 ## Memory System (Diagram + Rationale)
 
@@ -594,16 +588,14 @@ Config fields:
 
 ## Competitive Feature Matrix (Butterfly Bot vs OpenClaw, ZeroClaw, IronClaw)
 
-This is a practical, high-level comparison based on publicly visible repository documentation and code structure. It is meant to guide roadmap decisions, not declare an absolute winner.
-
-## Positioning Snapshot
+### Positioning Snapshot
 
 - **Butterfly Bot (this repo):** Practical personal-agent workflows with daemon + UI + planning/todo/tasks/reminders/wakeup + memory.
 - **OpenClaw (main competitor):** Full personal-assistant platform with broad channels and plugin ecosystem, but currently high operational security risk for typical deployments.
 - **ZeroClaw:** Lean, pluggable Rust agent framework with strong onboarding story and broad provider/channel coverage.
 - **IronClaw:** Platform-style architecture emphasizing sandboxed extensibility (WASM), orchestration, routines, and gateway capabilities.
 
-## Feature Matrix
+### Feature Matrix
 
 Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
 
@@ -626,7 +618,7 @@ Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
 | Explicit security hardening docs/checklists | ✅ | ✅ | ✅ | ✅ |
 | Test breadth/visibility | ✅ | ✅ | ✅ | 🟨 |
 
-## Weighted Scorecard (Personal Ops Agent Lens)
+### Weighted Scorecard (Personal Ops Agent Lens)
 
 Scoring model:
 - Score each criterion from **1 to 5** (5 = strongest).
@@ -634,7 +626,7 @@ Scoring model:
 - Weighted score per row = `score × weight`.
 - Total possible = **500** (if all criteria scored 5).
 
-### Criteria and Weights
+#### Criteria and Weights
 
 | Criterion | Weight (%) | Why it matters |
 |---|---:|---|
