@@ -181,6 +181,7 @@ impl SandboxSettings {
             "mcp" => vec!["mcp.list_tools", "mcp.call"],
             "http_call" => vec!["http.request"],
             "github" => vec!["github.list_tools", "github.call_tool"],
+            "zapier" => vec!["zapier.list_tools", "zapier.call_tool"],
             "search_internet" => vec!["search.internet"],
             _ => Vec::new(),
         }
@@ -214,6 +215,7 @@ mod tests {
         assert_eq!(settings.execution_plan("mcp").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("http_call").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Wasm);
+        assert_eq!(settings.execution_plan("zapier").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("planning").runtime, ToolRuntime::Wasm);
         assert!(
             settings

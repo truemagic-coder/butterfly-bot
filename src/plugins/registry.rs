@@ -727,6 +727,30 @@ impl ToolRegistry {
                     )
                     .await?
             }
+            "zapier.list_tools" => {
+                self
+                    .execute_cross_tool_capability(
+                        capability,
+                        "zapier",
+                        serde_json::json!({
+                            "action": "list_tools"
+                        }),
+                    )
+                    .await?
+            }
+            "zapier.call_tool" => {
+                self
+                    .execute_cross_tool_capability(
+                        capability,
+                        "zapier",
+                        serde_json::json!({
+                            "action": "call_tool",
+                            "tool": Self::require_str(&args, "tool")?,
+                            "arguments": args.get("arguments").cloned()
+                        }),
+                    )
+                    .await?
+            }
             "search.internet" => {
                 self
                     .execute_cross_tool_capability(
@@ -1507,6 +1531,73 @@ mod tests {
         assert_eq!(
             result["capability_result"]["result"]["echo"]["query"],
             "latest rust release"
+        );
+    }
+
+    #[tokio::test]
+    async fn capability_call_supports_zapier_bridges() {
+        let registry = ToolRegistry::new();
+        let caller_tool = echo_tool("todo");
+        let zapier_tool = echo_tool("zapier");
+        assert!(registry.register_tool(zapier_tool).await);
+
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.capabilities.allow = vec![
+            "zapier.list_tools".to_string(),
+            "zapier.call_tool".to_string(),
+        ];
+
+        let list_result = registry
+            .execute_capability_call(
+                "todo",
+                &caller_tool,
+                &cfg,
+                &serde_json::json!({
+                    "status": "capability_call",
+                    "abi_version": 1,
+                    "capability_call": {
+                        "name": "zapier.list_tools",
+                        "args": {}
+                    }
+                }),
+            )
+            .await
+            .expect("capability call should succeed");
+
+        assert_eq!(list_result["status"], "ok");
+        assert_eq!(
+            list_result["capability_result"]["result"]["echo"]["action"],
+            "list_tools"
+        );
+
+        let call_result = registry
+            .execute_capability_call(
+                "todo",
+                &caller_tool,
+                &cfg,
+                &serde_json::json!({
+                    "status": "capability_call",
+                    "abi_version": 1,
+                    "capability_call": {
+                        "name": "zapier.call_tool",
+                        "args": {
+                            "tool": "find_zaps",
+                            "arguments": {"q": "calendar"}
+                        }
+                    }
+                }),
+            )
+            .await
+            .expect("capability call should succeed");
+
+        assert_eq!(call_result["status"], "ok");
+        assert_eq!(
+            call_result["capability_result"]["result"]["echo"]["action"],
+            "call_tool"
+        );
+        assert_eq!(
+            call_result["capability_result"]["result"]["echo"]["tool"],
+            "find_zaps"
         );
     }
 

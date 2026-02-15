@@ -10,6 +10,7 @@ TOOLS=(
   mcp
   http_call
   github
+  zapier
   planning
   reminders
   search_internet

@@ -76,6 +76,7 @@ use crate::tools::http_call::HttpCallTool;
 use crate::tools::coding::CodingTool;
 use crate::tools::github::GitHubTool;
 use crate::tools::mcp::McpTool;
+use crate::tools::zapier::ZapierTool;
 use crate::tools::planning::PlanningTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
@@ -377,6 +378,12 @@ impl ButterflyBotFactory {
         tool.configure(&config_value)?;
         if tool_registry.register_tool(tool).await {
             registered_tools.push("github".to_string());
+        }
+
+        let tool: Arc<dyn Tool> = Arc::new(ZapierTool::new());
+        tool.configure(&config_value)?;
+        if tool_registry.register_tool(tool).await {
+            registered_tools.push("zapier".to_string());
         }
 
         let tool: Arc<dyn Tool> = Arc::new(CodingTool::new());

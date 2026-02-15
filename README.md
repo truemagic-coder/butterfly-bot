@@ -9,7 +9,7 @@ Why users pick it:
 - **Fast to first value:** works out-of-the-box with default settings.
 - **UI-first operator experience:** polished desktop chat, streaming responses, diagnostics, security audit, and live execution events.
 - **Real automation, not just chat:** native planning/todo/tasks/reminders/wakeup modules for always-on personal operations.
-- **Integration leverage:** MCP-based tooling (including Zapier) plus built-in tools for web, coding, scheduling, and reminders.
+- **Integration leverage:** MCP-based tooling plus built-in wrappers (GitHub + Zapier) and native tools for web, coding, scheduling, and reminders.
 - **Security-focused local posture:** keychain-backed secrets, local memory/storage paths, and WASM-only tool runtime policy.
 
 ## Highlights
@@ -19,7 +19,7 @@ Why users pick it:
 - Reminders in chat and OS notifications.
 - Long-term agentic memory stored locally.
 - Optional prompt-context/heartbeat Markdown overrides.
-- Agent tools including MCP (Zapier-compatible via MCP server setup).
+- Agent tools including MCP plus first-class GitHub and Zapier MCP wrappers.
 - Config stored in the OS keychain for maximum security.
 - UI launch auto-bootstraps default config and starts the local daemon automatically.
 
@@ -276,6 +276,7 @@ This is optional and intended for advanced customization.
 - Per-tool `runtime` config is ignored; tool execution is WASM-only.
 - Per-tool `wasm.module` is optional and defaults to `./wasm/<tool>_tool.wasm`.
 - Zero-config path: place modules at `./wasm/<tool>_tool.wasm` for each tool you run.
+- Convention defaults include a deny-by-default network posture with allowlisted domains including `mcp.zapier.com`.
 
 Build all default tool modules:
 
@@ -289,6 +290,7 @@ This generates:
 - `./wasm/mcp_tool.wasm`
 - `./wasm/http_call_tool.wasm`
 - `./wasm/github_tool.wasm`
+- `./wasm/zapier_tool.wasm`
 - `./wasm/planning_tool.wasm`
 - `./wasm/reminders_tool.wasm`
 - `./wasm/search_internet_tool.wasm`
@@ -399,6 +401,27 @@ Config fields:
         "github": {
             "pat": "YOUR_GITHUB_PAT",
             "url": "https://api.githubcopilot.com/mcp/",
+            "type": "http"
+        }
+    }
+}
+```
+
+### Zapier Tool (MCP wrapper)
+
+Use the built-in Zapier tool to call Zapier MCP tools directly through Zapier's hosted MCP endpoint.
+
+Config fields:
+- `tools.zapier.url` (optional; defaults to `https://mcp.zapier.com/api/v1/connect?token=my_token`)
+- `tools.zapier.token` (optional; can also come from vault secret `zapier_token`; appended to URL when URL does not already include `token=`)
+- `tools.zapier.type` (optional; defaults to `http`)
+- `tools.zapier.headers` (optional; additional headers)
+
+```json
+{
+    "tools": {
+        "zapier": {
+            "url": "https://mcp.zapier.com/api/v1/connect?token=YOUR_ZAPIER_TOKEN",
             "type": "http"
         }
     }

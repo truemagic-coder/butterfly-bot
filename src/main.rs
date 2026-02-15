@@ -39,6 +39,8 @@ use butterfly_bot::tools::github::GitHubTool;
 #[cfg(not(test))]
 use butterfly_bot::tools::mcp::McpTool;
 #[cfg(not(test))]
+use butterfly_bot::tools::zapier::ZapierTool;
+#[cfg(not(test))]
 use butterfly_bot::tools::planning::PlanningTool;
 #[cfg(not(test))]
 use butterfly_bot::tools::reminders::RemindersTool;
@@ -503,6 +505,10 @@ async fn ensure_tool_secrets(db_path: &str) -> Result<()> {
     tool.configure(&config_value)?;
     let _ = registry.register_tool(tool).await;
 
+    let tool: std::sync::Arc<dyn Tool> = std::sync::Arc::new(ZapierTool::new());
+    tool.configure(&config_value)?;
+    let _ = registry.register_tool(tool).await;
+
     let tool: std::sync::Arc<dyn Tool> = std::sync::Arc::new(CodingTool::new());
     tool.configure(&config_value)?;
     let _ = registry.register_tool(tool).await;
@@ -533,6 +539,7 @@ async fn ensure_tool_secrets(db_path: &str) -> Result<()> {
         "reminders",
         "mcp",
         "github",
+        "zapier",
         "coding",
         "wakeup",
         "http_call",

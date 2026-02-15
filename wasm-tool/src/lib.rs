@@ -11,6 +11,8 @@ fn tool_name() -> &'static str {
         "http_call"
     } else if cfg!(feature = "tool_github") {
         "github"
+    } else if cfg!(feature = "tool_zapier") {
+        "zapier"
     } else if cfg!(feature = "tool_planning") {
         "planning"
     } else if cfg!(feature = "tool_reminders") {
@@ -39,6 +41,7 @@ fn execute_for_tool(tool: &str, input: &Value) -> Value {
         "mcp" => execute_mcp(input),
         "http_call" => execute_http_call(input),
         "github" => execute_github(input),
+        "zapier" => execute_zapier(input),
         "search_internet" => execute_search_internet(input),
         _ => json!({
             "status": "error",
@@ -441,6 +444,32 @@ fn execute_github(input: &Value) -> Value {
     capability_call(capability, Value::Object(args))
 }
 
+fn execute_zapier(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    let action = args
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let capability = match action.as_str() {
+        "list_tools" => "zapier.list_tools",
+        "call_tool" => {
+            if let Err(err) = require_string(&args, "tool") {
+                return err;
+            }
+            "zapier.call_tool"
+        }
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
+}
+
 fn execute_search_internet(input: &Value) -> Value {
     let args = match input_object(input) {
         Ok(args) => args,
@@ -589,6 +618,10 @@ mod tests {
         assert_eq!(github["status"].as_str(), Some("capability_call"));
         assert_eq!(github["capability_call"]["name"], "github.list_tools");
 
+        let zapier = execute_for_tool("zapier", &json!({"action":"list_tools"}));
+        assert_eq!(zapier["status"].as_str(), Some("capability_call"));
+        assert_eq!(zapier["capability_call"]["name"], "zapier.list_tools");
+
         let search = execute_for_tool("search_internet", &json!({"query":"rust"}));
         assert_eq!(search["status"].as_str(), Some("capability_call"));
         assert_eq!(search["capability_call"]["name"], "search.internet");
@@ -603,6 +636,10 @@ mod tests {
         let github_unsupported = execute_for_tool("github", &json!({"action":"search"}));
         assert_eq!(github_unsupported["status"].as_str(), Some("error"));
         assert_eq!(github_unsupported["code"].as_str(), Some("invalid_args"));
+
+        let zapier_unsupported = execute_for_tool("zapier", &json!({"action":"search"}));
+        assert_eq!(zapier_unsupported["status"].as_str(), Some("error"));
+        assert_eq!(zapier_unsupported["code"].as_str(), Some("invalid_args"));
 
         let http_missing_method = execute_for_tool("http_call", &json!({"url":"https://example.com"}));
         assert_eq!(http_missing_method["status"].as_str(), Some("error"));
@@ -621,6 +658,7 @@ mod tests {
             ("mcp", json!({"action":"list_tools"})),
             ("http_call", json!({"method":"GET"})),
             ("github", json!({"action":"list_tools"})),
+            ("zapier", json!({"action":"list_tools"})),
             ("search_internet", json!({"query":"rust"})),
         ];
 

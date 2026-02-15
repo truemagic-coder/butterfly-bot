@@ -1,5 +1,6 @@
 pub mod http_call;
 pub mod github;
+pub mod zapier;
 pub mod coding;
 pub mod mcp;
 pub mod planning;

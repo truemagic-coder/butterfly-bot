@@ -650,6 +650,7 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
                 "mcp",
                 "http_call",
                 "github",
+                "zapier",
                 "planning",
                 "reminders",
                 "search_internet",

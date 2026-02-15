@@ -204,6 +204,7 @@ impl Config {
                             Value::String("api.x.ai".to_string()),
                             Value::String("api.perplexity.ai".to_string()),
                             Value::String("api.githubcopilot.com".to_string()),
+                            Value::String("mcp.zapier.com".to_string()),
                         ])
                     });
                 }
