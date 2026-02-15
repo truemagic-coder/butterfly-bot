@@ -1922,8 +1922,10 @@ fn app_view() -> Element {
                     if (header_key.is_empty() && !header_value.is_empty())
                         || (!header_key.is_empty() && header_value.is_empty())
                     {
-                        settings_error
-                            .set("MCP header key and value must both be set or both be empty.".to_string());
+                        settings_error.set(
+                            "MCP header key and value must both be set or both be empty."
+                                .to_string(),
+                        );
                         return;
                     }
                     mcp_servers.push((
@@ -2001,7 +2003,8 @@ fn app_view() -> Element {
                                     if !header_key.is_empty() {
                                         let mut headers = serde_json::Map::new();
                                         headers.insert(header_key, Value::String(header_value));
-                                        server.insert("headers".to_string(), Value::Object(headers));
+                                        server
+                                            .insert("headers".to_string(), Value::Object(headers));
                                     }
                                     Value::Object(server)
                                 })
