@@ -36,6 +36,11 @@ fn main() -> butterfly_bot::Result<()> {
         butterfly_bot::config_store::save_config(&cli.db, &config)?;
     }
 
+    if butterfly_bot::config::Config::from_store(&cli.db).is_err() {
+        let defaults = butterfly_bot::config::Config::convention_defaults(&cli.db);
+        butterfly_bot::config_store::save_config(&cli.db, &defaults)?;
+    }
+
     std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
     if let Some(daemon) = cli.daemon.as_ref() {
         std::env::set_var("BUTTERFLY_BOT_DAEMON", daemon);

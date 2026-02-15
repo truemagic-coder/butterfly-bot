@@ -11,6 +11,7 @@
 - Agent tools including MCP.
 - Config stored in the OS keychain for maximum security.
 - No first-run wizard required for the default path.
+- UI launch auto-bootstraps default config and starts the local daemon automatically.
 
 ## Architecture (Daemon + UI + Always-On Agent)
 
@@ -175,6 +176,7 @@ Butterfly Bot uses convention-first defaults. You can run without editing config
 - Inline blocking prompts only: if a required secret is missing, the app requests it when needed.
 - Optional overrides: use the Config tab for advanced customization.
 - Factory reset: use **Config → Factory Reset** to restore convention defaults.
+- Zero-step startup: launching `butterfly-bot` or `butterfly-bot-ui` writes convention defaults when missing and attempts to start the daemon automatically.
 
 Config is stored in the OS keychain for top security and safety.
 
@@ -193,6 +195,14 @@ Config is stored in the OS keychain for top security and safety.
 - If a finding cannot be safely auto-remediated, guidance is presented as explicit manual steps.
 - See [docs/security-audit.md](docs/security-audit.md) for operating recommendations and limits.
 
+### Threat Model (Important)
+
+- Butterfly Bot now has a formal attacker model and trust-boundary definition.
+- This covers UI↔daemon, daemon↔tool runtime, daemon↔provider, and daemon↔storage boundaries.
+- Primary threats covered: plaintext secret leakage, tool capability escalation, over-permissive network egress, and daemon auth misuse.
+- Baseline controls include OS keychain-backed secrets, WASM-first high-risk tool runtime defaults, daemon auth checks, and `default_deny` network posture guidance.
+- See [docs/threat-model.md](docs/threat-model.md) for full assumptions, residual risks, and hardening priorities.
+
 ### Prompt Context & Heartbeat
 
 - `prompt_source` is optional Markdown (URL or inline database markdown) for custom assistant identity/style/rules.
@@ -200,6 +210,8 @@ Config is stored in the OS keychain for top security and safety.
 - `prompt_file` is optional Markdown (local path or URL) for extra instructions.
 - If these files are omitted, built-in defaults are used.
 - The heartbeat file is reloaded on every wakeup tick (using `tools.wakeup.poll_seconds`) so changes take effect without a restart.
+- Boot preload uses a **fast path**: context/prompt/heartbeat warmup is time-bounded and long operations continue in deferred background hydration.
+- This keeps startup responsive while preserving lazy/on-demand context import for first real work.
 
 ### Memory LLM Configuration
 
@@ -266,34 +278,27 @@ This is optional and intended for advanced customization.
 }
 ```
 
-### Convention Mode (WASM sandbox defaults)
+### Convention Mode (WASM-only tools)
 
-- Butterfly Bot defaults to `tools.settings.sandbox.mode = non_main`.
-- High-risk tools (`coding`, `mcp`, `http_call`) run in WASM by default.
-- Per-tool `runtime` is optional.
+- Tool execution is WASM-only for all built-in tools.
+- `tools.settings.sandbox.mode` remains accepted as config but does not bypass WASM-only execution.
+- Per-tool `runtime` config is ignored; tool execution is WASM-only.
 - Per-tool `wasm.module` is optional and defaults to `./wasm/<tool>_tool.wasm`.
-- Zero-config path: place modules at `./wasm/coding_tool.wasm`, `./wasm/mcp_tool.wasm`, and `./wasm/http_call_tool.wasm`.
-- Set `tools.settings.sandbox.mode = off` only when you explicitly want native runtime.
+- Zero-config path: place modules at `./wasm/<tool>_tool.wasm` for each tool you run.
 
 ```
 tool call
    │
    v
 ┌───────────────────────────────┐
-│ Sandbox planner (default mode │
-│ is non_main)                  │
+│ Sandbox planner               │
+│ (WASM-only invariant)         │
 └───────────────┬───────────────┘
                 │
-        ┌───────┴────────┐
-        │ high-risk tool?│
-        │ coding/mcp/http│
-        └───────┬────────┘
-            yes │ no
-                │
-      ┌─────────v─────────┐      ┌───────────────────┐
-      │ WASM runtime      │      │ Native runtime    │
-      │ ./wasm/<tool>_tool│      │ tool.execute(...) │
-      │ .wasm             │      └───────────────────┘
+      ┌─────────v─────────┐
+      │ WASM runtime      │
+      │ ./wasm/<tool>_tool│
+      │ .wasm             │
       └───────────────────┘
 ```
 

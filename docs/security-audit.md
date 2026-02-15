@@ -12,8 +12,8 @@ The current security audit focuses on local configuration and runtime posture ch
 
 - daemon auth token presence
 - inline secret hygiene in config
-- sandbox mode posture (`off`, `non_main`, `all`)
-- runtime posture for high-risk tools (`coding`, `mcp`, `http_call`)
+- sandbox mode configuration visibility (`off`, `non_main`, `all`)
+- WASM-only runtime invariant for built-in tools
 - global network `default_deny` posture
 
 ## Why no auto-fix
@@ -31,8 +31,8 @@ Because of this, findings provide **manual remediation steps** rather than mutat
 ## Operating recommendations
 
 - Keep a daemon token configured; do not run with an empty token.
-- Keep sandbox mode at `non_main` (default) or `all` for stricter isolation.
-- Keep high-risk tools on WASM runtime unless there is a deliberate exception.
+- Keep tools on WASM runtime only; treat native runtime as disallowed.
+- Keep sandbox mode configured for operational consistency, but do not rely on it as a bypass path.
 - Use `tools.settings.permissions.default_deny = true` and explicit allowlists.
 - Keep provider API keys in OS keychain secrets, not inline in config JSON.
 

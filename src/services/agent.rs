@@ -710,7 +710,7 @@ impl AgentService {
                                 user_id,
                                 &call.name,
                                 "success",
-                                serde_json::json!({ "args": call.arguments.clone(), "result": result_clone }),
+                                serde_json::json!({ "args": redacted_args.clone(), "result": redacted_result }),
                             );
                             results.push(serde_json::json!({
                                 "tool": call.name,
@@ -739,7 +739,7 @@ impl AgentService {
                                     user_id,
                                     &call.name,
                                     "skipped",
-                                    serde_json::json!({ "args": call.arguments.clone(), "error": err_message }),
+                                    serde_json::json!({ "args": redacted_args.clone(), "error": redact_string(&err_message) }),
                                 );
                                 results.push(serde_json::json!({
                                     "tool": call.name,
@@ -763,13 +763,14 @@ impl AgentService {
                                 user_id,
                                 &call.name,
                                 "error",
-                                serde_json::json!({ "args": call.arguments.clone(), "error": err.to_string() }),
+                                serde_json::json!({ "args": redacted_args.clone(), "error": redact_string(&err.to_string()) }),
                             );
                             return Err(err);
                         }
                     }
                 }
                 None => {
+                    let redacted_args = redact_value(&call.arguments);
                     let _ = self
                         .tool_registry
                         .audit_tool_call(&call.name, "not_found")
@@ -783,7 +784,7 @@ impl AgentService {
                         user_id,
                         &call.name,
                         "not_found",
-                        serde_json::json!({ "args": call.arguments.clone(), "message": "Tool not found" }),
+                        serde_json::json!({ "args": redacted_args.clone(), "message": "Tool not found" }),
                     );
                     results.push(serde_json::json!({
                         "tool": call.name,

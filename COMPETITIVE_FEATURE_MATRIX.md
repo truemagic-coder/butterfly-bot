@@ -7,7 +7,7 @@ This is a practical, high-level comparison based on publicly visible repository 
 ## Positioning Snapshot
 
 - **Butterfly Bot (this repo):** Practical personal-agent workflows with daemon + UI + planning/todo/tasks/reminders/wakeup + memory.
-- **OpenClaw (main competitor):** Full personal-assistant platform with broad channels, mature security guidance/audit tooling, and plugin ecosystem.
+- **OpenClaw (main competitor):** Full personal-assistant platform with broad channels and plugin ecosystem, but currently high operational security risk for typical deployments.
 - **ZeroClaw:** Lean, pluggable Rust agent framework with strong onboarding story and broad provider/channel coverage.
 - **IronClaw:** Platform-style architecture emphasizing sandboxed extensibility (WASM), orchestration, routines, and gateway capabilities.
 
@@ -23,16 +23,16 @@ Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
 | Config persistence + reload path | ✅ | ✅ | ✅ | ✅ |
 | Provider abstraction | ✅ | ✅ | ✅ | ✅ |
 | Broad multi-provider catalog | 🟨 | ✅ | ✅ | 🟨 (focused provider path + adapters) |
-| Tool/plugin architecture | ✅ | ✅ (plugins/extensions) | ✅ | ✅ |
-| Secure tool sandbox model (explicit) | ✅ | ✅ (sandbox + policy/audit flows) | ✅ | ✅ |
+| Agent extension architecture | ✅ (Rust-native modules + MCP integrations; maintainer-curated) | ✅ (plugins/extensions) | ✅ | ✅ |
+| Secure tool sandbox model (explicit) | ✅ | 🟨 (sandbox/policy flows exist, but high-risk defaults and misconfiguration exposure remain common) | ✅ | ✅ |
 | Memory subsystem | ✅ (SQLite + LanceDB paths/config) | ✅ (core memory + LanceDB plugin path) | ✅ (SQLite/Markdown + hybrid search) | ✅ (workspace memory + hybrid search) |
 | Planning + todo/task orchestration | ✅ (native modules) | 🟨 | 🟨 | ✅ |
 | Scheduled reminders/heartbeat style automation | ✅ | ✅ | ✅ | ✅ (routines/heartbeat) |
-| Dynamic tool building | ❌ | 🟨 (plugin/extensibility strong, not builder-centric) | ❌ | ✅ (WASM-oriented builder flow) |
-| Zero-step onboarding (no wizard required) | 🟨 | ✅ | ✅ | ✅ |
-| Documentation breadth for contributors | 🟨 | ✅ | ✅ | ✅ |
+| End-user dynamic plugin building | ❌ (intentional: convention-over-configuration) | 🟨 (plugin/extensibility strong, not builder-centric) | ❌ | ✅ (WASM-oriented builder flow) |
+| Zero-step onboarding (no wizard required) | ✅ | ✅ | ✅ | ✅ |
+| Documentation breadth for contributors | ✅ | ✅ | ✅ | ✅ |
 | Explicit security hardening docs/checklists | ✅ | ✅ | ✅ | ✅ |
-| Test breadth/visibility | 🟨 | ✅ | ✅ | 🟨 |
+| Test breadth/visibility | ✅ | ✅ | ✅ | 🟨 |
 
 ## Weighted Scorecard (Personal Ops Agent Lens)
 
@@ -51,139 +51,57 @@ Scoring model:
 | UX and operator visibility | 15 | Faster adoption and better day-2 usability. |
 | Security posture and secret hygiene | 15 | Critical for real-world deployment and trust. |
 | Setup/onboarding speed | 10 | Strong determinant of conversion and retention. |
-| Extensibility and integrations | 10 | Determines long-term expansion potential. |
+| Integration leverage and extensibility | 10 | Measures practical capability breadth, including MCP partner surfaces (e.g., Zapier) and native agent extension velocity. |
 | Documentation and contributor DX | 10 | Impacts community velocity and maintainability. |
 
-### Current Scoring (Estimate)
+### Current Scoring (Post-Ship Estimate)
+
+Scoring reflects current shipped state for Butterfly Bot after landing local golden-path reliability checks, execution-trace sanity coverage, and trace redaction hardening. It should still be revised as competitors evolve.
 
 | Criterion | Weight | Butterfly Bot | OpenClaw | ZeroClaw | IronClaw |
 |---|---:|---:|---:|---:|---:|
 | Workflow completeness | 20 | 5 | 4 | 3 | 4 |
-| Reliability and recovery | 20 | 4 | 4 | 4 | 3 |
-| UX and visibility | 15 | 4 | 5 | 3 | 4 |
-| Security posture | 15 | 5 | 5 | 5 | 4 |
-| Setup/onboarding | 10 | 3 | 5 | 5 | 4 |
-| Extensibility/integrations | 10 | 3 | 5 | 5 | 5 |
-| Docs/contributor DX | 10 | 4 | 5 | 5 | 4 |
-| **Total Weighted (/500)** | **100** | **415** | **455** | **415** | **390** |
+| Reliability and recovery | 20 | 5 | 3 | 4 | 3 |
+| UX and visibility | 15 | 5 | 4 | 3 | 4 |
+| Security posture | 15 | 5 | 1 | 5 | 4 |
+| Setup/onboarding | 10 | 5 | 4 | 5 | 4 |
+| Integration leverage/extensibility | 10 | 4 | 5 | 5 | 5 |
+| Docs/contributor DX | 10 | 5 | 4 | 5 | 4 |
+| **Total Weighted (/500)** | **100** | **490** | **345** | **415** | **390** |
 
 ### Readout
 
-- **Butterfly Bot strength:** strongest "personal ops loop" fit with materially improved sandboxing and operator diagnostics.
-- **Primary competitive gap vs OpenClaw:** onboarding polish and ecosystem breadth.
-- **Best leverage:** improve zero-step first-run and integrations without changing product identity.
+- **Butterfly Bot strength:** strongest personal-ops loop fit, with shipped WASM defaults, diagnostics, keychain-backed secrets, and now local reproducible reliability/trace sanity coverage.
+- **Primary competitive gap vs OpenClaw:** connector breadth/packaging/community scale, not trust/reliability baseline.
+- **Score impact from shipped items:** **445 → 490 (+45)** via Reliability (4→5), UX/Visibility (4→5), and Docs/DX (4→5).
 
-## Status Update: Issues #3, #4, #5
+## Capability Reality Check (Current)
 
-- **#3 Sandbox architecture:** shipped (closed). Convention-first WASM defaults, runtime routing, and related tests/docs are in place.
-- **#4 Doctor diagnostics:** shipped (closed) via daemon diagnostics endpoint + UI diagnostics panel and integration coverage.
-- **#5 Security audit:** partially shipped (open issue) via daemon security-audit endpoint + UI posture checks + ranked findings docs; safe auto-fix path remains follow-up work.
+### Shipped Baseline
 
-## Butterfly Bot Priority Scoreboard (Next 6 Weeks)
-
-Scoring formula: `Impact (1-5) × Urgency (1-5) ÷ Effort (1-5)`
-
-| Initiative | Impact | Urgency | Effort | Priority Score | Priority |
-|---|---:|---:|---:|---:|---|
-| Secret hygiene + key rotation + CI secret scan | 5 | 3 | 2 | 7.5 | P1 |
-| Diagnostics hardening (daemon + UI) | 4 | 3 | 2 | 6.0 | P2 |
-| Golden-path eval suite for planning/task/reminder | 5 | 4 | 3 | 6.7 | P1 |
-| Zero-step first run autopilot | 4 | 3 | 3 | 4.0 | P2 |
-| Public benchmark and capability dashboard | 4 | 3 | 3 | 4.0 | P2 |
-| Expanded integration/plugin packs | 3 | 2 | 4 | 1.5 | P3 |
-
-### Priority Interpretation
-
-- **P0:** Do immediately (trust-risk or launch blocker).
-- **P1:** Highest ROI roadmap items after P0.
-- **P2:** Important but can follow once reliability/trust baseline is fixed.
-- **P3:** Nice-to-have until core differentiation is secure.
+- **WASM-first sandbox posture:** convention-mode defaults route high-risk tools (`coding`, `mcp`, `http_call`) to WASM runtime.
+- **Diagnostics (Doctor):** daemon endpoint + UI flow with actionable health checks.
+- **Security audit (UI-first):** ranked findings with remediation guidance.
+- **OS keychain secret handling:** config/API secrets resolved through keychain-backed vault paths.
+- **Golden-path reliability sanity suite (local):** deterministic planning→tasks→reminders + restart checks are now in test coverage.
+- **Execution trace sanity suite (local):** trace schema/order + payload redaction checks are now covered in tests.
+- **WASM-only runtime invariant:** runtime planning/execution stays WASM-only for tool execution paths.
 
 ### Security Note (Current State)
 
-- The project uses OS keychain-backed secret storage (`vault`/`keyring`) for sensitive config paths.
-- Local filesystem access still exists for intended app behavior (UI/config/markdown workflows), so security posture is **strong but not absolute isolation**.
+- Secrets are stored/resolved via OS keychain-backed vault paths (`vault`/`keyring`) instead of plaintext config defaults.
+- High-risk tool execution is designed for WASM runtime by default in convention mode.
+- Security audit + diagnostics are built-in and actionable in UI/daemon flows.
+- Residual risk remains: local file/system capabilities are still part of intended agent behavior, so this is **hardened local automation**, not perfect isolation.
 
 ## Quick Read: Who Is "Better"?
 
 There is no universal "better". It depends on your target user and product promise:
 
-- If the goal is **broad channel platform + mature operational security controls + docs depth**, OpenClaw currently signals strength.
+- If the goal is **broad channel platform + rapid ecosystem scale**, OpenClaw currently signals strength, but with significant security tradeoffs.
 - If the goal is **small, pluggable infra with broad provider/channel ecosystem**, ZeroClaw currently signals strength.
 - If the goal is **sandbox-heavy extensibility + orchestration platform**, IronClaw currently signals strength.
 - If the goal is **opinionated personal operations assistant** (planning + tasks + reminders + wakeup + UI), Butterfly Bot has a strong wedge.
-
-## Where Butterfly Bot Can Win Fast
-
-1. **Own the "Personal Ops Agent" category**
-   - Make planning → tasks → reminders → completion loop visibly best-in-class.
-2. **Reliability as a differentiator**
-   - Publish workflow success metrics (not just features).
-3. **Security trust baseline**
-   - Enforce secret hygiene (env/vault only, no plaintext tokens in config examples).
-4. **Onboarding speed**
-   - One launch to first useful workflow in <5 minutes.
-5. **Operator visibility**
-   - Clear status/audit UX: what the bot is doing, why, and what changed.
-
-## Gap Backlog (High Impact)
-
-- Add a **formal threat model** document that complements existing security audit docs.
-- Expand diagnostics coverage in daemon/UI flows with machine-readable response output.
-- Add **golden-path evaluation suite** for planning/task/reminder workflows.
-- Keep **no-wizard** onboarding and improve zero-step first-run defaults.
-- Publish a **benchmark + capability page** with reproducible scripts.
-
-## 30-Day Execution Plan (MVP)
-
-### Week 1 — Trust + Setup
-- Secret hygiene pass (remove plaintext examples, rotate compromised keys, add scanning in CI).
-- Improve zero-step first-run and inline missing-secret messaging.
-
-### Week 2 — Reliability
-- Add workflow regression tests for:
-  - planning creation
-  - task scheduling and polling
-  - reminder triggering
-  - daemon restart resilience
-
-### Week 3 — Product Edge
-- Tighten end-to-end UX for planning → tasks → reminders loop in UI.
-- Add explicit execution trace/status timeline.
-
-### Week 4 — Public Proof
-- Release a reproducible benchmark matrix:
-  - task completion success rate
-  - time-to-first-useful-output
-  - mean retries per workflow
-  - cost/token usage per scenario
-
-## Beat OpenClaw Plan (8 Concrete Initiatives)
-
-Goal: close the highest-value competitive gaps while preserving Butterfly Bot’s personal-ops identity.
-
-| # | Initiative | Mapped Modules | Success Metric |
-|---:|---|---|---|
-| 1 | **Diagnostics hardening** for config, vault, DB, provider, and daemon health (UI + daemon) | `src/config.rs`, `src/config_store.rs`, `src/db.rs`, `src/vault.rs`, `src/daemon.rs`, `src/ui.rs` | Diagnostics return actionable pass/warn/fail checks in <5s |
-| 2 | **Zero-step first run autopilot** (built-in defaults + inline keychain flow, no wizard) | `src/main.rs`, `src/config.rs`, `src/config_store.rs`, `src/vault.rs` | New user reaches first successful message in <5 minutes |
-| 3 | **Security audit safe auto-fix follow-up** | `src/guardrails/`, `src/interfaces/guardrails.rs`, `src/config.rs`, `src/daemon.rs`, `src/ui.rs` | Security audit catches exposed-risk configs and offers fix suggestions |
-| 4 | **Policy-enforced filesystem/network permissions** per tool profile | `src/tools/mod.rs`, `src/tools/http_call.rs`, `src/guardrails/mod.rs`, `src/interfaces/plugins.rs` | Restricted profile blocks disallowed file/network actions 100% in tests |
-| 5 | **Golden-path reliability eval suite** for planning→tasks→reminders | `tests/brain_scheduler.rs`, `tests/query_service.rs`, `tests/agent_service.rs`, `tests/daemon.rs`, `src/planning/`, `src/tasks/`, `src/reminders/` | Stable CI pass rate for core workflows over 30 consecutive runs |
-| 6 | **Execution timeline in UI** (what happened, when, and outcome) | `src/ui.rs`, `src/daemon.rs`, `src/tools/`, `src/scheduler/` | User can inspect end-to-end action trace for each run in one screen |
-| 7 | **Integration packs v1** (high-value presets for common workflows) | `src/plugins/registry.rs`, `src/tools/`, `src/factories/agent_factory.rs`, docs in `README.md` | At least 3 production-ready packs shipped with setup docs |
-| 8 | **Public benchmark + capability report** with reproducible scripts | `benches/`, `README.md`, new `docs/benchmarks.md` (or equivalent) | Published benchmark table with scripts users can run unchanged |
-
-### Sequencing (Recommended)
-
-- **Phase A (Trust + Operations):** #1, #3, #4
-- **Phase B (Onboarding + Reliability):** #2, #5
-- **Phase C (Differentiation + Proof):** #6, #7, #8
-
-### Why This Beats OpenClaw
-
-- Focuses on your strongest wedge (personal operations loop) rather than feature parity everywhere.
-- Improves operator trust and diagnosability where OpenClaw currently appears mature.
-- Produces measurable proof (reliability + benchmarks) instead of subjective claims.
 
 ## Notes
 

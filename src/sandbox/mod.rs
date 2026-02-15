@@ -24,16 +24,12 @@ pub enum SandboxMode {
 #[serde(rename_all = "snake_case")]
 pub enum ToolRuntime {
     #[default]
-    Native,
     Wasm,
 }
 
 impl ToolRuntime {
     pub fn as_str(&self) -> &'static str {
-        match self {
-            ToolRuntime::Native => "native",
-            ToolRuntime::Wasm => "wasm",
-        }
+        "wasm"
     }
 }
 
@@ -62,8 +58,6 @@ pub struct WasmToolConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSandboxConfig {
     #[serde(default)]
-    pub runtime: Option<ToolRuntime>,
-    #[serde(default)]
     pub wasm: WasmToolConfig,
     #[serde(default)]
     pub filesystem: FilesystemPolicy,
@@ -74,7 +68,6 @@ pub struct ToolSandboxConfig {
 impl Default for ToolSandboxConfig {
     fn default() -> Self {
         Self {
-            runtime: None,
             wasm: WasmToolConfig::default(),
             filesystem: FilesystemPolicy::default(),
             network: NetworkPolicy::default(),
@@ -91,24 +84,6 @@ pub struct SandboxSettings {
 }
 
 impl SandboxSettings {
-    fn sandbox_required_tool(tool_name: &str) -> bool {
-        tool_name == "coding" || tool_name == "mcp" || tool_name == "http_call"
-    }
-
-    fn default_runtime_for_tool(tool_name: &str) -> ToolRuntime {
-        if Self::sandbox_required_tool(tool_name) {
-            ToolRuntime::Wasm
-        } else {
-            ToolRuntime::Native
-        }
-    }
-
-    fn runtime_for_tool(&self, tool_name: &str, tool_config: &ToolSandboxConfig) -> ToolRuntime {
-        tool_config
-            .runtime
-            .unwrap_or_else(|| Self::default_runtime_for_tool(tool_name))
-    }
-
     pub fn from_root_config(root: &Value) -> Self {
         let candidate = root
             .get("tools")
@@ -124,28 +99,15 @@ impl SandboxSettings {
 
     pub fn execution_plan(&self, tool_name: &str) -> ExecutionPlan {
         let tool_config = self.tools.get(tool_name).cloned().unwrap_or_default();
-        let configured_or_default_runtime = self.runtime_for_tool(tool_name, &tool_config);
-        let runtime = match self.mode {
-            SandboxMode::Off => ToolRuntime::Native,
-            SandboxMode::All => configured_or_default_runtime,
-            SandboxMode::NonMain => {
-                if Self::sandbox_required_tool(tool_name) {
-                    configured_or_default_runtime
-                } else {
-                    ToolRuntime::Native
-                }
-            }
+        let mode_label = match self.mode {
+            SandboxMode::Off => "off",
+            SandboxMode::All => "all",
+            SandboxMode::NonMain => "non_main",
         };
-
-        let reason = match self.mode {
-            SandboxMode::Off => "sandbox.mode=off",
-            SandboxMode::All => "sandbox.mode=all",
-            SandboxMode::NonMain => "sandbox.mode=non_main",
-        }
-        .to_string();
+        let reason = format!("wasm_only_policy (configured sandbox.mode={mode_label})");
 
         ExecutionPlan {
-            runtime,
+            runtime: ToolRuntime::Wasm,
             reason,
             tool_config,
         }
@@ -163,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn non_main_defaults_high_risk_tools_to_wasm() {
+    fn wasm_only_policy_routes_all_tools_to_wasm() {
         let settings = SandboxSettings {
             mode: SandboxMode::NonMain,
             ..Default::default()
@@ -172,11 +134,12 @@ mod tests {
         assert_eq!(settings.execution_plan("coding").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("mcp").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("http_call").runtime, ToolRuntime::Wasm);
-        assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Native);
+        assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Wasm);
+        assert_eq!(settings.execution_plan("planning").runtime, ToolRuntime::Wasm);
     }
 
     #[test]
-    fn explicit_runtime_override_is_respected() {
+    fn explicit_runtime_override_cannot_bypass_wasm_only_policy() {
         let root = serde_json::json!({
             "tools": {
                 "settings": {
@@ -196,8 +159,8 @@ mod tests {
         });
 
         let settings = SandboxSettings::from_root_config(&root);
-        assert_eq!(settings.execution_plan("coding").runtime, ToolRuntime::Native);
-        assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Native);
+        assert_eq!(settings.execution_plan("coding").runtime, ToolRuntime::Wasm);
+        assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Wasm);
 
         let root_all = serde_json::json!({
             "tools": {
@@ -215,6 +178,19 @@ mod tests {
         });
         let settings_all = SandboxSettings::from_root_config(&root_all);
         assert_eq!(settings_all.execution_plan("github").runtime, ToolRuntime::Wasm);
+
+        let root_off = serde_json::json!({
+            "tools": {
+                "settings": {
+                    "sandbox": {
+                        "mode": "off"
+                    }
+                }
+            }
+        });
+        let settings_off = SandboxSettings::from_root_config(&root_off);
+        assert_eq!(settings_off.execution_plan("coding").runtime, ToolRuntime::Wasm);
+        assert_eq!(settings_off.execution_plan("tasks").runtime, ToolRuntime::Wasm);
     }
 
     #[test]

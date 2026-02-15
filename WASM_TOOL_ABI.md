@@ -4,7 +4,7 @@ This documents the initial Butterfly Bot WASM sandbox ABI implemented in `src/sa
 
 ## Runtime Behavior
 
-When a tool executes with runtime `wasm`, Butterfly Bot:
+When a tool executes, Butterfly Bot:
 
 1. Loads the module from `tools.settings.sandbox.tools.<tool>.wasm.module`
   - If omitted, uses `./wasm/<tool>_tool.wasm` by convention.
@@ -65,11 +65,9 @@ Output bytes must be UTF-8 JSON.
 
 ## Notes
 
-- Default mode is `non_main` (convention-first behavior).
-- `mode: off` forces native runtime.
-- `mode: non_main` runs selected high-risk tools (`coding`, `mcp`, `http_call`) in WASM by default, others stay native.
-- `mode: all` applies sandbox runtime selection to all tools.
-- Per-tool `runtime` is optional. If omitted, default runtime is `wasm` for `coding`/`mcp`/`http_call`, otherwise `native`.
+- Tool runtime is WASM-only for all built-in tools.
+- `sandbox.mode` values are accepted for compatibility but do not bypass WASM execution.
+- Per-tool `runtime` is ignored; tool execution remains WASM-only.
 - Per-tool `wasm.module` is optional. If omitted, module path defaults to `./wasm/<tool>_tool.wasm`.
 - `timeout_ms` interrupts long-running WASM execution by epoch deadline.
 - `fuel` sets a deterministic instruction budget for guest execution.
@@ -83,6 +81,6 @@ If you place modules at:
 - `./wasm/mcp_tool.wasm`
 - `./wasm/http_call_tool.wasm`
 
-then sandbox-required tools run in WASM by default with no explicit sandbox config required.
+then those tools run in WASM with no explicit sandbox config required.
 
-For the top-level overview, see `README.md` → `Convention Mode (WASM sandbox defaults)`.
+For the top-level overview, see `README.md` → `Convention Mode (WASM-only tools)`.

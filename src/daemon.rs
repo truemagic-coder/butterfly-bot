@@ -25,7 +25,7 @@ use crate::error::{ButterflyBotError, Result};
 use crate::factories::agent_factory::load_markdown_content;
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::{resolve_reminder_db_path, ReminderStore};
-use crate::sandbox::{SandboxMode, SandboxSettings, ToolRuntime};
+use crate::sandbox::{SandboxSettings, ToolRuntime};
 use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
@@ -578,60 +578,56 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
             let root = json!({ "tools": config.tools.clone().unwrap_or(Value::Null) });
             let sandbox = SandboxSettings::from_root_config(&root);
 
-            match sandbox.mode {
-                SandboxMode::Off => findings.push(security_finding(
-                    "sandbox_mode",
-                    "high",
-                    "fail",
-                    "Sandbox mode is off; high-risk tools can execute natively.".to_string(),
-                    Some("Set tools.settings.sandbox.mode to `non_main` or `all`."),
-                    false,
-                )),
-                SandboxMode::NonMain | SandboxMode::All => {
-                    let mode_label = match sandbox.mode {
-                        SandboxMode::Off => "off",
-                        SandboxMode::NonMain => "non_main",
-                        SandboxMode::All => "all",
-                    };
-                    findings.push(security_finding(
-                    "sandbox_mode",
-                    "low",
-                    "pass",
-                    format!("Sandbox mode is {mode_label}."),
-                    None,
-                    false,
-                ))
-                }
-            }
+            let mode_label = match sandbox.mode {
+                crate::sandbox::SandboxMode::Off => "off",
+                crate::sandbox::SandboxMode::NonMain => "non_main",
+                crate::sandbox::SandboxMode::All => "all",
+            };
+            findings.push(security_finding(
+                "sandbox_mode",
+                "low",
+                "pass",
+                format!("WASM-only policy enforced (configured sandbox mode: {mode_label})."),
+                None,
+                false,
+            ));
 
-            let high_risk_tools = ["coding", "mcp", "http_call"];
-            let mut native_tools = Vec::new();
-            for tool_name in high_risk_tools {
+            let built_in_tools = [
+                "coding",
+                "mcp",
+                "http_call",
+                "github",
+                "planning",
+                "reminders",
+                "search_internet",
+                "tasks",
+                "todo",
+                "wakeup",
+            ];
+            let mut non_wasm_tools = Vec::new();
+            for tool_name in built_in_tools {
                 let plan = sandbox.execution_plan(tool_name);
                 if plan.runtime != ToolRuntime::Wasm {
-                    native_tools.push(tool_name);
+                    non_wasm_tools.push(tool_name);
                 }
             }
 
-            if native_tools.is_empty() {
+            if non_wasm_tools.is_empty() {
                 findings.push(security_finding(
-                    "high_risk_tool_runtime",
+                    "tool_runtime_invariant",
                     "low",
                     "pass",
-                    "High-risk tools resolve to WASM runtime.".to_string(),
+                    "All built-in tools resolve to WASM runtime.".to_string(),
                     None,
                     false,
                 ));
             } else {
                 findings.push(security_finding(
-                    "high_risk_tool_runtime",
+                    "tool_runtime_invariant",
                     "high",
                     "fail",
-                    format!(
-                        "High-risk tools running native: {}.",
-                        native_tools.join(", ")
-                    ),
-                    Some("Set per-tool runtime to `wasm` and keep sandbox mode enabled."),
+                    format!("Non-WASM tool runtime detected for: {}.", non_wasm_tools.join(", ")),
+                    Some("Enforce WASM-only execution in sandbox settings and tool runtime planner."),
                     false,
                 ));
             }
@@ -985,23 +981,45 @@ async fn preload_boot(
     let user_id = payload.user_id.clone();
 
     tokio::spawn(async move {
-        let context_status = match agent.preload_context(&user_id).await {
-            Ok(()) => "ok".to_string(),
-            Err(err) => format!("error: {err}"),
+        let quick_timeout = Duration::from_secs(2);
+
+        let context_status = match tokio::time::timeout(quick_timeout, agent.preload_context(&user_id)).await {
+            Ok(Ok(())) => "ok".to_string(),
+            Ok(Err(err)) => format!("error: {err}"),
+            Err(_) => {
+                let agent = agent.clone();
+                let ui_event_tx = ui_event_tx.clone();
+                let user_id = user_id.clone();
+                tokio::spawn(async move {
+                    let status = match agent.preload_context(&user_id).await {
+                        Ok(()) => "ok".to_string(),
+                        Err(err) => format!("error: {err}"),
+                    };
+                    let _ = ui_event_tx.send(UiEvent {
+                        event_type: "boot".to_string(),
+                        user_id: user_id.clone(),
+                        tool: "context".to_string(),
+                        status: status.clone(),
+                        payload: json!({"user_id": user_id, "status": status, "phase": "deferred"}),
+                        timestamp: now_ts(),
+                    });
+                });
+                "deferred".to_string()
+            }
         };
         let _ = ui_event_tx.send(UiEvent {
             event_type: "boot".to_string(),
             user_id: user_id.clone(),
-            tool: "prompt".to_string(),
+            tool: "context".to_string(),
             status: context_status.clone(),
-            payload: json!({"user_id": user_id, "status": context_status}),
+            payload: json!({"user_id": user_id, "status": context_status, "phase": "quick"}),
             timestamp: now_ts(),
         });
 
         let heartbeat_status = if let Ok(config) = Config::from_store(&db_path) {
             let source = config.heartbeat_source;
-            match load_markdown_content(&source).await {
-                Ok(markdown) => {
+            match tokio::time::timeout(quick_timeout, load_markdown_content(&source)).await {
+                Ok(Ok(markdown)) => {
                     agent.set_heartbeat_markdown(markdown.clone()).await;
                     if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
                         "ok".to_string()
@@ -1009,16 +1027,52 @@ async fn preload_boot(
                         "empty".to_string()
                     }
                 }
-                Err(err) => format!("error: {err}"),
+                Ok(Err(err)) => format!("error: {err}"),
+                Err(_) => {
+                    let agent = agent.clone();
+                    let ui_event_tx = ui_event_tx.clone();
+                    let source = source.clone();
+                    tokio::spawn(async move {
+                        let status = match load_markdown_content(&source).await {
+                            Ok(markdown) => {
+                                agent.set_heartbeat_markdown(markdown.clone()).await;
+                                if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                                    "ok".to_string()
+                                } else {
+                                    "empty".to_string()
+                                }
+                            }
+                            Err(err) => format!("error: {err}"),
+                        };
+                        let _ = ui_event_tx.send(UiEvent {
+                            event_type: "boot".to_string(),
+                            user_id: "system".to_string(),
+                            tool: "heartbeat".to_string(),
+                            status: status.clone(),
+                            payload: json!({"status": status, "phase": "deferred"}),
+                            timestamp: now_ts(),
+                        });
+                    });
+                    "deferred".to_string()
+                }
             }
         } else {
             "config_error".to_string()
         };
 
+        let _ = ui_event_tx.send(UiEvent {
+            event_type: "boot".to_string(),
+            user_id: "system".to_string(),
+            tool: "heartbeat".to_string(),
+            status: heartbeat_status.clone(),
+            payload: json!({"status": heartbeat_status, "phase": "quick"}),
+            timestamp: now_ts(),
+        });
+
         let prompt_status = if let Ok(config) = Config::from_store(&db_path) {
             let source = config.prompt_source;
-            match load_markdown_content(&source).await {
-                Ok(markdown) => {
+            match tokio::time::timeout(quick_timeout, load_markdown_content(&source)).await {
+                Ok(Ok(markdown)) => {
                     agent.set_prompt_markdown(markdown.clone()).await;
                     if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
                         "ok".to_string()
@@ -1026,7 +1080,34 @@ async fn preload_boot(
                         "empty".to_string()
                     }
                 }
-                Err(err) => format!("error: {err}"),
+                Ok(Err(err)) => format!("error: {err}"),
+                Err(_) => {
+                    let agent = agent.clone();
+                    let ui_event_tx = ui_event_tx.clone();
+                    let source = source.clone();
+                    tokio::spawn(async move {
+                        let status = match load_markdown_content(&source).await {
+                            Ok(markdown) => {
+                                agent.set_prompt_markdown(markdown.clone()).await;
+                                if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                                    "ok".to_string()
+                                } else {
+                                    "empty".to_string()
+                                }
+                            }
+                            Err(err) => format!("error: {err}"),
+                        };
+                        let _ = ui_event_tx.send(UiEvent {
+                            event_type: "boot".to_string(),
+                            user_id: "system".to_string(),
+                            tool: "prompt".to_string(),
+                            status: status.clone(),
+                            payload: json!({"status": status, "phase": "deferred"}),
+                            timestamp: now_ts(),
+                        });
+                    });
+                    "deferred".to_string()
+                }
             }
         } else {
             "config_error".to_string()
@@ -1041,8 +1122,8 @@ async fn preload_boot(
             timestamp: now_ts(),
         });
 
-        if (heartbeat_status == "ok" || heartbeat_status == "empty")
-            && (prompt_status == "ok" || prompt_status == "empty")
+        if (heartbeat_status == "ok" || heartbeat_status == "empty" || heartbeat_status == "deferred")
+            && (prompt_status == "ok" || prompt_status == "empty" || prompt_status == "deferred")
         {
             let agent = agent.clone();
             let ui_event_tx = ui_event_tx.clone();

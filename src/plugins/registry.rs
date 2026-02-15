@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
-use crate::sandbox::{SandboxSettings, WasmRuntime};
+use crate::sandbox::{SandboxSettings, ToolRuntime, WasmRuntime};
 
 #[derive(Default)]
 pub struct ToolRegistry {
@@ -125,11 +125,13 @@ impl ToolRegistry {
     }
 
     pub async fn execute_tool(&self, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let tool = {
+        let tool_exists = {
             let tools = self.tools.read().await;
-            tools.get(tool_name).cloned()
+            tools.contains_key(tool_name)
+        };
+        if !tool_exists {
+            return Err(ButterflyBotError::Runtime(format!("Tool not found: {tool_name}")));
         }
-        .ok_or_else(|| ButterflyBotError::Runtime(format!("Tool not found: {tool_name}")))?;
 
         let plan = {
             let sandbox = self.sandbox.read().await;
@@ -140,12 +142,12 @@ impl ToolRegistry {
             .audit_sandbox_decision(tool_name, plan.runtime.as_str(), &plan.reason)
             .await;
 
-        match plan.runtime {
-            crate::sandbox::ToolRuntime::Native => tool.execute(params).await,
-            crate::sandbox::ToolRuntime::Wasm => {
-                self.wasm_runtime.execute(tool_name, &plan.tool_config, params).await
-            }
-        }
+        self.wasm_runtime.execute(tool_name, &plan.tool_config, params).await
+    }
+
+    pub async fn resolved_runtime_for_tool(&self, tool_name: &str) -> ToolRuntime {
+        let sandbox = self.sandbox.read().await;
+        sandbox.execution_plan(tool_name).runtime
     }
 
     pub async fn audit_tool_call(&self, tool_name: &str, status: &str) -> Result<()> {

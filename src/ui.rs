@@ -404,6 +404,7 @@ fn app_view() -> Element {
     let error = use_signal(String::new);
     let messages = use_signal(Vec::<ChatMessage>::new);
     let daemon_running = use_signal(|| false);
+    let daemon_autostart_attempted = use_signal(|| false);
     let daemon_status = use_signal(String::new);
     let next_id = use_signal(|| 1u64);
     let active_tab = use_signal(|| UiTab::Chat);
@@ -598,7 +599,7 @@ fn app_view() -> Element {
                     }
                     Err(err) => {
                         let _ = error.set(format!(
-                            "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start in Config > Daemon."
+                            "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start on the main page (Chat tab)."
                         ));
                     }
                 }
@@ -800,6 +801,29 @@ fn app_view() -> Element {
             });
         })
     };
+
+    {
+        let daemon_autostart_attempted = daemon_autostart_attempted.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_status = daemon_status.clone();
+        let on_daemon_start = on_daemon_start.clone();
+
+        use_effect(move || {
+            if *daemon_autostart_attempted.read() {
+                return;
+            }
+            let mut daemon_autostart_attempted = daemon_autostart_attempted.clone();
+            daemon_autostart_attempted.set(true);
+
+            if *daemon_running.read() {
+                return;
+            }
+
+            let mut daemon_status = daemon_status.clone();
+            daemon_status.set("Starting daemon for zero-step onboarding…".to_string());
+            on_daemon_start.call(());
+        });
+    }
 
     {
         let reminders_listener_started = reminders_listener_started.clone();
@@ -2096,9 +2120,24 @@ fn app_view() -> Element {
                 backdrop-filter: blur(18px) saturate(180%);
                 box-shadow: 0 8px 30px rgba(0,0,0,0.25);
             }}
-            .nav {{ display: flex; gap: 8px; }}
+            .nav {{ display: flex; gap: 8px; align-items: center; }}
             .nav button {{ background: rgba(255,255,255,0.08); }}
             .nav button.active {{ background: rgba(99,102,241,0.6); }}
+            .nav-controls {{ display: flex; gap: 6px; margin-left: 8px; }}
+            .daemon-icon-btn {{
+                width: 36px;
+                height: 36px;
+                min-width: 36px;
+                padding: 0;
+                border-radius: 999px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 16px;
+                line-height: 1;
+                background: rgba(255,255,255,0.12);
+            }}
+            .daemon-icon-btn:disabled {{ opacity: 0.45; }}
             .title {{ font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }}
             .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: transparent; }}
             .bubble {{
@@ -2301,6 +2340,22 @@ fn app_view() -> Element {
                         },
                         "Heartbeat"
                     }
+                    div { class: "nav-controls",
+                        button {
+                            class: "daemon-icon-btn",
+                            title: "Start daemon",
+                            onclick: move |_| on_daemon_start.call(()),
+                            disabled: *daemon_running.read(),
+                            "▶"
+                        }
+                        button {
+                            class: "daemon-icon-btn",
+                            title: "Stop daemon",
+                            onclick: move |_| on_daemon_stop.call(()),
+                            disabled: !*daemon_running.read(),
+                            "⏹"
+                        }
+                    }
                 }
             }
             if !error.read().is_empty() {
@@ -2309,6 +2364,9 @@ fn app_view() -> Element {
             if *active_tab.read() == UiTab::Chat {
                 if !boot_status.read().is_empty() {
                     div { class: "hint", "{boot_status}" }
+                }
+                if !daemon_status.read().is_empty() {
+                    div { class: "hint", "{daemon_status}" }
                 }
                 div { class: "chat", id: "chat-scroll",
                     for message in messages
@@ -2372,25 +2430,6 @@ fn app_view() -> Element {
                         div { class: "hint", "Loading config…" }
                     }
                     if *tools_loaded.read() {
-                        div { class: "settings-card",
-                            label { "Daemon" }
-                            p { class: "hint", "Start/stop the local daemon for this UI session." }
-                            div { class: "config-actions",
-                                button {
-                                    onclick: move |_| on_daemon_start.call(()),
-                                    disabled: *daemon_running.read(),
-                                    "Start"
-                                }
-                                button {
-                                    onclick: move |_| on_daemon_stop.call(()),
-                                    disabled: !*daemon_running.read(),
-                                    "Stop"
-                                }
-                            }
-                            if !daemon_status.read().is_empty() {
-                                p { class: "hint", "{daemon_status}" }
-                            }
-                        }
                         div { class: "settings-card",
                             label { "Config (JSON)" }
                             div { class: "config-head",
