@@ -24,7 +24,10 @@ async fn all_registered_tools_resolve_to_wasm_runtime() {
     let tool_registry = query_service.agent_service().tool_registry.clone();
     let tool_names = tool_registry.list_all_tools().await;
 
-    assert!(!tool_names.is_empty(), "expected at least one registered tool");
+    assert!(
+        !tool_names.is_empty(),
+        "expected at least one registered tool"
+    );
 
     for tool_name in tool_names {
         let runtime = tool_registry.resolved_runtime_for_tool(&tool_name).await;

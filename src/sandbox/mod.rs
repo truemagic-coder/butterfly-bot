@@ -64,7 +64,7 @@ pub struct WasmToolConfig {
     pub fuel: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolSandboxConfig {
     #[serde(default)]
     pub wasm: WasmToolConfig,
@@ -74,17 +74,6 @@ pub struct ToolSandboxConfig {
     pub network: NetworkPolicy,
     #[serde(default)]
     pub capabilities: CapabilityPolicy,
-}
-
-impl Default for ToolSandboxConfig {
-    fn default() -> Self {
-        Self {
-            wasm: WasmToolConfig::default(),
-            filesystem: FilesystemPolicy::default(),
-            network: NetworkPolicy::default(),
-            capabilities: CapabilityPolicy::default(),
-        }
-    }
 }
 
 impl ToolSandboxConfig {
@@ -193,8 +182,8 @@ impl SandboxSettings {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
     use serde_json::json;
+    use std::fs;
 
     use super::{SandboxMode, SandboxSettings, ToolRuntime, ToolSandboxConfig, WasmRuntime};
 
@@ -213,16 +202,20 @@ mod tests {
 
         assert_eq!(settings.execution_plan("coding").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("mcp").runtime, ToolRuntime::Wasm);
-        assert_eq!(settings.execution_plan("http_call").runtime, ToolRuntime::Wasm);
+        assert_eq!(
+            settings.execution_plan("http_call").runtime,
+            ToolRuntime::Wasm
+        );
         assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("zapier").runtime, ToolRuntime::Wasm);
-        assert_eq!(settings.execution_plan("planning").runtime, ToolRuntime::Wasm);
-        assert!(
-            settings
-                .execution_plan("reminders")
-                .tool_config
-                .is_capability_allowed("kv.sqlite.reminders.list")
+        assert_eq!(
+            settings.execution_plan("planning").runtime,
+            ToolRuntime::Wasm
         );
+        assert!(settings
+            .execution_plan("reminders")
+            .tool_config
+            .is_capability_allowed("kv.sqlite.reminders.list"));
     }
 
     #[test]
@@ -246,7 +239,9 @@ mod tests {
         let settings = SandboxSettings::from_root_config(&root);
         let plan = settings.execution_plan("reminders");
         assert!(plan.tool_config.is_capability_allowed("clock.now_unix"));
-        assert!(!plan.tool_config.is_capability_allowed("kv.sqlite.reminders.list"));
+        assert!(!plan
+            .tool_config
+            .is_capability_allowed("kv.sqlite.reminders.list"));
     }
 
     #[test]
@@ -288,7 +283,10 @@ mod tests {
             }
         });
         let settings_all = SandboxSettings::from_root_config(&root_all);
-        assert_eq!(settings_all.execution_plan("github").runtime, ToolRuntime::Wasm);
+        assert_eq!(
+            settings_all.execution_plan("github").runtime,
+            ToolRuntime::Wasm
+        );
 
         let root_off = serde_json::json!({
             "tools": {
@@ -300,8 +298,14 @@ mod tests {
             }
         });
         let settings_off = SandboxSettings::from_root_config(&root_off);
-        assert_eq!(settings_off.execution_plan("coding").runtime, ToolRuntime::Wasm);
-        assert_eq!(settings_off.execution_plan("tasks").runtime, ToolRuntime::Wasm);
+        assert_eq!(
+            settings_off.execution_plan("coding").runtime,
+            ToolRuntime::Wasm
+        );
+        assert_eq!(
+            settings_off.execution_plan("tasks").runtime,
+            ToolRuntime::Wasm
+        );
     }
 
     #[test]
@@ -438,11 +442,12 @@ mod tests {
         let settings = SandboxSettings::from_root_config(&root);
         let plan = settings.execution_plan("todo");
         assert_eq!(plan.tool_config.capabilities.abi_version, Some(1));
-        assert!(
-            plan.tool_config
-                .is_capability_allowed("kv.sqlite.todo.create")
-        );
-        assert!(!plan.tool_config.is_capability_allowed("kv.sqlite.todo.delete"));
+        assert!(plan
+            .tool_config
+            .is_capability_allowed("kv.sqlite.todo.create"));
+        assert!(!plan
+            .tool_config
+            .is_capability_allowed("kv.sqlite.todo.delete"));
     }
 
     #[test]
@@ -468,7 +473,9 @@ mod tests {
         let plan = settings.execution_plan("todo");
         let err = WasmRuntime::validate_capability_abi("todo", &plan.tool_config)
             .expect_err("expected abi_version mismatch to fail");
-        assert!(err.to_string().contains("unsupported capability ABI version"));
+        assert!(err
+            .to_string()
+            .contains("unsupported capability ABI version"));
     }
 }
 
@@ -609,10 +616,12 @@ impl WasmRuntime {
         let raw = packed as u64;
         let ptr = (raw >> 32) as u32;
         let len = (raw & 0xFFFF_FFFF) as u32;
-        let ptr = i32::try_from(ptr)
-            .map_err(|_| ButterflyBotError::Runtime("Invalid output pointer from wasm".to_string()))?;
-        let len = i32::try_from(len)
-            .map_err(|_| ButterflyBotError::Runtime("Invalid output length from wasm".to_string()))?;
+        let ptr = i32::try_from(ptr).map_err(|_| {
+            ButterflyBotError::Runtime("Invalid output pointer from wasm".to_string())
+        })?;
+        let len = i32::try_from(len).map_err(|_| {
+            ButterflyBotError::Runtime("Invalid output length from wasm".to_string())
+        })?;
         Ok((ptr, len))
     }
 
@@ -657,17 +666,18 @@ impl WasmRuntime {
             wasm_config.consume_fuel(true);
         }
 
-        let engine = Engine::new(&wasm_config)
-            .map_err(|e| ButterflyBotError::Runtime(format!("Failed to initialize wasm engine: {e}")))?;
+        let engine = Engine::new(&wasm_config).map_err(|e| {
+            ButterflyBotError::Runtime(format!("Failed to initialize wasm engine: {e}"))
+        })?;
         let module = Module::from_file(&engine, &module_path)
             .map_err(|e| ButterflyBotError::Runtime(format!("Failed to load wasm module: {e}")))?;
         let linker = Linker::new(&engine);
         let mut store = Store::new(&engine, ());
 
         if let Some(limit) = fuel_limit {
-            store
-                .set_fuel(limit)
-                .map_err(|e| ButterflyBotError::Runtime(format!("Failed to apply wasm fuel limit: {e}")))?;
+            store.set_fuel(limit).map_err(|e| {
+                ButterflyBotError::Runtime(format!("Failed to apply wasm fuel limit: {e}"))
+            })?;
         }
 
         let _timeout_guard = if timeout_ms > 0 {
@@ -686,13 +696,13 @@ impl WasmRuntime {
             None
         };
 
-        let instance = linker
-            .instantiate(&mut store, &module)
-            .map_err(|e| ButterflyBotError::Runtime(format!("Failed to instantiate wasm module: {e}")))?;
+        let instance = linker.instantiate(&mut store, &module).map_err(|e| {
+            ButterflyBotError::Runtime(format!("Failed to instantiate wasm module: {e}"))
+        })?;
 
-        let memory = instance
-            .get_memory(&mut store, "memory")
-            .ok_or_else(|| ButterflyBotError::Runtime("WASM module missing exported memory".to_string()))?;
+        let memory = instance.get_memory(&mut store, "memory").ok_or_else(|| {
+            ButterflyBotError::Runtime("WASM module missing exported memory".to_string())
+        })?;
 
         let alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "alloc")
@@ -767,8 +777,9 @@ impl WasmRuntime {
             return Ok(serde_json::json!({}));
         }
 
-        let value: Value = serde_json::from_slice(&output)
-            .map_err(|e| ButterflyBotError::Runtime(format!("WASM output must be valid JSON: {e}")))?;
+        let value: Value = serde_json::from_slice(&output).map_err(|e| {
+            ButterflyBotError::Runtime(format!("WASM output must be valid JSON: {e}"))
+        })?;
         Ok(value)
     }
 

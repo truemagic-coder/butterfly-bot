@@ -2,8 +2,8 @@ use async_stream::try_stream;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use futures::stream::BoxStream;
-use serde_json::Value;
 use reqwest::StatusCode;
+use serde_json::Value;
 
 use async_openai::{
     config::OpenAIConfig,
@@ -85,8 +85,7 @@ impl OpenAiProvider {
                 "Chat completion failed ({status}): {body}"
             )));
         }
-        serde_json::from_str(&body)
-            .map_err(|e| ButterflyBotError::Serialization(e.to_string()))
+        serde_json::from_str(&body).map_err(|e| ButterflyBotError::Serialization(e.to_string()))
     }
 
     async fn chat_create_with_fallback(
@@ -121,10 +120,7 @@ impl OpenAiProvider {
             .cloned()
             .unwrap_or(Value::Null);
 
-        let Some(calls) = message
-            .get("tool_calls")
-            .and_then(|calls| calls.as_array())
-        else {
+        let Some(calls) = message.get("tool_calls").and_then(|calls| calls.as_array()) else {
             #[allow(deprecated)]
             if let Some(function_call) = message.get("function_call") {
                 if let Some(name) = function_call.get("name").and_then(|value| value.as_str()) {

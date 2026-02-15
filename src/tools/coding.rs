@@ -44,7 +44,7 @@ impl CodingTool {
         }
     }
 
-    fn get_tool_config<'a>(config: &'a Value) -> Option<&'a Value> {
+    fn get_tool_config(config: &Value) -> Option<&Value> {
         config.get("tools").and_then(|tools| tools.get("coding"))
     }
 }
@@ -145,15 +145,9 @@ impl Tool for CodingTool {
             .and_then(|v| v.as_str())
             .unwrap_or(&config.system_prompt);
 
-        let provider = OpenAiProvider::new(
-            api_key,
-            Some(config.model),
-            Some(config.base_url),
-        );
+        let provider = OpenAiProvider::new(api_key, Some(config.model), Some(config.base_url));
 
-        let response = provider
-            .generate_text(prompt, system_prompt, None)
-            .await?;
+        let response = provider.generate_text(prompt, system_prompt, None).await?;
 
         Ok(json!({"status": "ok", "response": response}))
     }

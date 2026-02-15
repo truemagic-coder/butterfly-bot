@@ -1,6 +1,6 @@
 use serde_json::json;
-use tempfile::tempdir;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::tempdir;
 
 use butterfly_bot::planning::PlanStore;
 use butterfly_bot::reminders::ReminderStore;
@@ -39,13 +39,7 @@ async fn golden_path_plan_create_and_update() {
         {"title": "verify reminders", "status": "todo"}
     ]);
     let updated = plans
-        .update_plan(
-            created.id,
-            None,
-            None,
-            Some(&updated_steps),
-            Some("active"),
-        )
+        .update_plan(created.id, None, None, Some(&updated_steps), Some("active"))
         .await
         .unwrap();
 
@@ -89,7 +83,10 @@ async fn golden_path_due_task_runs_and_completes() {
     let due_after = tasks.list_due(now + 60, 10).await.unwrap();
     assert!(due_after.is_empty());
 
-    let all = tasks.list_tasks(user_id, TaskStatus::All, 10).await.unwrap();
+    let all = tasks
+        .list_tasks(user_id, TaskStatus::All, 10)
+        .await
+        .unwrap();
     assert_eq!(all.len(), 1);
     assert!(!all[0].enabled);
 }
@@ -108,7 +105,10 @@ async fn golden_path_due_reminder_fires_once() {
         .await
         .unwrap();
 
-    let peeked = reminders.peek_due_reminders(user_id, now, 10).await.unwrap();
+    let peeked = reminders
+        .peek_due_reminders(user_id, now, 10)
+        .await
+        .unwrap();
     assert_eq!(peeked.len(), 1);
     assert_eq!(peeked[0].id, reminder.id);
 
@@ -166,6 +166,9 @@ async fn golden_path_persists_across_store_restart() {
     let due_tasks = tasks_after.list_due(now, 10).await.unwrap();
     assert_eq!(due_tasks.len(), 1);
 
-    let due_reminders = reminders_after.due_reminders(user_id, now, 10).await.unwrap();
+    let due_reminders = reminders_after
+        .due_reminders(user_id, now, 10)
+        .await
+        .unwrap();
     assert_eq!(due_reminders.len(), 1);
 }

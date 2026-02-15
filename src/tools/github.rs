@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use tokio::sync::RwLock;
 
 use crate::error::{ButterflyBotError, Result};
@@ -44,7 +44,7 @@ impl GitHubTool {
         }
     }
 
-    fn get_tool_config<'a>(config: &'a Value) -> Option<&'a Value> {
+    fn get_tool_config(config: &Value) -> Option<&Value> {
         config.get("tools").and_then(|tools| tools.get("github"))
     }
 
@@ -132,7 +132,10 @@ impl Tool for GitHubTool {
         if has_pat || has_auth_header {
             Vec::new()
         } else {
-            vec![ToolSecret::new("github_pat", "GitHub PAT (for MCP GitHub tool)")]
+            vec![ToolSecret::new(
+                "github_pat",
+                "GitHub PAT (for MCP GitHub tool)",
+            )]
         }
     }
 
@@ -185,13 +188,9 @@ impl Tool for GitHubTool {
             .unwrap_or("")
             .to_string();
 
-        let config = self
-            .config
-            .read()
-            .await
-            .clone();
+        let config = self.config.read().await.clone();
 
-        if config.headers.get("Authorization").is_none() {
+        if !config.headers.contains_key("Authorization") {
             return Err(ButterflyBotError::Runtime(
                 "Missing GitHub PAT (set tools.github.pat or vault github_pat)".to_string(),
             ));

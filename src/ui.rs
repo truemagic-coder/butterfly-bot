@@ -171,7 +171,10 @@ async fn run_chat_history_request(
         return Err(format!("HTTP {status}: {text}"));
     }
 
-    let value = response.json::<Value>().await.map_err(|err| err.to_string())?;
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|err| err.to_string())?;
     let history = value
         .get("history")
         .and_then(|v| v.as_array())
@@ -482,8 +485,7 @@ fn start_local_daemon() -> Result<(), String> {
                     let _ = shutdown_rx.await;
                 };
                 let _ =
-                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown)
-                        .await;
+                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown).await;
             });
         }
     });
@@ -549,8 +551,8 @@ fn app_view() -> Element {
     let db_path =
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
     let daemon_url = use_signal(|| {
-        let raw =
-            env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
+        let raw = env::var("BUTTERFLY_BOT_DAEMON")
+            .unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
         normalize_daemon_url(&raw)
     });
     let token = use_signal(env_auth_token);
@@ -755,7 +757,7 @@ fn app_view() -> Element {
                         }
                     }
                     Err(err) => {
-                        let _ = error.set(format!(
+                        error.set(format!(
                             "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start on the main page (Chat tab)."
                         ));
                     }
@@ -799,7 +801,9 @@ fn app_view() -> Element {
                 error.set(String::new());
 
                 if daemon_running() {
-                    if let Err(err) = run_clear_user_history_request(daemon_url(), token(), user_id()).await {
+                    if let Err(err) =
+                        run_clear_user_history_request(daemon_url(), token(), user_id()).await
+                    {
                         error.set(format!(
                             "Cleared local history, but daemon clear failed: {err}"
                         ));
@@ -852,15 +856,18 @@ fn app_view() -> Element {
                         daemon_running.set(true);
                         daemon_status.set("Daemon started.".to_string());
                         boot_ready.set(true);
-                        boot_status
-                            .set("Daemon starting… boot preload will continue in background.".to_string());
+                        boot_status.set(
+                            "Daemon starting… boot preload will continue in background."
+                                .to_string(),
+                        );
 
                         // Wait for daemon to be ready (retry up to 10 times with 500ms delay)
                         let client = reqwest::Client::new();
                         let mut daemon_ready = false;
                         for i in 0..10 {
                             sleep(Duration::from_millis(500)).await;
-                            let health_url = format!("{}/health", daemon_url().trim_end_matches('/'));
+                            let health_url =
+                                format!("{}/health", daemon_url().trim_end_matches('/'));
                             if let Ok(resp) = client.get(&health_url).send().await {
                                 if resp.status().is_success() {
                                     daemon_ready = true;
@@ -871,20 +878,21 @@ fn app_view() -> Element {
                         }
 
                         if !daemon_ready {
-                            boot_status.set("Daemon started but not responding. Continuing without preload.".to_string());
+                            boot_status.set(
+                                "Daemon started but not responding. Continuing without preload."
+                                    .to_string(),
+                            );
                             boot_ready.set(true);
                         } else {
-                            let url = format!(
-                                "{}/preload_boot",
-                                daemon_url().trim_end_matches('/')
-                            );
-                            let mut request = client.post(&url).json(&PreloadBootRequest {
-                                user_id: user_id(),
-                            });
+                            let url =
+                                format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                            let mut request = client
+                                .post(&url)
+                                .json(&PreloadBootRequest { user_id: user_id() });
                             let token_value = token();
                             if !token_value.trim().is_empty() {
-                                request =
-                                    request.header("authorization", format!("Bearer {token_value}"));
+                                request = request
+                                    .header("authorization", format!("Bearer {token_value}"));
                             }
                             match request.send().await {
                                 Ok(resp) if resp.status().is_success() => {
@@ -893,8 +901,7 @@ fn app_view() -> Element {
                                 }
                                 Ok(resp) => {
                                     let status = resp.status();
-                                    boot_status
-                                        .set(format!("Boot preload failed: HTTP {status}"));
+                                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
                                 }
                                 Err(err) => {
                                     boot_status.set(format!("Boot preload error: {err}"));
@@ -909,9 +916,7 @@ fn app_view() -> Element {
                                     let overall = report.overall.clone();
                                     doctor_overall.set(overall.clone());
                                     doctor_checks.set(report.checks);
-                                    doctor_status.set(format!(
-                                        "Diagnostics complete ({overall})."
-                                    ));
+                                    doctor_status.set(format!("Diagnostics complete ({overall})."));
                                 }
                                 Err(err) => {
                                     doctor_error.set(format!("Diagnostics failed: {err}"));
@@ -982,7 +987,9 @@ fn app_view() -> Element {
                         reminders_listening.set(false);
                         ui_events_listening.set(false);
                         boot_ready.set(false);
-                        boot_status.set("Daemon stopped. Start it to preload prompt + heartbeat.".to_string());
+                        boot_status.set(
+                            "Daemon stopped. Start it to preload prompt + heartbeat.".to_string(),
+                        );
                         daemon_status.set("Daemon stopped.".to_string());
                         doctor_status.set(String::new());
                         doctor_error.set(String::new());
@@ -1071,17 +1078,11 @@ fn app_view() -> Element {
             let mut next_id = next_id.clone();
 
             spawn(async move {
-                let history = match run_chat_history_request(
-                    daemon_url(),
-                    token(),
-                    user_id(),
-                    40,
-                )
-                .await
-                {
-                    Ok(history) => history,
-                    Err(_) => return,
-                };
+                let history =
+                    match run_chat_history_request(daemon_url(), token(), user_id(), 40).await {
+                        Ok(history) => history,
+                        Err(_) => return,
+                    };
 
                 if history.is_empty() || !messages.read().is_empty() {
                     return;
@@ -1146,88 +1147,88 @@ fn app_view() -> Element {
                 reminders_listening.set(true);
                 let client = reqwest::Client::new();
                 loop {
-                if !*daemon_running.read() {
-                    reminders_listening.set(false);
-                    sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-                reminders_listening.set(true);
-                let url = format!(
-                    "{}/reminder_stream?user_id={}",
-                    daemon_url().trim_end_matches('/'),
-                    user_id()
-                );
-                let mut request = client.get(&url);
-                let token_value = token();
-                if !token_value.trim().is_empty() {
-                    request = request.header("authorization", format!("Bearer {token_value}"));
-                }
+                    if !*daemon_running.read() {
+                        reminders_listening.set(false);
+                        sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    reminders_listening.set(true);
+                    let url = format!(
+                        "{}/reminder_stream?user_id={}",
+                        daemon_url().trim_end_matches('/'),
+                        user_id()
+                    );
+                    let mut request = client.get(&url);
+                    let token_value = token();
+                    if !token_value.trim().is_empty() {
+                        request = request.header("authorization", format!("Bearer {token_value}"));
+                    }
 
-                let response = match request.send().await {
-                    Ok(resp) => resp,
-                    Err(_) => {
+                    let response = match request.send().await {
+                        Ok(resp) => resp,
+                        Err(_) => {
+                            if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
+                                || cfg!(debug_assertions)
+                            {
+                                eprintln!("Reminder stream request failed (daemon unreachable?)");
+                            }
+                            sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
+                    };
+                    if !response.status().is_success() {
                         if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
                             || cfg!(debug_assertions)
                         {
-                            eprintln!("Reminder stream request failed (daemon unreachable?)");
+                            eprintln!("Reminder stream error: HTTP {}", response.status());
                         }
                         sleep(Duration::from_secs(2)).await;
                         continue;
                     }
-                };
-                if !response.status().is_success() {
-                    if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                        || cfg!(debug_assertions)
-                    {
-                        eprintln!("Reminder stream error: HTTP {}", response.status());
-                    }
-                    sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
 
-                let mut stream = response.bytes_stream();
-                let mut buffer = String::new();
-                while let Some(chunk) = stream.next().await {
-                    let Ok(chunk) = chunk else {
-                        break;
-                    };
-                    if let Ok(text) = std::str::from_utf8(&chunk) {
-                        buffer.push_str(text);
-                        while let Some(idx) = buffer.find('\n') {
-                            let mut line = buffer[..idx].to_string();
-                            buffer = buffer[idx + 1..].to_string();
-                            if line.starts_with("data:") {
-                                line = line.trim_start_matches("data:").trim().to_string();
-                                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                                    let title = value
-                                        .get("title")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("Reminder");
-                                    let id = next_id();
-                                    next_id.set(id + 1);
-                                    let timestamp = value
-                                        .get("due_at")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or_else(now_unix_ts);
-                                    messages.write().push(ChatMessage {
-                                        id,
-                                        role: MessageRole::Bot,
-                                        text: format!("⏰ {title}"),
-                                        timestamp,
-                                    });
-                                    scroll_chat_to_bottom().await;
-                                    if let Err(err) = Notification::new()
-                                        .summary("Butterfly Bot")
-                                        .body(title)
-                                        .show()
-                                    {
-                                        eprintln!("Notification error: {err}");
+                    let mut stream = response.bytes_stream();
+                    let mut buffer = String::new();
+                    while let Some(chunk) = stream.next().await {
+                        let Ok(chunk) = chunk else {
+                            break;
+                        };
+                        if let Ok(text) = std::str::from_utf8(&chunk) {
+                            buffer.push_str(text);
+                            while let Some(idx) = buffer.find('\n') {
+                                let mut line = buffer[..idx].to_string();
+                                buffer = buffer[idx + 1..].to_string();
+                                if line.starts_with("data:") {
+                                    line = line.trim_start_matches("data:").trim().to_string();
+                                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                        let title = value
+                                            .get("title")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Reminder");
+                                        let id = next_id();
+                                        next_id.set(id + 1);
+                                        let timestamp = value
+                                            .get("due_at")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or_else(now_unix_ts);
+                                        messages.write().push(ChatMessage {
+                                            id,
+                                            role: MessageRole::Bot,
+                                            text: format!("⏰ {title}"),
+                                            timestamp,
+                                        });
+                                        scroll_chat_to_bottom().await;
+                                        if let Err(err) = Notification::new()
+                                            .summary("Butterfly Bot")
+                                            .body(title)
+                                            .show()
+                                        {
+                                            eprintln!("Notification error: {err}");
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
                     sleep(Duration::from_secs(2)).await;
                 }
             });
@@ -1280,152 +1281,167 @@ fn app_view() -> Element {
                 ui_events_listening.set(true);
                 let client = reqwest::Client::new();
                 loop {
-                if !*daemon_running.read() {
-                    ui_events_listening.set(false);
-                    sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-                ui_events_listening.set(true);
-                let url = format!(
-                    "{}/ui_events?user_id={}",
-                    daemon_url().trim_end_matches('/'),
-                    user_id()
-                );
-                let mut request = client.get(&url);
-                let token_value = token();
-                if !token_value.trim().is_empty() {
-                    request = request.header("authorization", format!("Bearer {token_value}"));
-                }
+                    if !*daemon_running.read() {
+                        ui_events_listening.set(false);
+                        sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                    ui_events_listening.set(true);
+                    let url = format!(
+                        "{}/ui_events?user_id={}",
+                        daemon_url().trim_end_matches('/'),
+                        user_id()
+                    );
+                    let mut request = client.get(&url);
+                    let token_value = token();
+                    if !token_value.trim().is_empty() {
+                        request = request.header("authorization", format!("Bearer {token_value}"));
+                    }
 
-                let response = match request.send().await {
-                    Ok(resp) => resp,
-                    Err(_) => {
+                    let response = match request.send().await {
+                        Ok(resp) => resp,
+                        Err(_) => {
+                            sleep(Duration::from_secs(2)).await;
+                            continue;
+                        }
+                    };
+                    if !response.status().is_success() {
                         sleep(Duration::from_secs(2)).await;
                         continue;
                     }
-                };
-                if !response.status().is_success() {
-                    sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
 
-                let mut stream = response.bytes_stream();
-                let mut buffer = String::new();
-                while let Some(chunk) = stream.next().await {
-                    let Ok(chunk) = chunk else {
-                        break;
-                    };
-                    if let Ok(text) = std::str::from_utf8(&chunk) {
-                        buffer.push_str(text);
-                        while let Some(idx) = buffer.find('\n') {
-                            let mut line = buffer[..idx].to_string();
-                            buffer = buffer[idx + 1..].to_string();
-                            if line.starts_with("data:") {
-                                line = line.trim_start_matches("data:").trim().to_string();
-                                if let Ok(value) = serde_json::from_str::<Value>(&line) {
-                                    let event_type = value
-                                        .get("event_type")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("tool");
-                                    let tool = value
-                                        .get("tool")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("tool");
-                                    let status = value
-                                        .get("status")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("ok");
-                                    let event_user = value
-                                        .get("user_id")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or_default();
-
-                                    // Always update boot readiness for boot/prompt/heartbeat events
-                                    if (event_type == "boot" || tool == "prompt") && status == "ok" {
-                                        boot_prompt_ready.set(true);
-                                    }
-                                    if (event_type == "boot" || tool == "heartbeat") && status == "ok" {
-                                        boot_heartbeat_ready.set(true);
-                                    }
-                                    if *boot_prompt_ready.read() && *boot_heartbeat_ready.read() {
-                                        boot_ready.set(true);
-                                        let _ = boot_status.set("Prompt + heartbeat ready".to_string());
-                                    }
-
-                                    let show_success =
-                                        std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
-                                    if !show_success && (status == "success" || status == "ok") {
-                                        if event_type == "tool" {
-                                            if event_user == "system" {
-                                                continue;
-                                            }
-                                            if let Some(payload) = value.get("payload") {
-                                                if payload.get("error").is_none() && is_empty_list_result(payload) {
-                                                    continue;
-                                                }
-                                            }
-                                        } else if event_type != "boot" && event_type != "autonomy" {
-                                            if let Some(payload) = value.get("payload") {
-                                                if payload.get("error").is_none() {
-                                                    continue;
-                                                }
-                                            } else {
-                                                continue;
-                                            }
-                                        }
-                                    }
-
-                                    let prefix = if event_type == "autonomy" {
-                                        "🤖"
-                                    } else {
-                                        "🔧"
-                                    };
-                                    let mut text = format!("{prefix} {tool}: {status}");
-                                    if let Some(payload) = value.get("payload") {
-                                        if let Some(error) =
-                                            payload.get("error").and_then(|v| v.as_str())
-                                        {
-                                            text.push_str(&format!(" — {error}"));
-                                        } else if event_type == "autonomy" {
-                                            if status == "skipped" {
-                                                if let Some(reason) =
-                                                    payload.get("reason").and_then(|v| v.as_str())
-                                                {
-                                                    text.push_str(&format!(" — {reason}"));
-                                                }
-                                                if let Some(remaining) = payload
-                                                    .get("cooldown_remaining_seconds")
-                                                    .and_then(|v| v.as_i64())
-                                                {
-                                                    text.push_str(&format!(" ({}s)", remaining.max(0)));
-                                                }
-                                            }
-                                        } else if let Some(output) = payload
-                                            .get("output")
-                                            .or_else(|| payload.get("response"))
+                    let mut stream = response.bytes_stream();
+                    let mut buffer = String::new();
+                    while let Some(chunk) = stream.next().await {
+                        let Ok(chunk) = chunk else {
+                            break;
+                        };
+                        if let Ok(text) = std::str::from_utf8(&chunk) {
+                            buffer.push_str(text);
+                            while let Some(idx) = buffer.find('\n') {
+                                let mut line = buffer[..idx].to_string();
+                                buffer = buffer[idx + 1..].to_string();
+                                if line.starts_with("data:") {
+                                    line = line.trim_start_matches("data:").trim().to_string();
+                                    if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                        let event_type = value
+                                            .get("event_type")
                                             .and_then(|v| v.as_str())
+                                            .unwrap_or("tool");
+                                        let tool = value
+                                            .get("tool")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("tool");
+                                        let status = value
+                                            .get("status")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("ok");
+                                        let event_user = value
+                                            .get("user_id")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default();
+
+                                        // Always update boot readiness for boot/prompt/heartbeat events
+                                        if (event_type == "boot" || tool == "prompt")
+                                            && status == "ok"
                                         {
-                                            text.push_str(&format!(" — {output}"));
+                                            boot_prompt_ready.set(true);
                                         }
+                                        if (event_type == "boot" || tool == "heartbeat")
+                                            && status == "ok"
+                                        {
+                                            boot_heartbeat_ready.set(true);
+                                        }
+                                        if *boot_prompt_ready.read() && *boot_heartbeat_ready.read()
+                                        {
+                                            boot_ready.set(true);
+                                            boot_status.set("Prompt + heartbeat ready".to_string());
+                                        }
+
+                                        let show_success =
+                                            std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS")
+                                                .is_ok();
+                                        if !show_success && (status == "success" || status == "ok")
+                                        {
+                                            if event_type == "tool" {
+                                                if event_user == "system" {
+                                                    continue;
+                                                }
+                                                if let Some(payload) = value.get("payload") {
+                                                    if payload.get("error").is_none()
+                                                        && is_empty_list_result(payload)
+                                                    {
+                                                        continue;
+                                                    }
+                                                }
+                                            } else if event_type != "boot"
+                                                && event_type != "autonomy"
+                                            {
+                                                if let Some(payload) = value.get("payload") {
+                                                    if payload.get("error").is_none() {
+                                                        continue;
+                                                    }
+                                                } else {
+                                                    continue;
+                                                }
+                                            }
+                                        }
+
+                                        let prefix = if event_type == "autonomy" {
+                                            "🤖"
+                                        } else {
+                                            "🔧"
+                                        };
+                                        let mut text = format!("{prefix} {tool}: {status}");
+                                        if let Some(payload) = value.get("payload") {
+                                            if let Some(error) =
+                                                payload.get("error").and_then(|v| v.as_str())
+                                            {
+                                                text.push_str(&format!(" — {error}"));
+                                            } else if event_type == "autonomy" {
+                                                if status == "skipped" {
+                                                    if let Some(reason) = payload
+                                                        .get("reason")
+                                                        .and_then(|v| v.as_str())
+                                                    {
+                                                        text.push_str(&format!(" — {reason}"));
+                                                    }
+                                                    if let Some(remaining) = payload
+                                                        .get("cooldown_remaining_seconds")
+                                                        .and_then(|v| v.as_i64())
+                                                    {
+                                                        text.push_str(&format!(
+                                                            " ({}s)",
+                                                            remaining.max(0)
+                                                        ));
+                                                    }
+                                                }
+                                            } else if let Some(output) = payload
+                                                .get("output")
+                                                .or_else(|| payload.get("response"))
+                                                .and_then(|v| v.as_str())
+                                            {
+                                                text.push_str(&format!(" — {output}"));
+                                            }
+                                        }
+                                        let id = next_id();
+                                        next_id.set(id + 1);
+                                        let timestamp = value
+                                            .get("timestamp")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or_else(now_unix_ts);
+                                        activity_messages.write().push(ChatMessage {
+                                            id,
+                                            role: MessageRole::Bot,
+                                            text,
+                                            timestamp,
+                                        });
+                                        scroll_activity_after_render().await;
                                     }
-                                    let id = next_id();
-                                    next_id.set(id + 1);
-                                    let timestamp = value
-                                        .get("timestamp")
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or_else(now_unix_ts);
-                                    activity_messages.write().push(ChatMessage {
-                                        id,
-                                        role: MessageRole::Bot,
-                                        text,
-                                        timestamp,
-                                    });
-                                    scroll_activity_after_render().await;
                                 }
                             }
                         }
                     }
-                }
                     sleep(Duration::from_secs(2)).await;
                 }
             });
@@ -1495,186 +1511,202 @@ fn app_view() -> Element {
                 let mut boot_status = boot_status;
                 let mut boot_ready = boot_ready;
 
-            let config = match crate::config::Config::from_store(&db_path) {
-                Ok(value) => value,
-                Err(err) => {
-                    settings_error.set(format!("Failed to load config: {err}"));
-                    tools_loaded.set(true);
-                    return;
-                }
-            };
-
-            match crate::vault::get_secret("app_config_json") {
-                Ok(Some(secret)) if !secret.trim().is_empty() => {
-                    config_json_text.set(secret);
-                    settings_status.set("Loaded config from keyring.".to_string());
-                }
-                Ok(_) => {
-                    if let Ok(pretty) = serde_json::to_string_pretty(&config) {
-                        config_json_text.set(pretty);
+                let config = match crate::config::Config::from_store(&db_path) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        settings_error.set(format!("Failed to load config: {err}"));
+                        tools_loaded.set(true);
+                        return;
                     }
-                }
-                Err(err) => {
-                    settings_error.set(format!("Vault error: {err}"));
-                }
-            }
+                };
 
-            let mut allowlist: Vec<String> = Vec::new();
-            let mut default_deny = false;
-
-            if let Some(tools_value) = &config.tools {
-                if let Value::Object(map) = tools_value {
-                    if let Some(settings) = map.get("settings").and_then(|v| v.as_object()) {
-                        if let Some(perms) = settings.get("permissions") {
-                            if let Some(items) =
-                                perms.get("network_allow").and_then(|v| v.as_array())
-                            {
-                                allowlist = items
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect();
-                            }
-                            if let Some(value) = perms.get("default_deny").and_then(|v| v.as_bool())
-                            {
-                                default_deny = value;
-                            }
+                match crate::vault::get_secret("app_config_json") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        config_json_text.set(secret);
+                        settings_status.set("Loaded config from keyring.".to_string());
+                    }
+                    Ok(_) => {
+                        if let Ok(pretty) = serde_json::to_string_pretty(&config) {
+                            config_json_text.set(pretty);
                         }
-                    }
-                }
-            }
-
-            let enabled = config
-                .memory
-                .as_ref()
-                .and_then(|memory| memory.enabled)
-                .unwrap_or(true);
-            memory_enabled.set(enabled);
-
-            if let Some(tools_value) = &config.tools {
-                if let Some(search_cfg) = tools_value.get("search_internet") {
-                    if let Some(provider) = search_cfg.get("provider").and_then(|v| v.as_str()) {
-                        search_provider.set(provider.to_string());
-                    }
-                    if let Some(model) = search_cfg.get("model").and_then(|v| v.as_str()) {
-                        search_model.set(model.to_string());
-                    }
-                    if let Some(citations) = search_cfg.get("citations").and_then(|v| v.as_bool()) {
-                        search_citations.set(citations);
-                    }
-                    if let Some(web) = search_cfg.get("grok_web_search").and_then(|v| v.as_bool()) {
-                        search_grok_web.set(web);
-                    }
-                    if let Some(x_search) =
-                        search_cfg.get("grok_x_search").and_then(|v| v.as_bool())
-                    {
-                        search_grok_x.set(x_search);
-                    }
-                    if let Some(timeout) = search_cfg.get("grok_timeout").and_then(|v| v.as_u64()) {
-                        search_grok_timeout.set(timeout.to_string());
-                    }
-                    if let Some(perms) = search_cfg.get("permissions") {
-                        if allowlist.is_empty() {
-                            if let Some(items) =
-                                perms.get("network_allow").and_then(|v| v.as_array())
-                            {
-                                allowlist = items
-                                    .iter()
-                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                    .collect();
-                            }
-                        }
-                    }
-                }
-
-                if let Some(reminders_cfg) = tools_value.get("reminders") {
-                    if let Some(path) = reminders_cfg.get("sqlite_path").and_then(|v| v.as_str()) {
-                        reminders_sqlite_path.set(path.to_string());
-                    }
-                }
-            }
-
-            match &config.prompt_source {
-                crate::config::MarkdownSource::Url { url } => {
-                    context_path.set(url.clone());
-                    match load_markdown_source(url).await {
-                        Ok(text) => context_text.set(text),
-                        Err(err) => context_error.set(format!("Prompt URL error: {err}")),
-                    }
-                }
-                crate::config::MarkdownSource::Database { markdown } => {
-                    context_path.set("database".to_string());
-                    context_text.set(markdown.clone());
-                }
-            }
-
-            let mut heartbeat_error = heartbeat_error;
-            match &config.heartbeat_source {
-                crate::config::MarkdownSource::Url { url } => {
-                    heartbeat_path.set(url.clone());
-                    match load_markdown_source(url).await {
-                        Ok(text) => heartbeat_text.set(text),
-                        Err(err) => heartbeat_error.set(format!("Heartbeat URL error: {err}")),
-                    }
-                }
-                crate::config::MarkdownSource::Database { markdown } => {
-                    heartbeat_path.set("database".to_string());
-                    heartbeat_text.set(markdown.clone());
-                }
-            }
-
-            search_default_deny.set(default_deny);
-            if !allowlist.is_empty() {
-                search_network_allow.set(allowlist.join(", "));
-            }
-
-            let provider_name = search_provider();
-            let secret_name = match provider_name.as_str() {
-                "perplexity" => "search_internet_perplexity_api_key",
-                "grok" => "search_internet_grok_api_key",
-                _ => "search_internet_openai_api_key",
-            };
-            match crate::vault::get_secret(secret_name) {
-                Ok(Some(secret)) if !secret.trim().is_empty() => {
-                    search_api_key_status.set("Stored in vault".to_string());
-                }
-                Ok(_) => {
-                    search_api_key_status.set("Not set".to_string());
-                }
-                Err(err) => {
-                    search_api_key_status.set(format!("Vault error: {err}"));
-                }
-            }
-
-            if !*daemon_running.read() {
-                boot_status.set("Daemon is stopped. Start it to preload prompt + heartbeat.".to_string());
-            } else {
-                // Preload prompt into memory and heartbeat into agent.
-                boot_ready.set(true);
-                boot_status.set("Initializing prompt + heartbeat in background...".to_string());
-                let client = reqwest::Client::new();
-                let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
-                let mut request = client.post(&url).json(&PreloadBootRequest {
-                    user_id: user_id(),
-                });
-                let token_value = token();
-                if !token_value.trim().is_empty() {
-                    request = request.header("authorization", format!("Bearer {token_value}"));
-                }
-                match request.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        boot_status.set("Boot preload started in background...".to_string());
-                    }
-                    Ok(resp) => {
-                        let status = resp.status();
-                        boot_status.set(format!("Boot preload failed: HTTP {status}. Continuing without preload."));
                     }
                     Err(err) => {
-                        boot_status.set(format!("Boot preload error: {err}. Continuing without preload."));
+                        settings_error.set(format!("Vault error: {err}"));
                     }
                 }
-            }
 
-            tools_loaded.set(true);
+                let mut allowlist: Vec<String> = Vec::new();
+                let mut default_deny = false;
+
+                if let Some(tools_value) = &config.tools {
+                    if let Value::Object(map) = tools_value {
+                        if let Some(settings) = map.get("settings").and_then(|v| v.as_object()) {
+                            if let Some(perms) = settings.get("permissions") {
+                                if let Some(items) =
+                                    perms.get("network_allow").and_then(|v| v.as_array())
+                                {
+                                    allowlist = items
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect();
+                                }
+                                if let Some(value) =
+                                    perms.get("default_deny").and_then(|v| v.as_bool())
+                                {
+                                    default_deny = value;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let enabled = config
+                    .memory
+                    .as_ref()
+                    .and_then(|memory| memory.enabled)
+                    .unwrap_or(true);
+                memory_enabled.set(enabled);
+
+                if let Some(tools_value) = &config.tools {
+                    if let Some(search_cfg) = tools_value.get("search_internet") {
+                        if let Some(provider) = search_cfg.get("provider").and_then(|v| v.as_str())
+                        {
+                            search_provider.set(provider.to_string());
+                        }
+                        if let Some(model) = search_cfg.get("model").and_then(|v| v.as_str()) {
+                            search_model.set(model.to_string());
+                        }
+                        if let Some(citations) =
+                            search_cfg.get("citations").and_then(|v| v.as_bool())
+                        {
+                            search_citations.set(citations);
+                        }
+                        if let Some(web) =
+                            search_cfg.get("grok_web_search").and_then(|v| v.as_bool())
+                        {
+                            search_grok_web.set(web);
+                        }
+                        if let Some(x_search) =
+                            search_cfg.get("grok_x_search").and_then(|v| v.as_bool())
+                        {
+                            search_grok_x.set(x_search);
+                        }
+                        if let Some(timeout) =
+                            search_cfg.get("grok_timeout").and_then(|v| v.as_u64())
+                        {
+                            search_grok_timeout.set(timeout.to_string());
+                        }
+                        if let Some(perms) = search_cfg.get("permissions") {
+                            if allowlist.is_empty() {
+                                if let Some(items) =
+                                    perms.get("network_allow").and_then(|v| v.as_array())
+                                {
+                                    allowlist = items
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect();
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(reminders_cfg) = tools_value.get("reminders") {
+                        if let Some(path) =
+                            reminders_cfg.get("sqlite_path").and_then(|v| v.as_str())
+                        {
+                            reminders_sqlite_path.set(path.to_string());
+                        }
+                    }
+                }
+
+                match &config.prompt_source {
+                    crate::config::MarkdownSource::Url { url } => {
+                        context_path.set(url.clone());
+                        match load_markdown_source(url).await {
+                            Ok(text) => context_text.set(text),
+                            Err(err) => context_error.set(format!("Prompt URL error: {err}")),
+                        }
+                    }
+                    crate::config::MarkdownSource::Database { markdown } => {
+                        context_path.set("database".to_string());
+                        context_text.set(markdown.clone());
+                    }
+                }
+
+                let mut heartbeat_error = heartbeat_error;
+                match &config.heartbeat_source {
+                    crate::config::MarkdownSource::Url { url } => {
+                        heartbeat_path.set(url.clone());
+                        match load_markdown_source(url).await {
+                            Ok(text) => heartbeat_text.set(text),
+                            Err(err) => heartbeat_error.set(format!("Heartbeat URL error: {err}")),
+                        }
+                    }
+                    crate::config::MarkdownSource::Database { markdown } => {
+                        heartbeat_path.set("database".to_string());
+                        heartbeat_text.set(markdown.clone());
+                    }
+                }
+
+                search_default_deny.set(default_deny);
+                if !allowlist.is_empty() {
+                    search_network_allow.set(allowlist.join(", "));
+                }
+
+                let provider_name = search_provider();
+                let secret_name = match provider_name.as_str() {
+                    "perplexity" => "search_internet_perplexity_api_key",
+                    "grok" => "search_internet_grok_api_key",
+                    _ => "search_internet_openai_api_key",
+                };
+                match crate::vault::get_secret(secret_name) {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        search_api_key_status.set("Stored in vault".to_string());
+                    }
+                    Ok(_) => {
+                        search_api_key_status.set("Not set".to_string());
+                    }
+                    Err(err) => {
+                        search_api_key_status.set(format!("Vault error: {err}"));
+                    }
+                }
+
+                if !*daemon_running.read() {
+                    boot_status.set(
+                        "Daemon is stopped. Start it to preload prompt + heartbeat.".to_string(),
+                    );
+                } else {
+                    // Preload prompt into memory and heartbeat into agent.
+                    boot_ready.set(true);
+                    boot_status.set("Initializing prompt + heartbeat in background...".to_string());
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                    let mut request = client
+                        .post(&url)
+                        .json(&PreloadBootRequest { user_id: user_id() });
+                    let token_value = token();
+                    if !token_value.trim().is_empty() {
+                        request = request.header("authorization", format!("Bearer {token_value}"));
+                    }
+                    match request.send().await {
+                        Ok(resp) if resp.status().is_success() => {
+                            boot_status.set("Boot preload started in background...".to_string());
+                        }
+                        Ok(resp) => {
+                            let status = resp.status();
+                            boot_status.set(format!(
+                                "Boot preload failed: HTTP {status}. Continuing without preload."
+                            ));
+                        }
+                        Err(err) => {
+                            boot_status.set(format!(
+                                "Boot preload error: {err}. Continuing without preload."
+                            ));
+                        }
+                    }
+                }
+
+                tools_loaded.set(true);
             });
         });
     }
@@ -1849,9 +1881,8 @@ fn app_view() -> Element {
                                         let overall = report.overall.clone();
                                         doctor_overall.set(overall.clone());
                                         doctor_checks.set(report.checks);
-                                        doctor_status.set(format!(
-                                            "Diagnostics complete ({overall})."
-                                        ));
+                                        doctor_status
+                                            .set(format!("Diagnostics complete ({overall})."));
                                     }
                                     Err(err) => {
                                         doctor_error.set(format!("Diagnostics failed: {err}"));
@@ -1868,9 +1899,8 @@ fn app_view() -> Element {
                                         let overall = report.overall.clone();
                                         security_audit_overall.set(overall.clone());
                                         security_audit_findings.set(report.findings);
-                                        security_audit_status.set(format!(
-                                            "Security audit complete ({overall})."
-                                        ));
+                                        security_audit_status
+                                            .set(format!("Security audit complete ({overall})."));
                                     }
                                     Err(err) => {
                                         security_audit_error
@@ -2075,8 +2105,7 @@ fn app_view() -> Element {
                 if !factory_reset_armed() {
                     factory_reset_armed.set(true);
                     settings_status.set(
-                        "Factory reset is armed. Click Factory Reset again to confirm."
-                            .to_string(),
+                        "Factory reset is armed. Click Factory Reset again to confirm.".to_string(),
                     );
                     return;
                 }
@@ -2153,8 +2182,7 @@ fn app_view() -> Element {
                                     .set(format!("Security audit complete ({overall})."));
                             }
                             Err(err) => {
-                                security_audit_error
-                                    .set(format!("Security audit failed: {err}"));
+                                security_audit_error.set(format!("Security audit failed: {err}"));
                                 security_audit_status.set(String::new());
                             }
                         }
@@ -2199,7 +2227,9 @@ fn app_view() -> Element {
                         Ok(text) if !text.trim().is_empty() => {
                             context_status.set("Context URL is reachable.".to_string())
                         }
-                        Ok(_) => context_error.set("Context URL returned empty content.".to_string()),
+                        Ok(_) => {
+                            context_error.set("Context URL returned empty content.".to_string())
+                        }
                         Err(err) => context_error.set(format!("Context URL error: {err}")),
                     }
                     return;
@@ -2248,7 +2278,9 @@ fn app_view() -> Element {
                     return;
                 }
                 if is_url_source(&source) {
-                    context_error.set("Context source is a URL and cannot be saved in the DB editor.".to_string());
+                    context_error.set(
+                        "Context source is a URL and cannot be saved in the DB editor.".to_string(),
+                    );
                     return;
                 }
 
@@ -2261,9 +2293,7 @@ fn app_view() -> Element {
                 if let Err(err) = save_markdown_source_to_store(
                     db_path.clone(),
                     "prompt",
-                    crate::config::MarkdownSource::Database {
-                        markdown: content,
-                    },
+                    crate::config::MarkdownSource::Database { markdown: content },
                 )
                 .await
                 {
@@ -2383,8 +2413,10 @@ fn app_view() -> Element {
                     return;
                 }
                 if is_url_source(&source) {
-                    heartbeat_error
-                        .set("Heartbeat source is a URL and cannot be saved in the DB editor.".to_string());
+                    heartbeat_error.set(
+                        "Heartbeat source is a URL and cannot be saved in the DB editor."
+                            .to_string(),
+                    );
                     return;
                 }
 
@@ -2397,9 +2429,7 @@ fn app_view() -> Element {
                 if let Err(err) = save_markdown_source_to_store(
                     db_path.clone(),
                     "heartbeat",
-                    crate::config::MarkdownSource::Database {
-                        markdown: content,
-                    },
+                    crate::config::MarkdownSource::Database { markdown: content },
                 )
                 .await
                 {

@@ -45,7 +45,10 @@ impl Tool for MockTasksTool {
         json!({"type":"object"})
     }
 
-    async fn execute(&self, _params: serde_json::Value) -> butterfly_bot::error::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> butterfly_bot::error::Result<serde_json::Value> {
         Ok(json!({
             "status": "ok",
             "tasks": [
@@ -75,7 +78,10 @@ impl Tool for MockTodoTool {
         json!({"type":"object"})
     }
 
-    async fn execute(&self, _params: serde_json::Value) -> butterfly_bot::error::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> butterfly_bot::error::Result<serde_json::Value> {
         Ok(json!({
             "status": "ok",
             "items": [
@@ -103,7 +109,10 @@ impl Tool for MockPlanningTool {
         json!({"type":"object"})
     }
 
-    async fn execute(&self, _params: serde_json::Value) -> butterfly_bot::error::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> butterfly_bot::error::Result<serde_json::Value> {
         Ok(json!({
             "status": "ok",
             "plans": [
@@ -131,7 +140,10 @@ impl Tool for MockRemindersTool {
         json!({"type":"object"})
     }
 
-    async fn execute(&self, _params: serde_json::Value) -> butterfly_bot::error::Result<serde_json::Value> {
+    async fn execute(
+        &self,
+        _params: serde_json::Value,
+    ) -> butterfly_bot::error::Result<serde_json::Value> {
         Ok(json!({
             "status": "ok",
             "reminders": [
@@ -247,14 +259,7 @@ async fn query_service_and_client() {
         specialization: "spec".to_string(),
     };
     let service = Arc::new(AgentService::new(
-        llm,
-        agent,
-        None,
-        None,
-        None,
-        None,
-        brain,
-        None,
+        llm, agent, None, None, None, None, brain, None,
     ));
     let query = QueryService::new(service, None, None);
     assert_eq!(query.get_user_history("user", 1).await.unwrap().len(), 0);
@@ -355,20 +360,15 @@ async fn task_queries_use_tasks_tool_output() {
         specialization: "spec".to_string(),
     };
     let service = Arc::new(AgentService::new(
-        llm,
-        agent,
-        None,
-        None,
-        None,
-        None,
-        brain,
-        None,
+        llm, agent, None, None, None, None, brain, None,
     ));
 
-    assert!(service
-        .tool_registry
-        .register_tool(Arc::new(MockTasksTool))
-        .await);
+    assert!(
+        service
+            .tool_registry
+            .register_tool(Arc::new(MockTasksTool))
+            .await
+    );
 
     let query = QueryService::new(service, None, None);
     let response = query
@@ -390,20 +390,15 @@ async fn todo_queries_use_todo_tool_output() {
         specialization: "spec".to_string(),
     };
     let service = Arc::new(AgentService::new(
-        llm,
-        agent,
-        None,
-        None,
-        None,
-        None,
-        brain,
-        None,
+        llm, agent, None, None, None, None, brain, None,
     ));
 
-    assert!(service
-        .tool_registry
-        .register_tool(Arc::new(MockTodoTool))
-        .await);
+    assert!(
+        service
+            .tool_registry
+            .register_tool(Arc::new(MockTodoTool))
+            .await
+    );
 
     let query = QueryService::new(service, None, None);
     let response = query
@@ -425,20 +420,15 @@ async fn plan_queries_use_planning_tool_output() {
         specialization: "spec".to_string(),
     };
     let service = Arc::new(AgentService::new(
-        llm,
-        agent,
-        None,
-        None,
-        None,
-        None,
-        brain,
-        None,
+        llm, agent, None, None, None, None, brain, None,
     ));
 
-    assert!(service
-        .tool_registry
-        .register_tool(Arc::new(MockPlanningTool))
-        .await);
+    assert!(
+        service
+            .tool_registry
+            .register_tool(Arc::new(MockPlanningTool))
+            .await
+    );
 
     let query = QueryService::new(service, None, None);
     let response = query
@@ -460,20 +450,15 @@ async fn reminder_queries_use_reminders_tool_output() {
         specialization: "spec".to_string(),
     };
     let service = Arc::new(AgentService::new(
-        llm,
-        agent,
-        None,
-        None,
-        None,
-        None,
-        brain,
-        None,
+        llm, agent, None, None, None, None, brain, None,
     ));
 
-    assert!(service
-        .tool_registry
-        .register_tool(Arc::new(MockRemindersTool))
-        .await);
+    assert!(
+        service
+            .tool_registry
+            .register_tool(Arc::new(MockRemindersTool))
+            .await
+    );
 
     let query = QueryService::new(service, None, None);
     let response = query

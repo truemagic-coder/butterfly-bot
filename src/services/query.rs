@@ -12,8 +12,8 @@ use crate::error::Result;
 use crate::interfaces::providers::{ImageInput, MemoryProvider};
 use crate::reminders::ReminderStore;
 use crate::services::agent::AgentService;
-use tracing::info;
 use crate::vault;
+use tracing::info;
 
 #[derive(Debug, Clone)]
 pub enum UserInput {
@@ -73,7 +73,10 @@ impl QueryService {
             return Ok(());
         };
         let _ = self.agent_service.refresh_context_for_user(user_id).await?;
-        info!("ensure_context_in_memory: refresh_context took {:?}", started.elapsed());
+        info!(
+            "ensure_context_in_memory: refresh_context took {:?}",
+            started.elapsed()
+        );
         let Some(context_markdown) = self.agent_service.get_context_markdown().await else {
             return Ok(());
         };
@@ -90,7 +93,10 @@ impl QueryService {
                 if guard.is_none() {
                     *guard = Some(0);
                 }
-                info!("ensure_context_in_memory: md5 unchanged, skipping import (elapsed {:?})", started.elapsed());
+                info!(
+                    "ensure_context_in_memory: md5 unchanged, skipping import (elapsed {:?})",
+                    started.elapsed()
+                );
                 return Ok(());
             }
         }
@@ -100,12 +106,17 @@ impl QueryService {
         let hash = hasher.finish();
 
         let mut guard = self.context_cache.write().await;
-        if guard.map_or(true, |prev| prev != hash) {
+        if guard.is_none_or(|prev| prev != hash) {
             let content = format!("CONTEXT_DOC:\n{}", context_markdown);
-            provider.append_message(user_id, "context", &content).await?;
+            provider
+                .append_message(user_id, "context", &content)
+                .await?;
             *guard = Some(hash);
             let _ = vault::set_secret("context_md5", &md5_hash);
-            info!("ensure_context_in_memory: imported context into memory (elapsed {:?})", started.elapsed());
+            info!(
+                "ensure_context_in_memory: imported context into memory (elapsed {:?})",
+                started.elapsed()
+            );
         }
         Ok(())
     }
@@ -136,7 +147,10 @@ impl QueryService {
             return Ok(response);
         }
 
-        if let Some(response) = self.try_handle_tasks_command(user_id, &processed_query).await? {
+        if let Some(response) = self
+            .try_handle_tasks_command(user_id, &processed_query)
+            .await?
+        {
             if let Some(provider) = &self.memory_provider {
                 provider
                     .append_message(user_id, "user", &processed_query)
@@ -163,7 +177,10 @@ impl QueryService {
             return Ok(response);
         }
 
-        if let Some(response) = self.try_handle_todo_command(user_id, &processed_query).await? {
+        if let Some(response) = self
+            .try_handle_todo_command(user_id, &processed_query)
+            .await?
+        {
             if let Some(provider) = &self.memory_provider {
                 provider
                     .append_message(user_id, "user", &processed_query)
@@ -175,7 +192,10 @@ impl QueryService {
             return Ok(response);
         }
 
-        if let Some(response) = self.try_handle_plans_command(user_id, &processed_query).await? {
+        if let Some(response) = self
+            .try_handle_plans_command(user_id, &processed_query)
+            .await?
+        {
             if let Some(provider) = &self.memory_provider {
                 provider
                     .append_message(user_id, "user", &processed_query)
@@ -253,7 +273,7 @@ impl QueryService {
                     .await?
             }
         };
-            let autonomy_tick = is_autonomy_tick(&text);
+        let autonomy_tick = is_autonomy_tick(&text);
 
         self.ensure_context_in_memory(user_id).await?;
 
@@ -521,7 +541,10 @@ impl QueryService {
         }
         let max_len = 8000usize;
         let trimmed = if context_markdown.len() > max_len {
-            format!("{}\n...\n[CONTEXT_DOC TRUNCATED]", &context_markdown[..max_len])
+            format!(
+                "{}\n...\n[CONTEXT_DOC TRUNCATED]",
+                &context_markdown[..max_len]
+            )
         } else {
             context_markdown
         };
@@ -593,7 +616,10 @@ fn build_memory_context(
         context.push_str(
             "RELEVANT MEMORY (unverified; use only if clearly applicable to the user's request):\n",
         );
-        for item in semantic.into_iter().filter(|item| !should_skip_memory_line(item)) {
+        for item in semantic
+            .into_iter()
+            .filter(|item| !should_skip_memory_line(item))
+        {
             context.push_str("- ");
             context.push_str(&item);
             context.push('\n');
@@ -676,7 +702,10 @@ impl QueryService {
         let result = self
             .agent_service
             .tool_registry
-            .execute_tool("search_internet", serde_json::json!({"query": query, "user_id": user_id}))
+            .execute_tool(
+                "search_internet",
+                serde_json::json!({"query": query, "user_id": user_id}),
+            )
             .await?;
         let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status == "success" {
@@ -783,7 +812,10 @@ impl QueryService {
                 .map(|value| format!(", every {} min", value))
                 .unwrap_or_default();
             let state = if enabled { "enabled" } else { "disabled" };
-            lines.push(format!("- {} ({}, next: {}{})", name, state, next_run_at, interval));
+            lines.push(format!(
+                "- {} ({}, next: {}{})",
+                name, state, next_run_at, interval
+            ));
         }
 
         Ok(Some(lines.join("\n")))
@@ -835,7 +867,10 @@ impl QueryService {
         {
             Ok(value) => value,
             Err(err) => {
-                return Ok(Some(format!("I couldn’t list reminders right now: {}", err)));
+                return Ok(Some(format!(
+                    "I couldn’t list reminders right now: {}",
+                    err
+                )));
             }
         };
 

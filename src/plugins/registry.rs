@@ -128,13 +128,19 @@ impl ToolRegistry {
         Ok(())
     }
 
-    pub async fn execute_tool(&self, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    pub async fn execute_tool(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let tool = {
             let tools = self.tools.read().await;
             tools.get(tool_name).cloned()
         };
         let Some(tool) = tool else {
-            return Err(ButterflyBotError::Runtime(format!("Tool not found: {tool_name}")));
+            return Err(ButterflyBotError::Runtime(format!(
+                "Tool not found: {tool_name}"
+            )));
         };
 
         let plan = {
@@ -157,21 +163,14 @@ impl ToolRegistry {
             .unwrap_or(false);
 
         if !is_stub {
-            if wasm_result
-                .get("status")
-                .and_then(|value| value.as_str())
-                == Some("capability_call")
+            if wasm_result.get("status").and_then(|value| value.as_str()) == Some("capability_call")
             {
                 return self
                     .execute_capability_call(tool_name, &tool, &plan.tool_config, &wasm_result)
                     .await;
             }
 
-            if wasm_result
-                .get("status")
-                .and_then(|value| value.as_str())
-                == Some("host_call")
-            {
+            if wasm_result.get("status").and_then(|value| value.as_str()) == Some("host_call") {
                 return Err(ButterflyBotError::Runtime(format!(
                     "Tool '{}' attempted deprecated wasm host_call fallback",
                     tool_name
@@ -193,18 +192,17 @@ impl ToolRegistry {
         tool_config: &crate::sandbox::ToolSandboxConfig,
         wasm_result: &serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let call = wasm_result
-            .get("capability_call")
-            .ok_or_else(|| {
-                ButterflyBotError::Runtime(
-                    "WASM capability_call missing `capability_call` payload".to_string(),
-                )
-            })?;
+        let call = wasm_result.get("capability_call").ok_or_else(|| {
+            ButterflyBotError::Runtime(
+                "WASM capability_call missing `capability_call` payload".to_string(),
+            )
+        })?;
 
         let requested_abi = wasm_result
             .get("abi_version")
             .and_then(|value| value.as_u64())
-            .unwrap_or(WasmRuntime::SUPPORTED_CAPABILITY_ABI_VERSION as u64) as u32;
+            .unwrap_or(WasmRuntime::SUPPORTED_CAPABILITY_ABI_VERSION as u64)
+            as u32;
         if requested_abi != WasmRuntime::SUPPORTED_CAPABILITY_ABI_VERSION {
             return Ok(serde_json::json!({
                 "status": "error",
@@ -257,10 +255,7 @@ impl ToolRegistry {
                 })
             }
             "log.emit" => {
-                let level = args
-                    .get("level")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("info");
+                let level = args.get("level").and_then(|v| v.as_str()).unwrap_or("info");
                 let event = args
                     .get("event")
                     .and_then(|v| v.as_str())
@@ -279,170 +274,166 @@ impl ToolRegistry {
                 })
             }
             "kv.sqlite.todo.create" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        let user_id = Self::require_str(args, "user_id")?;
-                        let title = Self::require_str(args, "title")?;
-                        let notes = args.get("notes").and_then(|v| v.as_str());
-                        Ok(serde_json::json!({
-                            "action": "create",
-                            "user_id": user_id,
-                            "title": title,
-                            "notes": notes
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    let user_id = Self::require_str(args, "user_id")?;
+                    let title = Self::require_str(args, "title")?;
+                    let notes = args.get("notes").and_then(|v| v.as_str());
+                    Ok(serde_json::json!({
+                        "action": "create",
+                        "user_id": user_id,
+                        "title": title,
+                        "notes": notes
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.list" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        let user_id = Self::require_str(args, "user_id")?;
-                        let status = args.get("status").and_then(|v| v.as_str()).unwrap_or("open");
-                        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
-                        Ok(serde_json::json!({
-                            "action": "list",
-                            "user_id": user_id,
-                            "status": status,
-                            "limit": limit
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    let user_id = Self::require_str(args, "user_id")?;
+                    let status = args
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("open");
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50);
+                    Ok(serde_json::json!({
+                        "action": "list",
+                        "user_id": user_id,
+                        "status": status,
+                        "limit": limit
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.create_many" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        let user_id = Self::require_str(args, "user_id")?;
-                        let items = args
-                            .get("items")
-                            .and_then(|v| v.as_array())
-                            .ok_or_else(|| {
-                                ButterflyBotError::Runtime("capability args missing items".to_string())
-                            })?
-                            .clone();
-                        Ok(serde_json::json!({
-                            "action": "create_many",
-                            "user_id": user_id,
-                            "items": items
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    let user_id = Self::require_str(args, "user_id")?;
+                    let items = args
+                        .get("items")
+                        .and_then(|v| v.as_array())
+                        .ok_or_else(|| {
+                            ButterflyBotError::Runtime("capability args missing items".to_string())
+                        })?
+                        .clone();
+                    Ok(serde_json::json!({
+                        "action": "create_many",
+                        "user_id": user_id,
+                        "items": items
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.complete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "complete",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "complete",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.reopen" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "reopen",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "reopen",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.delete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "delete",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "delete",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.todo.reorder" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
-                        let user_id = Self::require_str(args, "user_id")?;
-                        let ordered_ids = args
-                            .get("ordered_ids")
-                            .and_then(|v| v.as_array())
-                            .ok_or_else(|| {
-                                ButterflyBotError::Runtime(
-                                    "capability args missing ordered_ids".to_string(),
-                                )
-                            })?
-                            .clone();
-                        Ok(serde_json::json!({
-                            "action": "reorder",
-                            "user_id": user_id,
-                            "ordered_ids": ordered_ids
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    let user_id = Self::require_str(args, "user_id")?;
+                    let ordered_ids = args
+                        .get("ordered_ids")
+                        .and_then(|v| v.as_array())
+                        .ok_or_else(|| {
+                            ButterflyBotError::Runtime(
+                                "capability args missing ordered_ids".to_string(),
+                            )
+                        })?
+                        .clone();
+                    Ok(serde_json::json!({
+                        "action": "reorder",
+                        "user_id": user_id,
+                        "ordered_ids": ordered_ids
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.tasks.schedule" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "schedule",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "name": Self::require_str(args, "name")?,
-                            "prompt": Self::require_str(args, "prompt")?,
-                            "run_at": Self::require_i64(args, "run_at")?,
-                            "interval_minutes": args.get("interval_minutes").and_then(|v| v.as_i64())
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "schedule",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "name": Self::require_str(args, "name")?,
+                        "prompt": Self::require_str(args, "prompt")?,
+                        "run_at": Self::require_i64(args, "run_at")?,
+                        "interval_minutes": args.get("interval_minutes").and_then(|v| v.as_i64())
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.tasks.list" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "list",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("all"),
-                            "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50)
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "list",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("all"),
+                        "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50)
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.tasks.enable" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "enable",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "enable",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.tasks.disable" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "disable",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "disable",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.tasks.delete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "delete",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "delete",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.reminders.create" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "create",
                             "user_id": Self::require_str(args, "user_id")?,
@@ -451,46 +442,70 @@ impl ToolRegistry {
                             "delay_seconds": args.get("delay_seconds").and_then(|v| v.as_i64()),
                             "in_seconds": args.get("in_seconds").and_then(|v| v.as_i64())
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.reminders.list" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "list",
                             "user_id": Self::require_str(args, "user_id")?,
                             "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("open"),
                             "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20)
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.reminders.complete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "complete",
                             "user_id": Self::require_str(args, "user_id")?,
                             "id": Self::require_i64(args, "id")?
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.reminders.delete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "delete",
                             "user_id": Self::require_str(args, "user_id")?,
                             "id": Self::require_i64(args, "id")?
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.reminders.snooze" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "snooze",
                             "user_id": Self::require_str(args, "user_id")?,
@@ -499,23 +514,35 @@ impl ToolRegistry {
                             "delay_seconds": args.get("delay_seconds").and_then(|v| v.as_i64()),
                             "in_seconds": args.get("in_seconds").and_then(|v| v.as_i64())
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.reminders.clear" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "reminders", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "reminders",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "clear",
                             "user_id": Self::require_str(args, "user_id")?,
                             "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("open")
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.planning.create" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "planning", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "create",
                             "user_id": Self::require_str(args, "user_id")?,
@@ -524,34 +551,52 @@ impl ToolRegistry {
                             "steps": args.get("steps").cloned(),
                             "status": args.get("status").and_then(|v| v.as_str())
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.planning.list" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "planning", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "list",
                             "user_id": Self::require_str(args, "user_id")?,
                             "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20)
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.planning.get" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "planning", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "get",
                             "user_id": Self::require_str(args, "user_id")?,
                             "id": Self::require_i64(args, "id")?
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.planning.update" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "planning", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "update",
                             "user_id": Self::require_str(args, "user_id")?,
@@ -561,119 +606,118 @@ impl ToolRegistry {
                             "steps": args.get("steps").cloned(),
                             "status": args.get("status").and_then(|v| v.as_str())
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.planning.delete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "planning", capability, &args, |args| {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
                         Ok(serde_json::json!({
                             "action": "delete",
                             "user_id": Self::require_str(args, "user_id")?,
                             "id": Self::require_i64(args, "id")?
                         }))
-                    })
-                    .await?
+                    },
+                )
+                .await?
             }
             "kv.sqlite.wakeup.create" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "create",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "name": Self::require_str(args, "name")?,
-                            "prompt": Self::require_str(args, "prompt")?,
-                            "interval_minutes": Self::require_i64(args, "interval_minutes")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "create",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "name": Self::require_str(args, "name")?,
+                        "prompt": Self::require_str(args, "prompt")?,
+                        "interval_minutes": Self::require_i64(args, "interval_minutes")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.wakeup.list" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "list",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("all"),
-                            "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20)
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "list",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("all"),
+                        "limit": args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20)
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.wakeup.enable" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "enable",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "enable",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.wakeup.disable" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "disable",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "disable",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "kv.sqlite.wakeup.delete" => {
-                self
-                    .execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
-                        Ok(serde_json::json!({
-                            "action": "delete",
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "id": Self::require_i64(args, "id")?
-                        }))
-                    })
-                    .await?
+                self.execute_tool_capability(tool_name, tool, "wakeup", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "delete",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
             }
             "http.request" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "http_call",
-                        serde_json::json!({
-                            "method": Self::require_str(&args, "method")?,
-                            "url": args.get("url").and_then(|v| v.as_str()),
-                            "endpoint": args.get("endpoint").and_then(|v| v.as_str()),
-                            "headers": args.get("headers").cloned(),
-                            "query": args.get("query").cloned(),
-                            "body": args.get("body").and_then(|v| v.as_str()),
-                            "json": args.get("json").cloned(),
-                            "timeout_seconds": args.get("timeout_seconds").and_then(|v| v.as_u64())
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "http_call",
+                    serde_json::json!({
+                        "method": Self::require_str(&args, "method")?,
+                        "url": args.get("url").and_then(|v| v.as_str()),
+                        "endpoint": args.get("endpoint").and_then(|v| v.as_str()),
+                        "headers": args.get("headers").cloned(),
+                        "query": args.get("query").cloned(),
+                        "body": args.get("body").and_then(|v| v.as_str()),
+                        "json": args.get("json").cloned(),
+                        "timeout_seconds": args.get("timeout_seconds").and_then(|v| v.as_u64())
+                    }),
+                )
+                .await?
             }
             "coding.generate" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "coding",
-                        serde_json::json!({
-                            "prompt": Self::require_str(&args, "prompt")?,
-                            "system_prompt": args.get("system_prompt").and_then(|v| v.as_str())
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "coding",
+                    serde_json::json!({
+                        "prompt": Self::require_str(&args, "prompt")?,
+                        "system_prompt": args.get("system_prompt").and_then(|v| v.as_str())
+                    }),
+                )
+                .await?
             }
             "mcp.list_tools" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "mcp",
-                        serde_json::json!({
-                            "action": "list_tools",
-                            "server": args.get("server").and_then(|v| v.as_str())
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "mcp",
+                    serde_json::json!({
+                        "action": "list_tools",
+                        "server": args.get("server").and_then(|v| v.as_str())
+                    }),
+                )
+                .await?
             }
             "mcp.call" => {
                 let tool_name = args
@@ -690,82 +734,78 @@ impl ToolRegistry {
                     .cloned()
                     .or_else(|| args.get("payload").cloned());
 
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "mcp",
-                        serde_json::json!({
-                            "action": "call_tool",
-                            "server": args.get("server").and_then(|v| v.as_str()),
-                            "tool": tool_name,
-                            "arguments": arguments
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "mcp",
+                    serde_json::json!({
+                        "action": "call_tool",
+                        "server": args.get("server").and_then(|v| v.as_str()),
+                        "tool": tool_name,
+                        "arguments": arguments
+                    }),
+                )
+                .await?
             }
             "github.list_tools" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "github",
-                        serde_json::json!({
-                            "action": "list_tools"
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "github",
+                    serde_json::json!({
+                        "action": "list_tools"
+                    }),
+                )
+                .await?
             }
             "github.call_tool" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "github",
-                        serde_json::json!({
-                            "action": "call_tool",
-                            "tool": Self::require_str(&args, "tool")?,
-                            "arguments": args.get("arguments").cloned()
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "github",
+                    serde_json::json!({
+                        "action": "call_tool",
+                        "tool": Self::require_str(&args, "tool")?,
+                        "arguments": args.get("arguments").cloned()
+                    }),
+                )
+                .await?
             }
             "zapier.list_tools" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "zapier",
-                        serde_json::json!({
-                            "action": "list_tools"
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "zapier",
+                    serde_json::json!({
+                        "action": "list_tools"
+                    }),
+                )
+                .await?
             }
             "zapier.call_tool" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "zapier",
-                        serde_json::json!({
-                            "action": "call_tool",
-                            "tool": Self::require_str(&args, "tool")?,
-                            "arguments": args.get("arguments").cloned()
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "zapier",
+                    serde_json::json!({
+                        "action": "call_tool",
+                        "tool": Self::require_str(&args, "tool")?,
+                        "arguments": args.get("arguments").cloned()
+                    }),
+                )
+                .await?
             }
             "search.internet" => {
-                self
-                    .execute_cross_tool_capability(
-                        capability,
-                        "search_internet",
-                        serde_json::json!({
-                            "query": Self::require_str(&args, "query")?
-                        }),
-                    )
-                    .await?
+                self.execute_cross_tool_capability(
+                    capability,
+                    "search_internet",
+                    serde_json::json!({
+                        "query": Self::require_str(&args, "query")?
+                    }),
+                )
+                .await?
             }
             "secrets.get" => {
                 let secret_name = Self::require_str(&args, "name")?;
                 let scoped = format!("secrets.get.{secret_name}");
-                if !tool_config.is_capability_allowed(&scoped) && !tool_config.is_capability_allowed("secrets.get") {
+                if !tool_config.is_capability_allowed(&scoped)
+                    && !tool_config.is_capability_allowed("secrets.get")
+                {
                     serde_json::json!({
                         "status": "error",
                         "code": "forbidden",
@@ -854,15 +894,12 @@ impl ToolRegistry {
         target_tool_name: &str,
         mapped_args: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        let target_tool = self
-            .get_tool(target_tool_name)
-            .await
-            .ok_or_else(|| {
-                ButterflyBotError::Runtime(format!(
-                    "Capability '{}' requires tool '{}' to be registered",
-                    capability, target_tool_name
-                ))
-            })?;
+        let target_tool = self.get_tool(target_tool_name).await.ok_or_else(|| {
+            ButterflyBotError::Runtime(format!(
+                "Capability '{}' requires tool '{}' to be registered",
+                capability, target_tool_name
+            ))
+        })?;
 
         let tool_result = target_tool.execute(mapped_args).await?;
         Ok(serde_json::json!({
@@ -1021,7 +1058,10 @@ mod tests {
             .expect("capability call should return deterministic error response");
 
         assert_eq!(result.get("status").and_then(|v| v.as_str()), Some("error"));
-        assert_eq!(result.get("code").and_then(|v| v.as_str()), Some("forbidden"));
+        assert_eq!(
+            result.get("code").and_then(|v| v.as_str()),
+            Some("forbidden")
+        );
     }
 
     #[tokio::test]
@@ -1056,14 +1096,12 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("clock.now_unix")
         );
-        assert!(
-            result
-                .get("capability_result")
-                .and_then(|v| v.get("result"))
-                .and_then(|v| v.get("unix"))
-                .and_then(|v| v.as_i64())
-                .is_some()
-        );
+        assert!(result
+            .get("capability_result")
+            .and_then(|v| v.get("result"))
+            .and_then(|v| v.get("unix"))
+            .and_then(|v| v.as_i64())
+            .is_some());
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -211,7 +211,11 @@ impl ScheduledJob for WakeupJob {
             Ok(markdown) => {
                 let agent = self.agent.read().await.clone();
                 agent.set_heartbeat_markdown(markdown.clone()).await;
-                let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                let status = if markdown
+                    .as_ref()
+                    .map(|m| !m.trim().is_empty())
+                    .unwrap_or(false)
+                {
                     "ok"
                 } else {
                     "empty"
@@ -244,7 +248,11 @@ impl ScheduledJob for WakeupJob {
                 Ok(markdown) => {
                     let agent = self.agent.read().await.clone();
                     agent.set_prompt_markdown(markdown.clone()).await;
-                    let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                    let status = if markdown
+                        .as_ref()
+                        .map(|m| !m.trim().is_empty())
+                        .unwrap_or(false)
+                    {
                         "ok"
                     } else {
                         "empty"
@@ -461,10 +469,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/chat_history", get(chat_history))
         .route("/clear_user_history", post(clear_user_history))
         .route("/memory_search", post(memory_search))
-    .route("/preload_boot", post(preload_boot))
+        .route("/preload_boot", post(preload_boot))
         .route("/reminder_stream", get(reminder_stream))
         .route("/ui_events", get(ui_events))
-    .route("/factory_reset_config", post(factory_reset_config))
+        .route("/factory_reset_config", post(factory_reset_config))
         .route("/reload_config", post(reload_config))
         .with_state(state)
 }
@@ -491,10 +499,13 @@ async fn doctor(State(state): State<AppState>, headers: HeaderMap) -> impl IntoR
         "pass"
     };
 
-    (StatusCode::OK, Json(DoctorResponse {
-        overall: overall.to_string(),
-        checks,
-    }))
+    (
+        StatusCode::OK,
+        Json(DoctorResponse {
+            overall: overall.to_string(),
+            checks,
+        }),
+    )
         .into_response()
 }
 
@@ -680,8 +691,13 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
                     "tool_runtime_invariant",
                     "high",
                     "fail",
-                    format!("Non-WASM tool runtime detected for: {}.", non_wasm_tools.join(", ")),
-                    Some("Enforce WASM-only execution in sandbox settings and tool runtime planner."),
+                    format!(
+                        "Non-WASM tool runtime detected for: {}.",
+                        non_wasm_tools.join(", ")
+                    ),
+                    Some(
+                        "Enforce WASM-only execution in sandbox settings and tool runtime planner.",
+                    ),
                     false,
                 ));
             }
@@ -1038,19 +1054,20 @@ async fn preload_boot(
     tokio::spawn(async move {
         let quick_timeout = Duration::from_secs(2);
 
-        let context_status = match tokio::time::timeout(quick_timeout, agent.preload_context(&user_id)).await {
-            Ok(Ok(())) => "ok".to_string(),
-            Ok(Err(err)) => format!("error: {err}"),
-            Err(_) => {
-                let agent = agent.clone();
-                let ui_event_tx = ui_event_tx.clone();
-                let user_id = user_id.clone();
-                tokio::spawn(async move {
-                    let status = match agent.preload_context(&user_id).await {
-                        Ok(()) => "ok".to_string(),
-                        Err(err) => format!("error: {err}"),
-                    };
-                    let _ = ui_event_tx.send(UiEvent {
+        let context_status =
+            match tokio::time::timeout(quick_timeout, agent.preload_context(&user_id)).await {
+                Ok(Ok(())) => "ok".to_string(),
+                Ok(Err(err)) => format!("error: {err}"),
+                Err(_) => {
+                    let agent = agent.clone();
+                    let ui_event_tx = ui_event_tx.clone();
+                    let user_id = user_id.clone();
+                    tokio::spawn(async move {
+                        let status = match agent.preload_context(&user_id).await {
+                            Ok(()) => "ok".to_string(),
+                            Err(err) => format!("error: {err}"),
+                        };
+                        let _ = ui_event_tx.send(UiEvent {
                         event_type: "boot".to_string(),
                         user_id: user_id.clone(),
                         tool: "context".to_string(),
@@ -1058,10 +1075,10 @@ async fn preload_boot(
                         payload: json!({"user_id": user_id, "status": status, "phase": "deferred"}),
                         timestamp: now_ts(),
                     });
-                });
-                "deferred".to_string()
-            }
-        };
+                    });
+                    "deferred".to_string()
+                }
+            };
         let _ = ui_event_tx.send(UiEvent {
             event_type: "boot".to_string(),
             user_id: user_id.clone(),
@@ -1076,7 +1093,11 @@ async fn preload_boot(
             match tokio::time::timeout(quick_timeout, load_markdown_content(&source)).await {
                 Ok(Ok(markdown)) => {
                     agent.set_heartbeat_markdown(markdown.clone()).await;
-                    if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                    if markdown
+                        .as_ref()
+                        .map(|m| !m.trim().is_empty())
+                        .unwrap_or(false)
+                    {
                         "ok".to_string()
                     } else {
                         "empty".to_string()
@@ -1091,7 +1112,11 @@ async fn preload_boot(
                         let status = match load_markdown_content(&source).await {
                             Ok(markdown) => {
                                 agent.set_heartbeat_markdown(markdown.clone()).await;
-                                if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                                if markdown
+                                    .as_ref()
+                                    .map(|m| !m.trim().is_empty())
+                                    .unwrap_or(false)
+                                {
                                     "ok".to_string()
                                 } else {
                                     "empty".to_string()
@@ -1129,7 +1154,11 @@ async fn preload_boot(
             match tokio::time::timeout(quick_timeout, load_markdown_content(&source)).await {
                 Ok(Ok(markdown)) => {
                     agent.set_prompt_markdown(markdown.clone()).await;
-                    if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                    if markdown
+                        .as_ref()
+                        .map(|m| !m.trim().is_empty())
+                        .unwrap_or(false)
+                    {
                         "ok".to_string()
                     } else {
                         "empty".to_string()
@@ -1144,7 +1173,11 @@ async fn preload_boot(
                         let status = match load_markdown_content(&source).await {
                             Ok(markdown) => {
                                 agent.set_prompt_markdown(markdown.clone()).await;
-                                if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                                if markdown
+                                    .as_ref()
+                                    .map(|m| !m.trim().is_empty())
+                                    .unwrap_or(false)
+                                {
                                     "ok".to_string()
                                 } else {
                                     "empty".to_string()
@@ -1177,7 +1210,9 @@ async fn preload_boot(
             timestamp: now_ts(),
         });
 
-        if (heartbeat_status == "ok" || heartbeat_status == "empty" || heartbeat_status == "deferred")
+        if (heartbeat_status == "ok"
+            || heartbeat_status == "empty"
+            || heartbeat_status == "deferred")
             && (prompt_status == "ok" || prompt_status == "empty" || prompt_status == "deferred")
         {
             let agent = agent.clone();
@@ -1407,7 +1442,10 @@ async fn factory_reset_config(
     let keyring_saved = match vault::set_secret("app_config_json", &pretty) {
         Ok(()) => true,
         Err(err) => {
-            tracing::warn!("factory_reset_config: failed to persist keyring config: {}", err);
+            tracing::warn!(
+                "factory_reset_config: failed to persist keyring config: {}",
+                err
+            );
             false
         }
     };
@@ -1418,7 +1456,9 @@ async fn factory_reset_config(
         "Config reset to factory defaults (keyring sync failed)".to_string()
     };
 
-    match ButterflyBot::from_store_with_events(&state.db_path, Some(state.ui_event_tx.clone())).await {
+    match ButterflyBot::from_store_with_events(&state.db_path, Some(state.ui_event_tx.clone()))
+        .await
+    {
         Ok(agent) => {
             let mut guard = state.agent.write().await;
             *guard = Arc::new(agent);
@@ -1708,38 +1748,39 @@ async fn run_autonomy_tick(
     });
 
     let options = ProcessOptions {
-        prompt: Some("AUTONOMY MODE: Heartbeat tick.\n\
+        prompt: Some(
+            "AUTONOMY MODE: Heartbeat tick.\n\
     Run autonomous checks/actions as needed using tools.\n\
     Output requirements:\n\
     - Return ONLY one short final status line (max 120 chars).\n\
     - Do NOT include Thought, Plan, Action, Observation, Summary, or Reasoning sections.\n\
     - Do NOT dump tool call details.\n\
-    - Good outputs: 'No-op', 'Processed 2 due tasks', 'Updated plans/todos; no urgent actions'.".to_string()),
+    - Good outputs: 'No-op', 'Processed 2 due tasks', 'Updated plans/todos; no urgent actions'."
+                .to_string(),
+        ),
         images: Vec::new(),
         output_format: OutputFormat::Text,
         image_detail: "auto".to_string(),
         json_schema: None,
     };
-    let result = tokio::time::timeout(
-        Duration::from_secs(120),
-        async {
-            agent
-                .process(
-                    &user_id,
-                    UserInput::Text("Autonomous heartbeat tick".to_string()),
-                    options,
-                )
-                .await
-        },
-    )
+    let result = tokio::time::timeout(Duration::from_secs(120), async {
+        agent
+            .process(
+                &user_id,
+                UserInput::Text("Autonomous heartbeat tick".to_string()),
+                options,
+            )
+            .await
+    })
     .await;
 
     let (status, payload): (String, serde_json::Value) = match result {
         Ok(Ok(ProcessResult::Text(text))) => {
             let trimmed = text.trim();
-            let status = if trimmed.is_empty() {
-                "no-op"
-            } else if trimmed.eq_ignore_ascii_case("no-op") || trimmed.eq_ignore_ascii_case("noop") {
+            let status = if trimmed.is_empty()
+                || trimmed.eq_ignore_ascii_case("no-op")
+                || trimmed.eq_ignore_ascii_case("noop")
+            {
                 "no-op"
             } else {
                 "ok"

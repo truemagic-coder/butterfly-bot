@@ -72,17 +72,17 @@ use crate::providers::sqlite::{SqliteMemoryProvider, SqliteMemoryProviderConfig}
 use crate::reminders::{default_reminder_db_path, resolve_reminder_db_path, ReminderStore};
 use crate::services::agent::{AgentService, UiEvent};
 use crate::services::query::QueryService;
-use crate::tools::http_call::HttpCallTool;
 use crate::tools::coding::CodingTool;
 use crate::tools::github::GitHubTool;
+use crate::tools::http_call::HttpCallTool;
 use crate::tools::mcp::McpTool;
-use crate::tools::zapier::ZapierTool;
 use crate::tools::planning::PlanningTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
 use crate::tools::tasks::TasksTool;
 use crate::tools::todo::TodoTool;
 use crate::tools::wakeup::WakeupTool;
+use crate::tools::zapier::ZapierTool;
 use tokio::sync::broadcast;
 
 pub struct ButterflyBotFactory;
@@ -133,9 +133,7 @@ impl ButterflyBotFactory {
                         }
                     })
                     .ok_or_else(|| {
-                        ButterflyBotError::Config(
-                            "Missing memory OpenAI API key".to_string(),
-                        )
+                        ButterflyBotError::Config("Missing memory OpenAI API key".to_string())
                     })?;
                 Ok::<_, ButterflyBotError>((api_key, openai.model, openai.base_url))
             })
@@ -508,12 +506,10 @@ pub(crate) async fn load_markdown_source(source: Option<&str>) -> Result<Option<
 
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         tracing::info!("Fetching markdown from URL: {}", trimmed);
-        let response = reqwest::get(trimmed)
-            .await
-            .map_err(|e| {
-                tracing::error!("HTTP request to {} failed: {}", trimmed, e);
-                ButterflyBotError::Config(e.to_string())
-            })?;
+        let response = reqwest::get(trimmed).await.map_err(|e| {
+            tracing::error!("HTTP request to {} failed: {}", trimmed, e);
+            ButterflyBotError::Config(e.to_string())
+        })?;
         if !response.status().is_success() {
             tracing::error!("HTTP {} from {}", response.status(), trimmed);
             return Err(ButterflyBotError::Config(format!(

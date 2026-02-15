@@ -219,7 +219,11 @@ async fn daemon_process_text_and_memory_search() {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let history = value.get("history").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let history = value
+        .get("history")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     assert!(history.is_empty());
 }
 
@@ -286,7 +290,10 @@ async fn daemon_doctor_requires_auth_and_returns_checks() {
             .map(|name| name == "database_access")
             .unwrap_or(false)
     });
-    assert!(has_db_check, "expected database_access check in doctor output");
+    assert!(
+        has_db_check,
+        "expected database_access check in doctor output"
+    );
 }
 
 #[tokio::test]

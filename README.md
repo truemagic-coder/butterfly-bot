@@ -173,6 +173,50 @@ BUTTERFLY_BOT_DISABLE_KEYRING=1 cargo test
 cargo run --release --bin butterfly-bot
 ```
 
+## Snap package (includes WASM tools)
+
+Snap packaging is defined in `snapcraft.yaml` and bundles all default WASM tool modules into the snap.
+
+Build the snap:
+
+```bash
+snapcraft
+```
+
+Install from Snap Store (after this snap is published):
+
+```bash
+sudo snap install butterfly-bot
+```
+
+Install locally (sideload):
+
+```bash
+sudo snap install --dangerous ./butterfly-bot_0.1.0_amd64.snap
+```
+
+Run the packaged commands:
+
+```bash
+butterfly-bot
+snap run butterfly-bot.butterfly-bot-ui
+snap run butterfly-bot.butterfly-botd
+```
+
+Daemon service (optional) is shipped disabled by default and can be managed with:
+
+```bash
+sudo snap start butterfly-bot.butterfly-botd
+sudo snap stop butterfly-bot.butterfly-botd
+```
+
+Notes:
+
+- Snap launchers set a writable app root under `$SNAP_USER_COMMON/butterfly-bot`.
+- The default DB path is `$SNAP_USER_COMMON/butterfly-bot/data/butterfly-bot.db`.
+- Bundled modules are mounted at `./wasm/<tool>_tool.wasm` inside the app runtime directory.
+- `BUTTERFLY_BOT_DISABLE_KEYRING=1` is enabled by default in the snap launcher (override if your snap environment provides a working keyring backend).
+
 ## Config
 
 Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.

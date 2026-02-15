@@ -67,7 +67,13 @@ async fn todo_tool_supports_bulk_create_reorder_and_complete() {
         .execute(json!({"action": "list", "user_id": "u1", "status": "completed"}))
         .await
         .expect("list completed");
-    assert_eq!(completed["items"].as_array().expect("completed items").len(), 1);
+    assert_eq!(
+        completed["items"]
+            .as_array()
+            .expect("completed items")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]

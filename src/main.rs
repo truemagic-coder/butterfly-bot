@@ -31,15 +31,13 @@ use butterfly_bot::interfaces::plugins::Tool;
 #[cfg(not(test))]
 use butterfly_bot::plugins::registry::ToolRegistry;
 #[cfg(not(test))]
-use butterfly_bot::tools::http_call::HttpCallTool;
-#[cfg(not(test))]
 use butterfly_bot::tools::coding::CodingTool;
 #[cfg(not(test))]
 use butterfly_bot::tools::github::GitHubTool;
 #[cfg(not(test))]
-use butterfly_bot::tools::mcp::McpTool;
+use butterfly_bot::tools::http_call::HttpCallTool;
 #[cfg(not(test))]
-use butterfly_bot::tools::zapier::ZapierTool;
+use butterfly_bot::tools::mcp::McpTool;
 #[cfg(not(test))]
 use butterfly_bot::tools::planning::PlanningTool;
 #[cfg(not(test))]
@@ -52,6 +50,8 @@ use butterfly_bot::tools::tasks::TasksTool;
 use butterfly_bot::tools::todo::TodoTool;
 #[cfg(not(test))]
 use butterfly_bot::tools::wakeup::WakeupTool;
+#[cfg(not(test))]
+use butterfly_bot::tools::zapier::ZapierTool;
 #[cfg(not(test))]
 use butterfly_bot::ui;
 #[cfg(not(test))]
@@ -347,9 +347,7 @@ async fn main() -> Result<()> {
         match command {
             Commands::Init => {
                 let _ = ensure_default_config(&cli.db)?;
-                println!(
-                    "Default configuration is ready. Use Config UI for optional overrides."
-                );
+                println!("Default configuration is ready. Use Config UI for optional overrides.");
                 return Ok(());
             }
             Commands::ConfigImport { path } => {

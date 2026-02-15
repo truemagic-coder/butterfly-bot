@@ -1,7 +1,6 @@
-pub mod http_call;
-pub mod github;
-pub mod zapier;
 pub mod coding;
+pub mod github;
+pub mod http_call;
 pub mod mcp;
 pub mod planning;
 pub mod reminders;
@@ -9,3 +8,4 @@ pub mod search_internet;
 pub mod tasks;
 pub mod todo;
 pub mod wakeup;
+pub mod zapier;

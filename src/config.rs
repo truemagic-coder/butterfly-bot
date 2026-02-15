@@ -106,8 +106,10 @@ impl MarkdownSource {
                         markdown: markdown.to_string(),
                     })
                 } else {
-                    Err("markdown source object must include `type` or (`url`/`markdown`)"
-                        .to_string())
+                    Err(
+                        "markdown source object must include `type` or (`url`/`markdown`)"
+                            .to_string(),
+                    )
                 }
             }
             Value::Null => Err("markdown source cannot be null".to_string()),
@@ -181,9 +183,7 @@ pub struct Config {
 }
 impl Config {
     fn apply_security_defaults(mut self) -> Self {
-        let tools = self
-            .tools
-            .get_or_insert_with(|| Value::Object(Map::new()));
+        let tools = self.tools.get_or_insert_with(|| Value::Object(Map::new()));
         if let Some(tools_obj) = tools.as_object_mut() {
             let settings = tools_obj
                 .entry("settings")

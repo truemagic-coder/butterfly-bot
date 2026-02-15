@@ -51,6 +51,7 @@ impl AgentService {
     pub fn agent_name(&self) -> &str {
         &self.agent.name
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         llm_provider: Arc<dyn LlmProvider>,
         agent: AIAgent,
@@ -217,7 +218,9 @@ impl AgentService {
         // Do NOT re-fetch here – it swallows errors and causes silent failures.
 
         let context_guard = self.context_markdown.read().await;
-        let has_context = context_guard.as_ref().map_or(false, |s| !s.trim().is_empty());
+        let has_context = context_guard
+            .as_ref()
+            .is_some_and(|s| !s.trim().is_empty());
         let instructions = &self.agent.instructions;
 
         if has_context {
@@ -592,7 +595,8 @@ impl AgentService {
         prompt.push_str(
             "If you need a tool not listed, respond with 'no-op' and explain what is missing.\n",
         );
-        prompt.push_str("Do NOT include Reason/Action/Observation sections in the final response.\n");
+        prompt
+            .push_str("Do NOT include Reason/Action/Observation sections in the final response.\n");
         prompt.push_str(
             "When using tools, call ONLY ONE tool per step. If no tool is needed, respond with the final answer.\n",
         );
@@ -630,9 +634,16 @@ impl AgentService {
                 return Ok(last_text);
             }
 
-            let first_call = response.tool_calls.first().cloned().into_iter().collect::<Vec<_>>();
+            let first_call = response
+                .tool_calls
+                .first()
+                .cloned()
+                .into_iter()
+                .collect::<Vec<_>>();
 
-            let results = self.execute_tool_calls(&first_call, &tools, user_id).await?;
+            let results = self
+                .execute_tool_calls(&first_call, &tools, user_id)
+                .await?;
             let serialized = serde_json::to_string_pretty(&results)
                 .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
             prompt.push_str("\n\nOBSERVATION:\n");
@@ -780,20 +791,16 @@ impl AgentService {
     }
 }
 
-static BEARER_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bbearer\s+[^\s\x22\x27]+").unwrap());
+static BEARER_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)\bbearer\s+[^\s\x22\x27]+").unwrap());
 static KEY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(sk-|xai-|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_\-]+")
-        .unwrap()
+    Regex::new(r"(?i)\b(sk-|xai-|github_pat_|ghp_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_\-]+").unwrap()
 });
 
 fn redact_string(input: &str) -> String {
     let mut out = BEARER_RE
         .replace_all(input, "Bearer [REDACTED]")
         .to_string();
-    out = KEY_RE
-        .replace_all(&out, "$1[REDACTED]")
-        .to_string();
+    out = KEY_RE.replace_all(&out, "$1[REDACTED]").to_string();
     truncate_string(&out, 2000)
 }
 
@@ -804,13 +811,19 @@ fn redact_value(value: &serde_json::Value) -> serde_json::Value {
         serde_json::Value::Number(v) => serde_json::Value::Number(v.clone()),
         serde_json::Value::String(v) => serde_json::Value::String(redact_string(v)),
         serde_json::Value::Array(items) => serde_json::Value::Array(
-            items.iter().map(redact_value).collect::<Vec<serde_json::Value>>(),
+            items
+                .iter()
+                .map(redact_value)
+                .collect::<Vec<serde_json::Value>>(),
         ),
         serde_json::Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (key, value) in map {
                 if is_sensitive_key(key) {
-                    out.insert(key.clone(), serde_json::Value::String("[REDACTED]".to_string()));
+                    out.insert(
+                        key.clone(),
+                        serde_json::Value::String("[REDACTED]".to_string()),
+                    );
                 } else {
                     out.insert(key.clone(), redact_value(value));
                 }

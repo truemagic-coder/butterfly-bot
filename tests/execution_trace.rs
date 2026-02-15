@@ -71,7 +71,10 @@ async fn execution_trace_redacts_tool_event_payload() {
     assert!(event.timestamp > 0);
 
     let args = event.payload.get("args").expect("args payload");
-    assert_eq!(args.get("api_key").and_then(|v| v.as_str()), Some("[REDACTED]"));
+    assert_eq!(
+        args.get("api_key").and_then(|v| v.as_str()),
+        Some("[REDACTED]")
+    );
     assert_eq!(
         args.get("authorization").and_then(|v| v.as_str()),
         Some("[REDACTED]")

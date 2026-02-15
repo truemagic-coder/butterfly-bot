@@ -483,7 +483,7 @@ async fn ensure_memory_tables(database_url: &str) -> Result<()> {
 
 fn repair_messages_fts_sync(conn: &mut SqliteConnection) -> Result<()> {
     diesel::connection::SimpleConnection::batch_execute(conn, REPAIR_MESSAGES_FTS_SQL)
-    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     Ok(())
 }
 
@@ -526,7 +526,9 @@ fn is_sqlite_locked_error(message: &str) -> bool {
         || lower.contains("database table is locked")
         || lower.contains("sql logic error")
         || (lower.contains("sql logic error")
-            && (lower.contains("locked") || lower.contains("busy") || lower.contains("sqlite_busy")))
+            && (lower.contains("locked")
+                || lower.contains("busy")
+                || lower.contains("sqlite_busy")))
 }
 
 async fn get_history_reset_ts(provider: &SqliteMemoryProvider, user_id: &str) -> Result<i64> {
@@ -540,7 +542,10 @@ async fn get_history_reset_ts(provider: &SqliteMemoryProvider, user_id: &str) ->
         Ok(value) => Ok(value.reset_at),
         Err(err) => {
             let message = err.to_string();
-            if message.contains("NotFound") || message.contains("not found") || message.contains("no such table") {
+            if message.contains("NotFound")
+                || message.contains("not found")
+                || message.contains("no such table")
+            {
                 Ok(0)
             } else {
                 Err(ButterflyBotError::Runtime(message))
@@ -610,7 +615,6 @@ impl MemoryProvider for SqliteMemoryProvider {
             let role = role.to_string();
             let user_id = user_id.to_string();
             let row_id = row_id.id;
-            let ts = ts;
             tokio::spawn(async move {
                 let start = Instant::now();
                 let vectors = match embedder
@@ -640,13 +644,14 @@ impl MemoryProvider for SqliteMemoryProvider {
                             return;
                         }
                     };
-                    let batch = match build_lancedb_batch(row_id, &user_id, &role, &content, ts, vector) {
-                        Ok(b) => b,
-                        Err(err) => {
-                            info!("LanceDB batch error: {}", err);
-                            return;
-                        }
-                    };
+                    let batch =
+                        match build_lancedb_batch(row_id, &user_id, &role, &content, ts, vector) {
+                            Ok(b) => b,
+                            Err(err) => {
+                                info!("LanceDB batch error: {}", err);
+                                return;
+                            }
+                        };
                     let schema = batch.schema();
                     let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
                     if let Err(err) = table.add(batches).execute().await {
@@ -685,7 +690,12 @@ impl MemoryProvider for SqliteMemoryProvider {
             .filter(messages::timestamp.gt(reset_ts))
             .order(messages::timestamp.desc())
             .then_order_by(messages::id.desc())
-            .select((messages::id, messages::role, messages::content, messages::timestamp))
+            .select((
+                messages::id,
+                messages::role,
+                messages::content,
+                messages::timestamp,
+            ))
             .into_boxed();
 
         if limit > 0 {
@@ -733,10 +743,7 @@ impl MemoryProvider for SqliteMemoryProvider {
                     }
                     info!(
                         "clear_history completed for user_id={} on attempt={}/{} reset_at={}",
-                        user_id,
-                        attempt,
-                        CLEAR_HISTORY_MAX_ATTEMPTS,
-                        reset_at
+                        user_id, attempt, CLEAR_HISTORY_MAX_ATTEMPTS, reset_at
                     );
                     return Ok(());
                 }
@@ -755,8 +762,7 @@ impl MemoryProvider for SqliteMemoryProvider {
                         if let Err(repair_err) = self.repair_messages_fts().await {
                             warn!(
                                 "clear_history messages_fts repair failed for user_id={}: {}",
-                                user_id,
-                                repair_err
+                                user_id, repair_err
                             );
                         } else if attempt < CLEAR_HISTORY_MAX_ATTEMPTS {
                             continue;
@@ -765,10 +771,7 @@ impl MemoryProvider for SqliteMemoryProvider {
 
                     warn!(
                         "clear_history delete failed for user_id={} attempt={}/{}: {}",
-                        user_id,
-                        attempt,
-                        CLEAR_HISTORY_MAX_ATTEMPTS,
-                        message
+                        user_id, attempt, CLEAR_HISTORY_MAX_ATTEMPTS, message
                     );
                     if is_sqlite_locked_error(&message) && attempt < CLEAR_HISTORY_MAX_ATTEMPTS {
                         let backoff_ms = CLEAR_HISTORY_RETRY_BASE_MS * attempt as u64;
@@ -780,7 +783,9 @@ impl MemoryProvider for SqliteMemoryProvider {
             }
         }
 
-        Err(ButterflyBotError::Runtime("clear_history marker retries exhausted".to_string()))
+        Err(ButterflyBotError::Runtime(
+            "clear_history marker retries exhausted".to_string(),
+        ))
     }
 
     async fn search(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {

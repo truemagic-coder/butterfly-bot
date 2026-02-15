@@ -196,7 +196,10 @@ async fn search_internet_tool_honors_network_policy_and_query_validation() {
     }))
     .expect("configure search_internet");
 
-    let missing_query = tool.execute(json!({})).await.expect("missing query response");
+    let missing_query = tool
+        .execute(json!({}))
+        .await
+        .expect("missing query response");
     assert_eq!(missing_query["status"], json!("error"));
     assert_eq!(missing_query["message"], json!("query is required"));
 

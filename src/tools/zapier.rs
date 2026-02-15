@@ -45,7 +45,7 @@ impl ZapierTool {
         }
     }
 
-    fn get_tool_config<'a>(config: &'a Value) -> Option<&'a Value> {
+    fn get_tool_config(config: &Value) -> Option<&Value> {
         config.get("tools").and_then(|tools| tools.get("zapier"))
     }
 
@@ -133,10 +133,7 @@ impl Tool for ZapierTool {
             .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or("https://mcp.zapier.com/api/v1/connect?token=my_token");
-        let has_inline_token = tool_cfg
-            .get("token")
-            .and_then(|v| v.as_str())
-            .is_some();
+        let has_inline_token = tool_cfg.get("token").and_then(|v| v.as_str()).is_some();
 
         if Self::has_token_in_url(url) || has_inline_token {
             Vec::new()
