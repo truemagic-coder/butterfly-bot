@@ -14,8 +14,21 @@ permissions:
   pull-requests: write
 
 jobs:
-  lint:
-    name: Rust Lint and Format
+  fmt:
+    name: Rust Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Rust Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,10 +37,7 @@ jobs:
       - name: Set up Rust and cache
         uses: ./.github/actions/setup-rust
         with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+          components: clippy
 
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings

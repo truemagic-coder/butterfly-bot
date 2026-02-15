@@ -56,6 +56,7 @@ parts:
       - libayatana-appindicator3-dev
       - libsecret-1-dev
       - libnotify-dev
+      - libxdo-dev
     stage-packages:
       - ca-certificates
       - openssl
@@ -64,6 +65,7 @@ parts:
       - libayatana-appindicator3-1
       - libsecret-1-0
       - libnotify4
+      - libxdo3
       - libxkbcommon0
       - libasound2t64
     override-build: |
