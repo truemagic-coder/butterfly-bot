@@ -20,6 +20,8 @@ use syntect::highlighting::ThemeSet;
 use syntect::html::styled_line_to_highlighted_html;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+use time::format_description::well_known::Rfc3339;
+use time::{macros::format_description, OffsetDateTime, UtcOffset};
 use tokio::time::{sleep, timeout, Duration};
 
 #[derive(Clone, Serialize)]
@@ -142,17 +144,139 @@ async fn run_factory_reset_config_request(
         .map_err(|err| err.to_string())
 }
 
+async fn run_chat_history_request(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/chat_history?user_id={}&limit={}",
+        daemon_url.trim_end_matches('/'),
+        user_id,
+        limit
+    );
+    let mut request = client.get(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("HTTP {status}: {text}"));
+    }
+
+    let value = response.json::<Value>().await.map_err(|err| err.to_string())?;
+    let history = value
+        .get("history")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(history)
+}
+
+async fn run_clear_user_history_request(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/clear_user_history", daemon_url.trim_end_matches('/'));
+    let mut request = client.post(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request
+        .json(&serde_json::json!({"user_id": user_id}))
+        .send()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct ChatMessage {
     id: u64,
     role: MessageRole,
     text: String,
+    timestamp: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MessageRole {
     User,
     Bot,
+}
+
+const HISTORY_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
+    format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+fn now_unix_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn format_local_time(ts: i64) -> String {
+    let dt = OffsetDateTime::from_unix_timestamp(ts)
+        .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(ts.max(0)));
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local = dt.to_offset(local_offset);
+    local
+        .format(HISTORY_TIMESTAMP_FORMAT)
+        .unwrap_or_else(|_| ts.to_string())
+}
+
+fn parse_history_timestamp(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if let Ok(value) = trimmed.parse::<i64>() {
+        return Some(if value >= 1_000_000_000_000 {
+            value / 1000
+        } else {
+            value
+        });
+    }
+
+    if let Ok(parsed) = OffsetDateTime::parse(trimmed, &Rfc3339) {
+        return Some(parsed.unix_timestamp());
+    }
+
+    OffsetDateTime::parse(trimmed, HISTORY_TIMESTAMP_FORMAT)
+        .ok()
+        .map(|value| value.unix_timestamp())
+}
+
+fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)> {
+    let trimmed = line.trim();
+    let payload = trimmed.strip_prefix('[')?;
+    let (ts_str, rest) = payload.split_once("] ")?;
+    let (role, content) = rest.split_once(": ")?;
+    if content.trim().is_empty() {
+        return None;
+    }
+    let role = match role.trim() {
+        "user" => MessageRole::User,
+        _ => MessageRole::Bot,
+    };
+    Some((role, content.to_string(), parse_history_timestamp(ts_str)))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -258,6 +382,12 @@ async fn scroll_chat_after_render() {
 
 async fn scroll_activity_to_bottom() {
     let _ = eval("const el = document.getElementById('activity-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
+}
+
+async fn scroll_activity_after_render() {
+    scroll_activity_to_bottom().await;
+    sleep(Duration::from_millis(16)).await;
+    scroll_activity_to_bottom().await;
 }
 
 fn highlight_json_html(input: &str) -> String {
@@ -440,6 +570,8 @@ fn app_view() -> Element {
     let reminders_listener_started = use_signal(|| false);
     let ui_events_listening = use_signal(|| false);
     let ui_events_listener_started = use_signal(|| false);
+    let history_load_started = use_signal(|| false);
+    let last_bot_scroll_id = use_signal(|| 0u64);
 
     let tools_loaded = use_signal(|| false);
     let settings_load_started = use_signal(|| false);
@@ -533,16 +665,19 @@ fn app_view() -> Element {
                     next_id.set(id + 1);
                     id
                 };
+                let timestamp = now_unix_ts();
 
                 messages.write().push(ChatMessage {
                     id: user_message_id,
                     role: MessageRole::User,
                     text: text.clone(),
+                    timestamp,
                 });
                 messages.write().push(ChatMessage {
                     id: bot_message_id,
                     role: MessageRole::Bot,
                     text: String::new(),
+                    timestamp,
                 });
 
                 input.set(String::new());
@@ -631,6 +766,48 @@ fn app_view() -> Element {
         })
     };
     let on_send_key = on_send.clone();
+
+    let on_clear_histories = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
+        let messages = messages.clone();
+        let activity_messages = activity_messages.clone();
+        let next_id = next_id.clone();
+        let error = error.clone();
+
+        use_callback(move |_| {
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let user_id = user_id.clone();
+            let messages = messages.clone();
+            let activity_messages = activity_messages.clone();
+            let next_id = next_id.clone();
+            let error = error.clone();
+
+            spawn(async move {
+                let mut messages = messages;
+                let mut activity_messages = activity_messages;
+                let mut next_id = next_id;
+                let mut error = error;
+
+                messages.set(Vec::new());
+                activity_messages.set(Vec::new());
+                next_id.set(1);
+                error.set(String::new());
+
+                if daemon_running() {
+                    if let Err(err) = run_clear_user_history_request(daemon_url(), token(), user_id()).await {
+                        error.set(format!(
+                            "Cleared local history, but daemon clear failed: {err}"
+                        ));
+                    }
+                }
+            });
+        })
+    };
 
     let on_daemon_start = {
         let daemon_status = daemon_status.clone();
@@ -848,6 +1025,100 @@ fn app_view() -> Element {
     }
 
     {
+        let messages = messages.clone();
+        let last_bot_scroll_id = last_bot_scroll_id.clone();
+
+        use_effect(move || {
+            let latest_bot_id = messages
+                .read()
+                .iter()
+                .rev()
+                .find(|msg| msg.role == MessageRole::Bot && !msg.text.is_empty())
+                .map(|msg| msg.id)
+                .unwrap_or(0);
+
+            if latest_bot_id == 0 || latest_bot_id == *last_bot_scroll_id.read() {
+                return;
+            }
+
+            let mut last_bot_scroll_id = last_bot_scroll_id.clone();
+            last_bot_scroll_id.set(latest_bot_id);
+
+            spawn(async move {
+                scroll_chat_after_render().await;
+            });
+        });
+    }
+
+    {
+        let history_load_started = history_load_started.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let user_id = user_id.clone();
+        let messages = messages.clone();
+        let next_id = next_id.clone();
+
+        use_effect(move || {
+            if *history_load_started.read() || !*daemon_running.read() {
+                return;
+            }
+
+            let mut started = history_load_started.clone();
+            started.set(true);
+
+            let mut messages = messages.clone();
+            let mut next_id = next_id.clone();
+
+            spawn(async move {
+                let history = match run_chat_history_request(
+                    daemon_url(),
+                    token(),
+                    user_id(),
+                    40,
+                )
+                .await
+                {
+                    Ok(history) => history,
+                    Err(_) => return,
+                };
+
+                if history.is_empty() || !messages.read().is_empty() {
+                    return;
+                }
+
+                let parsed = history
+                    .into_iter()
+                    .filter_map(|line| parse_history_entry(&line))
+                    .collect::<Vec<_>>();
+
+                if parsed.is_empty() || !messages.read().is_empty() {
+                    return;
+                }
+
+                let mut list = messages.write();
+                if !list.is_empty() {
+                    return;
+                }
+
+                for (role, text, timestamp) in parsed {
+                    let id = next_id();
+                    next_id.set(id + 1);
+                    list.push(ChatMessage {
+                        id,
+                        role,
+                        text,
+                        timestamp: timestamp.unwrap_or_else(now_unix_ts),
+                    });
+                }
+
+                drop(list);
+                scroll_chat_after_render().await;
+            });
+        });
+    }
+
+    {
         let reminders_listener_started = reminders_listener_started.clone();
         let reminders_listening = reminders_listening.clone();
         let daemon_url = daemon_url.clone();
@@ -934,10 +1205,15 @@ fn app_view() -> Element {
                                         .unwrap_or("Reminder");
                                     let id = next_id();
                                     next_id.set(id + 1);
+                                    let timestamp = value
+                                        .get("due_at")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or_else(now_unix_ts);
                                     messages.write().push(ChatMessage {
                                         id,
                                         role: MessageRole::Bot,
                                         text: format!("⏰ {title}"),
+                                        timestamp,
                                     });
                                     scroll_chat_to_bottom().await;
                                     if let Err(err) = Notification::new()
@@ -953,6 +1229,20 @@ fn app_view() -> Element {
                     }
                 }
                     sleep(Duration::from_secs(2)).await;
+                }
+            });
+        });
+    }
+
+    {
+        let active_tab = active_tab.clone();
+        use_effect(move || {
+            let tab = *active_tab.read();
+            spawn(async move {
+                match tab {
+                    UiTab::Chat => scroll_chat_after_render().await,
+                    UiTab::Activity => scroll_activity_after_render().await,
+                    _ => {}
                 }
             });
         });
@@ -1120,12 +1410,17 @@ fn app_view() -> Element {
                                     }
                                     let id = next_id();
                                     next_id.set(id + 1);
+                                    let timestamp = value
+                                        .get("timestamp")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or_else(now_unix_ts);
                                     activity_messages.write().push(ChatMessage {
                                         id,
                                         role: MessageRole::Bot,
                                         text,
+                                        timestamp,
                                     });
-                                    scroll_activity_to_bottom().await;
+                                    scroll_activity_after_render().await;
                                 }
                             }
                         }
@@ -2191,6 +2486,13 @@ fn app_view() -> Element {
                 background: rgba(255,255,255,0.12);
             }}
             .daemon-icon-btn:disabled {{ opacity: 0.45; }}
+            .daemon-trash-btn {{
+                margin-left: 6px;
+                background: rgba(239,68,68,0.30);
+            }}
+            .daemon-trash-btn:hover {{
+                background: rgba(239,68,68,0.50);
+            }}
             .title {{ font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }}
             .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: rgba(10,16,34,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }}
             .bubble {{
@@ -2209,6 +2511,10 @@ fn app_view() -> Element {
             }}
             .bubble.user {{ margin-left: auto; background: rgba(99,102,241,0.55); color: white; border-bottom-right-radius: 6px; }}
             .bubble.bot {{ margin-right: auto; background: rgba(124,58,237,0.45); color: white; border-bottom-left-radius: 6px; }}
+            .bubble-content {{ margin-bottom: 6px; }}
+            .bubble-time {{ font-size: 11px; color: rgba(229,231,235,0.72); letter-spacing: 0.02em; }}
+            .bubble.user .bubble-time {{ text-align: right; }}
+            .bubble.bot .bubble-time {{ text-align: right; }}
             .composer {{
                 padding: 16px 20px;
                 background: rgba(17,24,39,0.55);
@@ -2417,6 +2723,12 @@ fn app_view() -> Element {
                             disabled: !*daemon_running.read(),
                             "⏹"
                         }
+                        button {
+                            class: "daemon-icon-btn daemon-trash-btn",
+                            title: "Clear chat and activity history",
+                            onclick: move |_| on_clear_histories.call(()),
+                            "🗑"
+                        }
                     }
                 }
             }
@@ -2442,7 +2754,11 @@ fn app_view() -> Element {
                             } else {
                                 "bubble bot"
                             },
-                            dangerous_inner_html: markdown_to_html(&message.text),
+                            div {
+                                class: "bubble-content",
+                                dangerous_inner_html: markdown_to_html(&message.text),
+                            }
+                            div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
                         }
                     }
                     if *busy.read() {
@@ -2620,7 +2936,11 @@ fn app_view() -> Element {
                         {
                             div {
                                 class: "bubble bot",
-                                dangerous_inner_html: markdown_to_html(&message.text),
+                                div {
+                                    class: "bubble-content",
+                                    dangerous_inner_html: markdown_to_html(&message.text),
+                                }
+                                div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
                             }
                         }
                         if activity_messages.read().is_empty() {

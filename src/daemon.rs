@@ -362,6 +362,17 @@ struct MemorySearchRequest {
 }
 
 #[derive(Deserialize)]
+struct ChatHistoryQuery {
+    user_id: String,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct ClearHistoryRequest {
+    user_id: String,
+}
+
+#[derive(Deserialize)]
 struct PreloadBootRequest {
     user_id: String,
 }
@@ -385,6 +396,17 @@ struct UiEventStreamQuery {
 #[derive(Serialize)]
 struct MemorySearchResponse {
     results: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ChatHistoryResponse {
+    history: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ClearHistoryResponse {
+    status: String,
+    message: String,
 }
 
 #[derive(Serialize)]
@@ -436,6 +458,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/security_audit", post(security_audit))
         .route("/process_text", post(process_text))
         .route("/process_text_stream", post(process_text_stream))
+        .route("/chat_history", get(chat_history))
+        .route("/clear_user_history", post(clear_user_history))
         .route("/memory_search", post(memory_search))
     .route("/preload_boot", post(preload_boot))
         .route("/reminder_stream", get(reminder_stream))
@@ -1198,6 +1222,71 @@ async fn memory_search(
             }),
         )
             .into_response(),
+    }
+}
+
+async fn chat_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ChatHistoryQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(40).clamp(1, 200);
+    let agent = state.agent.read().await.clone();
+    let response = agent.get_user_history(&query.user_id, limit).await;
+
+    match response {
+        Ok(history) => (StatusCode::OK, Json(ChatHistoryResponse { history })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn clear_user_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ClearHistoryRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let agent = state.agent.read().await.clone();
+    tracing::info!(
+        "clear_user_history requested for user_id={}",
+        payload.user_id
+    );
+    match agent.delete_user_history(&payload.user_id).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(ClearHistoryResponse {
+                status: "ok".to_string(),
+                message: "User history cleared".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(err) => {
+            tracing::error!(
+                "clear_user_history failed for user_id={}: {}",
+                payload.user_id,
+                err
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
     }
 }
 

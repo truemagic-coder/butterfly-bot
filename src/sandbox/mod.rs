@@ -119,7 +119,10 @@ impl SandboxSettings {
     }
 
     pub fn execution_plan(&self, tool_name: &str) -> ExecutionPlan {
-        let tool_config = self.tools.get(tool_name).cloned().unwrap_or_default();
+        let mut tool_config = self.tools.get(tool_name).cloned().unwrap_or_default();
+        if tool_config.capabilities.allow.is_empty() {
+            tool_config.capabilities.allow = Self::default_capabilities_for_tool(tool_name);
+        }
         let mode_label = match self.mode {
             SandboxMode::Off => "off",
             SandboxMode::All => "all",
@@ -132,6 +135,58 @@ impl SandboxSettings {
             reason,
             tool_config,
         }
+    }
+
+    fn default_capabilities_for_tool(tool_name: &str) -> Vec<String> {
+        match tool_name {
+            "todo" => vec![
+                "kv.sqlite.todo.create",
+                "kv.sqlite.todo.create_many",
+                "kv.sqlite.todo.list",
+                "kv.sqlite.todo.complete",
+                "kv.sqlite.todo.reopen",
+                "kv.sqlite.todo.delete",
+                "kv.sqlite.todo.reorder",
+            ],
+            "tasks" => vec![
+                "kv.sqlite.tasks.schedule",
+                "kv.sqlite.tasks.list",
+                "kv.sqlite.tasks.enable",
+                "kv.sqlite.tasks.disable",
+                "kv.sqlite.tasks.delete",
+            ],
+            "reminders" => vec![
+                "kv.sqlite.reminders.create",
+                "kv.sqlite.reminders.list",
+                "kv.sqlite.reminders.complete",
+                "kv.sqlite.reminders.delete",
+                "kv.sqlite.reminders.snooze",
+                "kv.sqlite.reminders.clear",
+            ],
+            "planning" => vec![
+                "kv.sqlite.planning.create",
+                "kv.sqlite.planning.list",
+                "kv.sqlite.planning.get",
+                "kv.sqlite.planning.update",
+                "kv.sqlite.planning.delete",
+            ],
+            "wakeup" => vec![
+                "kv.sqlite.wakeup.create",
+                "kv.sqlite.wakeup.list",
+                "kv.sqlite.wakeup.enable",
+                "kv.sqlite.wakeup.disable",
+                "kv.sqlite.wakeup.delete",
+            ],
+            "coding" => vec!["coding.generate"],
+            "mcp" => vec!["mcp.list_tools", "mcp.call"],
+            "http_call" => vec!["http.request"],
+            "github" => vec!["github.list_tools", "github.call_tool"],
+            "search_internet" => vec!["search.internet"],
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 }
 
@@ -160,6 +215,36 @@ mod tests {
         assert_eq!(settings.execution_plan("http_call").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("github").runtime, ToolRuntime::Wasm);
         assert_eq!(settings.execution_plan("planning").runtime, ToolRuntime::Wasm);
+        assert!(
+            settings
+                .execution_plan("reminders")
+                .tool_config
+                .is_capability_allowed("kv.sqlite.reminders.list")
+        );
+    }
+
+    #[test]
+    fn explicit_capability_allowlist_overrides_defaults() {
+        let root = serde_json::json!({
+            "tools": {
+                "settings": {
+                    "sandbox": {
+                        "tools": {
+                            "reminders": {
+                                "capabilities": {
+                                    "allow": ["clock.now_unix"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let settings = SandboxSettings::from_root_config(&root);
+        let plan = settings.execution_plan("reminders");
+        assert!(plan.tool_config.is_capability_allowed("clock.now_unix"));
+        assert!(!plan.tool_config.is_capability_allowed("kv.sqlite.reminders.list"));
     }
 
     #[test]

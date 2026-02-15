@@ -136,6 +136,57 @@ impl QueryService {
             return Ok(response);
         }
 
+        if let Some(response) = self.try_handle_tasks_command(user_id, &processed_query).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider
+                    .append_message(user_id, "user", &processed_query)
+                    .await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(response);
+        }
+
+        if let Some(response) = self
+            .try_handle_reminders_command(user_id, &processed_query)
+            .await?
+        {
+            if let Some(provider) = &self.memory_provider {
+                provider
+                    .append_message(user_id, "user", &processed_query)
+                    .await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(response);
+        }
+
+        if let Some(response) = self.try_handle_todo_command(user_id, &processed_query).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider
+                    .append_message(user_id, "user", &processed_query)
+                    .await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(response);
+        }
+
+        if let Some(response) = self.try_handle_plans_command(user_id, &processed_query).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider
+                    .append_message(user_id, "user", &processed_query)
+                    .await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(response);
+        }
+
         let reminder_context = if let Some(store) = &self.reminder_store {
             build_reminder_context(store, user_id).await
         } else {
@@ -207,6 +258,46 @@ impl QueryService {
         self.ensure_context_in_memory(user_id).await?;
 
         if let Some(response) = self.try_handle_search_command(user_id, &text).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider.append_message(user_id, "user", &text).await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(ProcessResult::Text(response));
+        }
+
+        if let Some(response) = self.try_handle_tasks_command(user_id, &text).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider.append_message(user_id, "user", &text).await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(ProcessResult::Text(response));
+        }
+
+        if let Some(response) = self.try_handle_reminders_command(user_id, &text).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider.append_message(user_id, "user", &text).await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(ProcessResult::Text(response));
+        }
+
+        if let Some(response) = self.try_handle_todo_command(user_id, &text).await? {
+            if let Some(provider) = &self.memory_provider {
+                provider.append_message(user_id, "user", &text).await?;
+                provider
+                    .append_message(user_id, "assistant", &response)
+                    .await?;
+            }
+            return Ok(ProcessResult::Text(response));
+        }
+
+        if let Some(response) = self.try_handle_plans_command(user_id, &text).await? {
             if let Some(provider) = &self.memory_provider {
                 provider.append_message(user_id, "user", &text).await?;
                 provider
@@ -317,6 +408,42 @@ impl QueryService {
             self.ensure_context_in_memory(user_id).await?;
 
             if let Some(response) = self.try_handle_search_command(user_id, &processed_query).await? {
+                if let Some(provider) = &self.memory_provider {
+                    provider.append_message(user_id, "user", &processed_query).await?;
+                    provider.append_message(user_id, "assistant", &response).await?;
+                }
+                yield response;
+                return;
+            }
+
+            if let Some(response) = self.try_handle_tasks_command(user_id, &processed_query).await? {
+                if let Some(provider) = &self.memory_provider {
+                    provider.append_message(user_id, "user", &processed_query).await?;
+                    provider.append_message(user_id, "assistant", &response).await?;
+                }
+                yield response;
+                return;
+            }
+
+            if let Some(response) = self.try_handle_reminders_command(user_id, &processed_query).await? {
+                if let Some(provider) = &self.memory_provider {
+                    provider.append_message(user_id, "user", &processed_query).await?;
+                    provider.append_message(user_id, "assistant", &response).await?;
+                }
+                yield response;
+                return;
+            }
+
+            if let Some(response) = self.try_handle_todo_command(user_id, &processed_query).await? {
+                if let Some(provider) = &self.memory_provider {
+                    provider.append_message(user_id, "user", &processed_query).await?;
+                    provider.append_message(user_id, "assistant", &response).await?;
+                }
+                yield response;
+                return;
+            }
+
+            if let Some(response) = self.try_handle_plans_command(user_id, &processed_query).await? {
                 if let Some(provider) = &self.memory_provider {
                     provider.append_message(user_id, "user", &processed_query).await?;
                     provider.append_message(user_id, "assistant", &response).await?;
@@ -486,23 +613,8 @@ fn should_skip_memory_line(line: &str) -> bool {
         || lower.contains("need your api key")
 }
 
-async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<String> {
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let items = store.peek_due_reminders(user_id, now_ts, 5).await.ok()?;
-    if items.is_empty() {
-        return None;
-    }
-    let mut out = String::from("DUE REMINDERS:\n");
-    for item in items {
-        out.push_str(&format!(
-            "- [{}] {} (due_at: {})\n",
-            item.id, item.title, item.due_at
-        ));
-    }
-    Some(out)
+async fn build_reminder_context(_store: &ReminderStore, _user_id: &str) -> Option<String> {
+    None
 }
 
 fn should_include_semantic_memory(query: &str) -> bool {
@@ -592,5 +704,314 @@ impl QueryService {
             format!("Search tool error: {} ({})", message, details)
         };
         Ok(Some(response))
+    }
+
+    async fn try_handle_tasks_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
+        let lower = text.to_lowercase();
+        let trimmed = lower.trim();
+        let looks_like_task_list_request = trimmed == "tasks"
+            || trimmed == "task"
+            || lower.contains("what are the tasks")
+            || lower.contains("what's on my tasks")
+            || lower.contains("whats on my tasks")
+            || lower.contains("my tasks")
+            || lower.contains("list tasks")
+            || lower.contains("show tasks")
+            || lower.contains("open tasks");
+
+        if !looks_like_task_list_request {
+            return Ok(None);
+        }
+
+        let tool = self.agent_service.tool_registry.get_tool("tasks").await;
+        let Some(_tool) = tool else {
+            return Ok(Some(
+                "I can’t list tasks right now because the tasks tool is not available.".to_string(),
+            ));
+        };
+
+        let result = match self
+            .agent_service
+            .tool_registry
+            .execute_tool(
+                "tasks",
+                serde_json::json!({
+                    "action": "list",
+                    "user_id": user_id,
+                    "status": "all",
+                    "limit": 50
+                }),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(Some(format!("I couldn’t list tasks right now: {}", err)));
+            }
+        };
+
+        let payload = Self::tool_payload(&result);
+
+        let tasks = payload
+            .get("tasks")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if tasks.is_empty() {
+            return Ok(Some("You have no tasks scheduled right now.".to_string()));
+        }
+
+        let mut lines = vec!["Here are your scheduled tasks:".to_string()];
+        for task in tasks {
+            let name = task
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(unnamed task)");
+            let enabled = task
+                .get("enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true);
+            let next_run_at = task
+                .get("next_run_at")
+                .and_then(|value| value.as_i64())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let interval = task
+                .get("interval_minutes")
+                .and_then(|value| value.as_i64())
+                .map(|value| format!(", every {} min", value))
+                .unwrap_or_default();
+            let state = if enabled { "enabled" } else { "disabled" };
+            lines.push(format!("- {} ({}, next: {}{})", name, state, next_run_at, interval));
+        }
+
+        Ok(Some(lines.join("\n")))
+    }
+
+    async fn try_handle_reminders_command(
+        &self,
+        user_id: &str,
+        text: &str,
+    ) -> Result<Option<String>> {
+        let lower = text.to_lowercase();
+        let trimmed = lower.trim();
+        let looks_like_reminder_list_request = trimmed == "reminders"
+            || trimmed == "reminder"
+            || lower.contains("what reminders are due")
+            || lower.contains("which reminders are due")
+            || lower.contains("due reminders")
+            || lower.contains("what are my reminders")
+            || lower.contains("my reminders")
+            || lower.contains("list reminders")
+            || lower.contains("show reminders")
+            || lower.contains("open reminders");
+
+        if !looks_like_reminder_list_request {
+            return Ok(None);
+        }
+
+        let tool = self.agent_service.tool_registry.get_tool("reminders").await;
+        let Some(_tool) = tool else {
+            return Ok(Some(
+                "I can’t list reminders right now because the reminders tool is not available."
+                    .to_string(),
+            ));
+        };
+
+        let result = match self
+            .agent_service
+            .tool_registry
+            .execute_tool(
+                "reminders",
+                serde_json::json!({
+                    "action": "list",
+                    "user_id": user_id,
+                    "status": "open",
+                    "limit": 50
+                }),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(Some(format!("I couldn’t list reminders right now: {}", err)));
+            }
+        };
+
+        let payload = Self::tool_payload(&result);
+        let reminders = payload
+            .get("reminders")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if reminders.is_empty() {
+            return Ok(Some("No reminders are due at this time.".to_string()));
+        }
+
+        let mut lines = vec!["Here are your open reminders:".to_string()];
+        for reminder in reminders {
+            let title = reminder
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(untitled reminder)");
+            let due_at = reminder
+                .get("due_at")
+                .and_then(|value| value.as_i64())
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            lines.push(format!("- {} (due: {})", title, due_at));
+        }
+
+        Ok(Some(lines.join("\n")))
+    }
+
+    async fn try_handle_todo_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
+        let lower = text.to_lowercase();
+        let trimmed = lower.trim();
+        let looks_like_todo_list_request = trimmed == "todos"
+            || trimmed == "todo"
+            || lower.contains("what are the todos")
+            || lower.contains("what are my todos")
+            || lower.contains("my todos")
+            || lower.contains("list todos")
+            || lower.contains("show todos")
+            || lower.contains("open todos");
+
+        if !looks_like_todo_list_request {
+            return Ok(None);
+        }
+
+        let tool = self.agent_service.tool_registry.get_tool("todo").await;
+        let Some(_tool) = tool else {
+            return Ok(Some(
+                "I can’t list todos right now because the todo tool is not available.".to_string(),
+            ));
+        };
+
+        let result = match self
+            .agent_service
+            .tool_registry
+            .execute_tool(
+                "todo",
+                serde_json::json!({
+                    "action": "list",
+                    "user_id": user_id,
+                    "status": "open",
+                    "limit": 50
+                }),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(Some(format!("I couldn’t list todos right now: {}", err)));
+            }
+        };
+
+        let payload = Self::tool_payload(&result);
+        let items = payload
+            .get("items")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if items.is_empty() {
+            return Ok(Some("You have no open todos right now.".to_string()));
+        }
+
+        let mut lines = vec!["Here are your open todos:".to_string()];
+        for item in items {
+            let title = item
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(untitled todo)");
+            let notes = item
+                .get("notes")
+                .and_then(|value| value.as_str())
+                .map(|value| format!(": {}", value))
+                .unwrap_or_default();
+            lines.push(format!("- {}{}", title, notes));
+        }
+
+        Ok(Some(lines.join("\n")))
+    }
+
+    async fn try_handle_plans_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
+        let lower = text.to_lowercase();
+        let trimmed = lower.trim();
+        let looks_like_plans_list_request = trimmed == "plans"
+            || lower.contains("what are the plans")
+            || lower.contains("what are my plans")
+            || lower.contains("show plans")
+            || lower.contains("list plans")
+            || lower.contains("my plans")
+            || lower.contains("saved plans")
+            || lower.contains("current plans");
+
+        if !looks_like_plans_list_request {
+            return Ok(None);
+        }
+
+        let tool = self.agent_service.tool_registry.get_tool("planning").await;
+        let Some(_tool) = tool else {
+            return Ok(Some(
+                "I can’t list plans right now because the planning tool is not available."
+                    .to_string(),
+            ));
+        };
+
+        let result = match self
+            .agent_service
+            .tool_registry
+            .execute_tool(
+                "planning",
+                serde_json::json!({
+                    "action": "list",
+                    "user_id": user_id,
+                    "limit": 20
+                }),
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(Some(format!("I couldn’t list plans right now: {}", err)));
+            }
+        };
+
+        let payload = Self::tool_payload(&result);
+        let plans = payload
+            .get("plans")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        if plans.is_empty() {
+            return Ok(Some("You have no saved plans right now.".to_string()));
+        }
+
+        let mut lines = vec!["Here are your saved plans:".to_string()];
+        for plan in plans {
+            let title = plan
+                .get("title")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(untitled plan)");
+            let status = plan
+                .get("status")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown");
+            lines.push(format!("- {} ({})", title, status));
+        }
+
+        Ok(Some(lines.join("\n")))
+    }
+
+    fn tool_payload(result: &serde_json::Value) -> &serde_json::Value {
+        result
+            .get("capability_result")
+            .and_then(|value| value.get("result"))
+            .unwrap_or(result)
     }
 }

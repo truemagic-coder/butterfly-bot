@@ -21,6 +21,7 @@ const REMINDERS_UP_SQL: &str = include_str!("../../migrations/20260130_create_re
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
 type SqlitePooledConn<'a> = PooledConnection<'a, SqliteAsyncConn>;
+const CREATE_DEDUP_DUE_AT_WINDOW_SECONDS: i64 = 2;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReminderItem {
@@ -80,6 +81,25 @@ impl ReminderStore {
         due_at: i64,
     ) -> Result<ReminderItem> {
         let now = now_ts();
+        let mut conn = self.conn().await?;
+
+        let existing = reminders::table
+            .filter(reminders::user_id.eq(user_id))
+            .filter(reminders::title.eq(title))
+            .filter(reminders::completed_at.is_null())
+            .filter(reminders::fired_at.is_null())
+            .filter(reminders::due_at.ge(due_at - CREATE_DEDUP_DUE_AT_WINDOW_SECONDS))
+            .filter(reminders::due_at.le(due_at + CREATE_DEDUP_DUE_AT_WINDOW_SECONDS))
+            .order(reminders::id.desc())
+            .first::<ReminderRow>(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        if let Some(row) = existing {
+            return Ok(map_row(row));
+        }
+
         let new = NewReminder {
             user_id,
             title,
@@ -89,7 +109,6 @@ impl ReminderStore {
             fired_at: None,
         };
 
-        let mut conn = self.conn().await?;
         diesel::insert_into(reminders::table)
             .values(&new)
             .execute(&mut conn)
@@ -232,7 +251,10 @@ impl ReminderStore {
                     .filter(reminders::user_id.eq(user_id))
                     .filter(reminders::id.eq_any(&ids)),
             )
-            .set(reminders::fired_at.eq(Some(now)))
+            .set((
+                reminders::fired_at.eq(Some(now)),
+                reminders::completed_at.eq(Some(now)),
+            ))
             .execute(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
@@ -401,4 +423,95 @@ pub fn resolve_reminder_db_path(config: &serde_json::Value) -> Option<String> {
 
 pub fn default_reminder_db_path() -> String {
     "./data/butterfly-bot.db".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReminderStatus, ReminderStore};
+
+    #[tokio::test]
+    async fn reminder_create_deduplicates_near_identical_open_reminders() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("reminders.db");
+        let db_path = db_path.to_string_lossy().to_string();
+        let store = ReminderStore::new(&db_path).await.expect("store");
+
+        let first = store
+            .create_reminder("u1", "Feed the cats", 1_771_147_543)
+            .await
+            .expect("first create");
+        let second = store
+            .create_reminder("u1", "Feed the cats", 1_771_147_544)
+            .await
+            .expect("second create");
+
+        assert_eq!(first.id, second.id);
+
+        let items = store
+            .list_reminders("u1", ReminderStatus::Open, 50)
+            .await
+            .expect("list reminders");
+        assert_eq!(items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn reminder_create_allows_distinct_due_times() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("reminders.db");
+        let db_path = db_path.to_string_lossy().to_string();
+        let store = ReminderStore::new(&db_path).await.expect("store");
+
+        let first = store
+            .create_reminder("u1", "Feed the cats", 1_771_147_543)
+            .await
+            .expect("first create");
+        let second = store
+            .create_reminder("u1", "Feed the cats", 1_771_147_600)
+            .await
+            .expect("second create");
+
+        assert_ne!(first.id, second.id);
+
+        let items = store
+            .list_reminders("u1", ReminderStatus::Open, 50)
+            .await
+            .expect("list reminders");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn due_reminders_are_auto_completed_when_fired() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("reminders.db");
+        let db_path = db_path.to_string_lossy().to_string();
+        let store = ReminderStore::new(&db_path).await.expect("store");
+
+        let now = 1_771_147_543_i64;
+        let created = store
+            .create_reminder("u1", "Feed the dogs", now - 5)
+            .await
+            .expect("create reminder");
+
+        let fired = store
+            .due_reminders("u1", now, 10)
+            .await
+            .expect("due reminders");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].id, created.id);
+
+        let open = store
+            .list_reminders("u1", ReminderStatus::Open, 10)
+            .await
+            .expect("open reminders");
+        assert!(open.is_empty());
+
+        let completed = store
+            .list_reminders("u1", ReminderStatus::Completed, 10)
+            .await
+            .expect("completed reminders");
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].id, created.id);
+        assert!(completed[0].fired_at.is_some());
+        assert!(completed[0].completed_at.is_some());
+    }
 }

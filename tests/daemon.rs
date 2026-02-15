@@ -188,6 +188,39 @@ async fn daemon_process_text_and_memory_search() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert!(value.get("results").and_then(|v| v.as_array()).is_some());
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/clear_user_history")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"user_id":"u"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/chat_history?user_id=u&limit=10")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let history = value.get("history").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    assert!(history.is_empty());
 }
 
 #[tokio::test]

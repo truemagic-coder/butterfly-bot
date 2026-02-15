@@ -6,6 +6,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
+use deadpool_sqlite::{
+    rusqlite::params, Config as DeadpoolSqliteConfig, Pool as DeadpoolSqlitePool,
+    Runtime as DeadpoolRuntime,
+};
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Text};
 use diesel::sqlite::SqliteConnection;
@@ -18,7 +22,7 @@ use futures::TryStreamExt;
 use lru::LruCache;
 use serde_json::json;
 use time::{macros::format_description, OffsetDateTime};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::providers::{LlmProvider, MemoryProvider};
@@ -28,6 +32,8 @@ use schema::messages;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 const MEMORY_UP_SQL: &str = include_str!("../../migrations/20250129_create_memory/up.sql");
+const CLEAR_HISTORY_MAX_ATTEMPTS: usize = 6;
+const CLEAR_HISTORY_RETRY_BASE_MS: u64 = 100;
 
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
@@ -35,6 +41,14 @@ type SqlitePooledConn<'a> = PooledConnection<'a, SqliteAsyncConn>;
 
 #[derive(Queryable)]
 struct MessageRow {
+    role: String,
+    content: String,
+    timestamp: i64,
+}
+
+#[derive(Queryable)]
+struct MessageHistoryRow {
+    id: i32,
     role: String,
     content: String,
     timestamp: i64,
@@ -58,6 +72,12 @@ struct SearchRow {
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     count: i64,
+}
+
+#[derive(QueryableByName)]
+struct HistoryResetRow {
+    #[diesel(sql_type = BigInt)]
+    reset_at: i64,
 }
 
 #[derive(Insertable)]
@@ -232,10 +252,25 @@ impl LanceDbStore {
         *guard = Some(table.clone());
         Ok(Some(table))
     }
+
+    async fn delete_user_rows(&self, user_id: &str) -> Result<()> {
+        let Some(table) = self.open_table_if_exists().await? else {
+            return Ok(());
+        };
+        let escaped_user_id = user_id.replace('\'', "''");
+        table
+            .delete(&format!("user_id = '{escaped_user_id}'"))
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(())
+    }
 }
 
 pub struct SqliteMemoryProvider {
+    sqlite_path: String,
     pool: SqlitePool,
+    deadpool: DeadpoolSqlitePool,
+    write_gate: Arc<tokio::sync::Mutex<()>>,
     lancedb: Option<LanceDbStore>,
     embedder: Option<Arc<dyn LlmProvider>>,
     embedding_model: Option<String>,
@@ -250,7 +285,10 @@ pub struct SqliteMemoryProvider {
 impl Clone for SqliteMemoryProvider {
     fn clone(&self) -> Self {
         Self {
+            sqlite_path: self.sqlite_path.clone(),
             pool: self.pool.clone(),
+            deadpool: self.deadpool.clone(),
+            write_gate: Arc::clone(&self.write_gate),
             lancedb: self.lancedb.clone(),
             embedder: self.embedder.clone(),
             embedding_model: self.embedding_model.clone(),
@@ -305,13 +343,21 @@ impl SqliteMemoryProvider {
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
+        let deadpool_cfg = DeadpoolSqliteConfig::new(config.sqlite_path.clone());
+        let deadpool = deadpool_cfg
+            .create_pool(DeadpoolRuntime::Tokio1)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
         let lancedb = match config.lancedb_path.as_deref() {
             Some(path) if !path.trim().is_empty() => Some(LanceDbStore::new(path).await?),
             _ => None,
         };
 
         Ok(Self {
+            sqlite_path: config.sqlite_path,
             pool,
+            deadpool,
+            write_gate: Arc::new(tokio::sync::Mutex::new(())),
             lancedb,
             embedder: config.embedder,
             embedding_model: config.embedding_model,
@@ -403,11 +449,104 @@ async fn ensure_memory_tables(database_url: &str) -> Result<()> {
             }
         }
 
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "CREATE TABLE IF NOT EXISTS history_resets (
+                user_id TEXT PRIMARY KEY,
+                reset_at BIGINT NOT NULL
+            );",
+        )
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let fts_check = diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "SELECT message_id FROM messages_fts LIMIT 1",
+        );
+        if let Err(err) = fts_check {
+            let message = err.to_string();
+            if message.contains("no such table")
+                || message.contains("no such column")
+                || message.contains("SQL logic error")
+            {
+                repair_messages_fts_sync(&mut conn)?;
+            } else {
+                return Err(ButterflyBotError::Runtime(message));
+            }
+        }
+
         Ok::<_, ButterflyBotError>(())
     })
     .await
     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
     Ok(())
+}
+
+fn repair_messages_fts_sync(conn: &mut SqliteConnection) -> Result<()> {
+    diesel::connection::SimpleConnection::batch_execute(conn, REPAIR_MESSAGES_FTS_SQL)
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    Ok(())
+}
+
+const REPAIR_MESSAGES_FTS_SQL: &str = r#"
+        DROP TRIGGER IF EXISTS messages_ai;
+        DROP TRIGGER IF EXISTS messages_ad;
+        DROP TRIGGER IF EXISTS messages_au;
+        DROP TABLE IF EXISTS messages_fts;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            user_id,
+            message_id UNINDEXED
+        );
+
+        INSERT INTO messages_fts(rowid, content, user_id, message_id)
+        SELECT id, content, user_id, id FROM messages;
+
+        CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content, user_id, message_id)
+            VALUES (new.id, new.content, new.user_id, new.id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content, user_id, message_id)
+            VALUES('delete', old.id, old.content, old.user_id, old.id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content, user_id, message_id)
+            VALUES('delete', old.id, old.content, old.user_id, old.id);
+            INSERT INTO messages_fts(rowid, content, user_id, message_id)
+            VALUES (new.id, new.content, new.user_id, new.id);
+        END;
+"#;
+
+fn is_sqlite_locked_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("database is locked")
+        || lower.contains("database table is locked")
+        || lower.contains("sql logic error")
+        || (lower.contains("sql logic error")
+            && (lower.contains("locked") || lower.contains("busy") || lower.contains("sqlite_busy")))
+}
+
+async fn get_history_reset_ts(provider: &SqliteMemoryProvider, user_id: &str) -> Result<i64> {
+    let mut conn = provider.conn().await?;
+    let row = diesel::sql_query("SELECT reset_at FROM history_resets WHERE user_id = ?1 LIMIT 1")
+        .bind::<Text, _>(user_id)
+        .get_result::<HistoryResetRow>(&mut conn)
+        .await;
+
+    match row {
+        Ok(value) => Ok(value.reset_at),
+        Err(err) => {
+            let message = err.to_string();
+            if message.contains("NotFound") || message.contains("not found") || message.contains("no such table") {
+                Ok(0)
+            } else {
+                Err(ButterflyBotError::Runtime(message))
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -417,23 +556,51 @@ impl MemoryProvider for SqliteMemoryProvider {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             .as_secs() as i64;
-        let new_msg = NewMessage {
-            user_id,
-            role,
-            content,
-            timestamp: ts,
-        };
-        let mut conn = self.conn().await?;
-        diesel::insert_into(messages::table)
-            .values(&new_msg)
-            .execute(&mut conn)
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        let row_id = {
+            let _write_guard = self.write_gate.lock().await;
+            let key = crate::db::get_sqlcipher_key()?;
+            let user_id_owned = user_id.to_string();
+            let role_owned = role.to_string();
+            let content_owned = content.to_string();
 
-        let row_id: RowId = diesel::sql_query("SELECT last_insert_rowid() as id")
-            .get_result(&mut conn)
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            let conn = self
+                .deadpool
+                .get()
+                .await
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+            let inserted_id = conn
+                .interact(move |conn| -> std::result::Result<i64, String> {
+                    conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                        .map_err(|e| format!("append_message step=pragma_busy_timeout failed: {e}"))?;
+
+                    if let Some(key) = key {
+                        let escaped_key = key.replace('\'', "''");
+                        conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                            .map_err(|e| format!("append_message step=pragma_key failed: {e}"))?;
+                    }
+
+                    deadpool_sqlite::rusqlite::Connection::execute(
+                        conn,
+                        "INSERT INTO messages (user_id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
+                        params![&user_id_owned, &role_owned, &content_owned, ts],
+                    )
+                    .map_err(|e| format!("append_message step=insert_message failed: {e}"))?;
+
+                    let mut stmt = conn
+                        .prepare("SELECT last_insert_rowid()")
+                        .map_err(|e| format!("append_message step=prepare_last_rowid failed: {e}"))?;
+                    let id = stmt
+                        .query_row([], |row| row.get::<_, i64>(0))
+                        .map_err(|e| format!("append_message step=query_last_rowid failed: {e}"))?;
+                    Ok(id)
+                })
+                .await
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+                .map_err(ButterflyBotError::Runtime)?;
+
+            RowId { id: inserted_id }
+        };
 
         if let (Some(lancedb), Some(embedder)) = (&self.lancedb, &self.embedder) {
             let lancedb = lancedb.clone();
@@ -510,23 +677,26 @@ impl MemoryProvider for SqliteMemoryProvider {
     }
 
     async fn get_history(&self, user_id: &str, limit: usize) -> Result<Vec<String>> {
+        let reset_ts = get_history_reset_ts(self, user_id).await?;
         let mut conn = self.conn().await?;
         let mut query = messages::table
             .filter(messages::user_id.eq(user_id))
             .filter(messages::role.ne("context"))
+            .filter(messages::timestamp.gt(reset_ts))
             .order(messages::timestamp.desc())
-            .select((messages::role, messages::content, messages::timestamp))
+            .then_order_by(messages::id.desc())
+            .select((messages::id, messages::role, messages::content, messages::timestamp))
             .into_boxed();
 
         if limit > 0 {
             query = query.limit(limit as i64);
         }
 
-        let mut rows: Vec<MessageRow> = query
+        let mut rows: Vec<MessageHistoryRow> = query
             .load(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        rows.sort_by_key(|row| row.timestamp);
+        rows.sort_by_key(|row| (row.timestamp, row.id));
         Ok(rows
             .into_iter()
             .map(|row| {
@@ -541,12 +711,76 @@ impl MemoryProvider for SqliteMemoryProvider {
     }
 
     async fn clear_history(&self, user_id: &str) -> Result<()> {
-        let mut conn = self.conn().await?;
-        diesel::delete(messages::table.filter(messages::user_id.eq(user_id)))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        Ok(())
+        ensure_memory_tables(&self.sqlite_path).await?;
+        let reset_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+            .as_secs() as i64;
+        let _write_guard = self.write_gate.lock().await;
+
+        for attempt in 1..=CLEAR_HISTORY_MAX_ATTEMPTS {
+            let sqlite_result = self.clear_history_with_deadpool(user_id, reset_at).await;
+
+            match sqlite_result {
+                Ok(_) => {
+                    if let Some(lancedb) = &self.lancedb {
+                        if let Err(err) = lancedb.delete_user_rows(user_id).await {
+                            warn!(
+                                "clear_history LanceDB delete failed for user_id={}: {}",
+                                user_id, err
+                            );
+                        }
+                    }
+                    info!(
+                        "clear_history completed for user_id={} on attempt={}/{} reset_at={}",
+                        user_id,
+                        attempt,
+                        CLEAR_HISTORY_MAX_ATTEMPTS,
+                        reset_at
+                    );
+                    return Ok(());
+                }
+                Err(err) => {
+                    let message = err.to_string();
+
+                    if message.contains("step=delete_messages")
+                        && message.to_ascii_lowercase().contains("sql logic error")
+                    {
+                        warn!(
+                            "clear_history detected messages_fts inconsistency for user_id={} on attempt={}/{}; repairing FTS before retry",
+                            user_id,
+                            attempt,
+                            CLEAR_HISTORY_MAX_ATTEMPTS
+                        );
+                        if let Err(repair_err) = self.repair_messages_fts().await {
+                            warn!(
+                                "clear_history messages_fts repair failed for user_id={}: {}",
+                                user_id,
+                                repair_err
+                            );
+                        } else if attempt < CLEAR_HISTORY_MAX_ATTEMPTS {
+                            continue;
+                        }
+                    }
+
+                    warn!(
+                        "clear_history delete failed for user_id={} attempt={}/{}: {}",
+                        user_id,
+                        attempt,
+                        CLEAR_HISTORY_MAX_ATTEMPTS,
+                        message
+                    );
+                    if is_sqlite_locked_error(&message) && attempt < CLEAR_HISTORY_MAX_ATTEMPTS {
+                        let backoff_ms = CLEAR_HISTORY_RETRY_BASE_MS * attempt as u64;
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        continue;
+                    }
+                    return Err(ButterflyBotError::Runtime(message));
+                }
+            }
+        }
+
+        Err(ButterflyBotError::Runtime("clear_history marker retries exhausted".to_string()))
     }
 
     async fn search(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {
@@ -585,6 +819,118 @@ impl MemoryProvider for SqliteMemoryProvider {
 }
 
 impl SqliteMemoryProvider {
+    async fn repair_messages_fts(&self) -> Result<()> {
+        let database_url = self.sqlite_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = SqliteConnection::establish(&database_url)
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+            repair_messages_fts_sync(&mut conn)
+        })
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+        Ok(())
+    }
+
+    async fn clear_history_with_deadpool(&self, user_id: &str, reset_at: i64) -> Result<()> {
+        let key = crate::db::get_sqlcipher_key()?;
+        let user_id = user_id.to_string();
+
+        let conn = self
+            .deadpool
+            .get()
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let op_result = conn
+            .interact(move |conn| -> std::result::Result<(), String> {
+                conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                    .map_err(|e| format!("clear_history step=pragma_busy_timeout failed: {e}"))?;
+
+                if let Some(key) = key {
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("clear_history step=pragma_key failed: {e}"))?;
+                }
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM memory_links
+                     WHERE memory_id IN (
+                        SELECT id FROM memories WHERE user_id = ?1
+                     )",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_memory_links failed: {e}"))?;
+
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS messages_ai;\n\
+                     DROP TRIGGER IF EXISTS messages_ad;\n\
+                     DROP TRIGGER IF EXISTS messages_au;\n\
+                     DROP TABLE IF EXISTS messages_fts;",
+                )
+                .map_err(|e| format!("clear_history step=drop_messages_fts failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM messages WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_messages failed: {e}"))?;
+
+                conn.execute_batch(REPAIR_MESSAGES_FTS_SQL)
+                    .map_err(|e| format!("clear_history step=repair_messages_fts failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM memories WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_memories failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM entities WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_entities failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM events WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_events failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM facts WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_facts failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM edges WHERE user_id = ?1",
+                    params![&user_id],
+                )
+                .map_err(|e| format!("clear_history step=delete_edges failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "INSERT OR REPLACE INTO history_resets (user_id, reset_at) VALUES (?1, ?2)",
+                    params![&user_id, reset_at],
+                )
+                .map_err(|e| format!("clear_history step=upsert_history_reset failed: {e}"))?;
+
+                Ok(())
+            })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        op_result.map_err(ButterflyBotError::Runtime)
+    }
+
     fn sanitize_fts_query(query: &str) -> Option<String> {
         let mut sanitized = String::with_capacity(query.len());
         for ch in query.chars() {
@@ -606,12 +952,14 @@ impl SqliteMemoryProvider {
         let Some(query) = Self::sanitize_fts_query(query) else {
             return Ok(Vec::new());
         };
+        let reset_ts = get_history_reset_ts(self, user_id).await?;
         let mut conn = self.conn().await?;
         let rows: Vec<SearchRow> = diesel::sql_query(
-                "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role IN ('user','context')\n             ORDER BY timestamp DESC\n             LIMIT ?3",
+            "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2 AND mem.created_at > ?3\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role IN ('user','context') AND m.timestamp > ?3\n             ORDER BY timestamp DESC\n             LIMIT ?4",
         )
         .bind::<Text, _>(user_id)
         .bind::<Text, _>(query)
+        .bind::<BigInt, _>(reset_ts)
         .bind::<BigInt, _>(limit.max(1) as i64)
         .load(&mut conn)
         .await
@@ -623,6 +971,7 @@ impl SqliteMemoryProvider {
     }
 
     async fn search_vector(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {
+        let reset_ts = get_history_reset_ts(self, user_id).await?;
         let Some(lancedb) = &self.lancedb else {
             return Ok(Vec::new());
         };
@@ -683,6 +1032,9 @@ impl SqliteMemoryProvider {
                         continue;
                     }
                     let ts = timestamps.value(i);
+                    if ts <= reset_ts {
+                        continue;
+                    }
                     results.push(format!("[{}] {}", format_timestamp(ts), strings.value(i)));
                 }
             }
@@ -759,25 +1111,31 @@ impl SqliteMemoryProvider {
         let Some(summarizer) = &self.summarizer else {
             return Ok(());
         };
-        let mut conn = self.conn().await?;
-        let count: CountRow =
-            diesel::sql_query("SELECT COUNT(*) as count FROM messages WHERE user_id = ?1")
-                .bind::<Text, _>(user_id)
-                .get_result(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        if count.count < threshold as i64 {
-            return Ok(());
-        }
-
-        let rows: Vec<MessageRow> = messages::table
-            .filter(messages::user_id.eq(user_id))
-            .order(messages::timestamp.desc())
-            .limit(threshold as i64)
-            .select((messages::role, messages::content, messages::timestamp))
-            .load(&mut conn)
+        let reset_ts = get_history_reset_ts(self, user_id).await?;
+        let rows: Vec<MessageRow> = {
+            let mut conn = self.conn().await?;
+            let count: CountRow = diesel::sql_query(
+                "SELECT COUNT(*) as count FROM messages WHERE user_id = ?1 AND timestamp > ?2",
+            )
+            .bind::<Text, _>(user_id)
+            .bind::<BigInt, _>(reset_ts)
+            .get_result(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            if count.count < threshold as i64 {
+                return Ok(());
+            }
+
+            messages::table
+                .filter(messages::user_id.eq(user_id))
+                .filter(messages::timestamp.gt(reset_ts))
+                .order(messages::timestamp.desc())
+                .limit(threshold as i64)
+                .select((messages::role, messages::content, messages::timestamp))
+                .load(&mut conn)
+                .await
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+        };
 
         let mut rows = rows;
         rows.sort_by_key(|row| row.timestamp);
@@ -849,6 +1207,8 @@ impl SqliteMemoryProvider {
             salience: None,
             created_at: now,
         };
+        let _write_guard = self.write_gate.lock().await;
+        let mut conn = self.conn().await?;
         diesel::insert_into(crate::providers::sqlite::schema::memories::table)
             .values(&new_memory)
             .execute(&mut conn)
@@ -985,6 +1345,7 @@ impl SqliteMemoryProvider {
             .as_secs() as i64
             - (days as i64 * 24 * 60 * 60);
 
+        let _write_guard = self.write_gate.lock().await;
         let mut conn = self.conn().await?;
         diesel::delete(
             messages::table.filter(

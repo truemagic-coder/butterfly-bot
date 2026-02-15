@@ -120,6 +120,7 @@ Output bytes must be UTF-8 JSON.
 - `fuel` sets a deterministic instruction budget for guest execution.
 - `capabilities.abi_version` validates ABI compatibility at startup (`1` supported).
 - `capabilities.allow` is a per-tool allowlist for `capability_call.name`.
+- If `capabilities.allow` is omitted, built-in tools receive a safe default allowlist matching their supported capability set.
 - Sandbox decisions are audit-logged through `ToolRegistry`.
 
 ## Important: Placeholder module caveat
