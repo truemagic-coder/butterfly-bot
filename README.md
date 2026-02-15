@@ -1,16 +1,26 @@
 ## Butterfly Bot
 
-`Butterfly Bot` is your personal AI assistant accessible via a native desktop app. It includes memory, tool integrations, convention-first defaults, and streaming responses in a polished UI. The codebase still exposes a Rust library for building bots, but the primary focus is the app experience.
+Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
+
+Open the app, start the daemon, and run your workflow loop end-to-end: plan → task → reminder → completion, with memory, automation, and full local visibility.
+
+Why users pick it:
+
+- **Fast to first value:** works out-of-the-box with default settings.
+- **UI-first operator experience:** polished desktop chat, streaming responses, diagnostics, security audit, and live execution events.
+- **Real automation, not just chat:** native planning/todo/tasks/reminders/wakeup modules for always-on personal operations.
+- **Integration leverage:** MCP-based tooling (including Zapier) plus built-in tools for web, coding, scheduling, and reminders.
+- **Security-focused local posture:** keychain-backed secrets, local memory/storage paths, and WASM-only tool runtime policy.
 
 ## Highlights
 
 - Liquid Glass cross-platform desktop app with streaming chat.
-- Reminders and notifications both in chat and OS notifications.
+- Plan → task → reminder workflow support with native modules.
+- Reminders in chat and OS notifications.
 - Long-term agentic memory stored locally.
 - Optional prompt-context/heartbeat Markdown overrides.
-- Agent tools including MCP.
+- Agent tools including MCP (Zapier-compatible via MCP server setup).
 - Config stored in the OS keychain for maximum security.
-- No first-run wizard required for the default path.
 - UI launch auto-bootstraps default config and starts the local daemon automatically.
 
 ## Architecture (Daemon + UI + Always-On Agent)

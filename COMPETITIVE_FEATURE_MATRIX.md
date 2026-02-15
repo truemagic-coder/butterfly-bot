@@ -75,6 +75,23 @@ Scoring reflects current shipped state for Butterfly Bot after landing local gol
 - **Primary competitive gap vs OpenClaw:** connector breadth/packaging/community scale, not trust/reliability baseline.
 - **Score impact from shipped items:** **445 → 490 (+45)** via Reliability (4→5), UX/Visibility (4→5), and Docs/DX (4→5).
 
+### Path to 500 (Integration Leverage 4→5)
+
+To reach **500/500**, the remaining criterion is **Integration leverage/extensibility** (currently 4/5, weight 10).
+
+Definition of **5/5** for Integration leverage/extensibility:
+
+- Ship **at least 5** operator-ready integration playbooks (for example MCP/Zapier/provider workflows) with reproducible steps.
+- Each playbook includes: prerequisites, exact configuration, expected outputs, failure modes, and recovery/rollback steps.
+- Add a tested compatibility table (integration surface + version/provider assumptions + last validation date).
+- Add repeatable verification checks (local smoke tests or scripted validation) for every published playbook.
+- Publish reliability evidence for those integration paths (success rate + retry behavior over repeated runs).
+
+Exit rule for score update:
+
+- Keep Integration leverage/extensibility at **4/5** until all criteria above are met and documented.
+- Move Integration leverage/extensibility to **5/5** only after evidence is published; total then becomes **500/500**.
+
 ## Capability Reality Check (Current)
 
 ### Shipped Baseline
