@@ -36,7 +36,7 @@ sudo snap install butterfly-bot
 - **UI-first:** polished desktop app with chat, AI activity, and settings.
 - **Automation:** full toolset provided for your always-on agent.
 - **Integrations:** MCP web support including first-class tools for GitHub + Zapier.
-- **Security:** sandboxed security via WASM and OS keychain - no plaintext secrets or insecure tools!
+- **Security:** WASM-only execution for built-in tools plus OS keychain-backed secrets - no plaintext secrets or insecure tool runtime paths.
 - **Memory:** best-in-class memory that remembers the facts and when they happened.
 
 ### How it compares:
@@ -282,7 +282,7 @@ Config is stored in the OS keychain for top security and safety.
 - Butterfly Bot now has a formal attacker model and trust-boundary definition.
 - This covers UI↔daemon, daemon↔tool runtime, daemon↔provider, and daemon↔storage boundaries.
 - Primary threats covered: plaintext secret leakage, tool capability escalation, over-permissive network egress, and daemon auth misuse.
-- Baseline controls include OS keychain-backed secrets, WASM-first high-risk tool runtime defaults, daemon auth checks, and `default_deny` network posture guidance.
+- Baseline controls include OS keychain-backed secrets, WASM-only execution for built-in tools, daemon auth checks, and `default_deny` network posture guidance.
 - See [docs/threat-model.md](docs/threat-model.md) for full assumptions, residual risks, and hardening priorities.
 
 ### Prompt Context & Heartbeat

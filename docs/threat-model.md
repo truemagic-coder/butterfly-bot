@@ -1,6 +1,6 @@
 # Threat Model (Butterfly Bot)
 
-_Last updated: 2026-02-14_
+_Last updated: 2026-02-15_
 
 This document defines the explicit attacker model, trust boundaries, assets, and mitigations for Butterfly Bot as a local-first personal operations assistant.
 
@@ -12,7 +12,7 @@ It complements:
 ## Security Objectives
 
 1. Protect secrets (API keys, tokens) from accidental disclosure and unsafe storage paths.
-2. Constrain high-risk tool execution so agent capabilities remain intentionally bounded.
+2. Constrain built-in tool execution so agent capabilities remain intentionally bounded.
 3. Preserve integrity of plans/tasks/reminders/memory across restarts and normal operation.
 4. Keep local operator control explicit and observable (audit and diagnostics flows).
 5. Favor fail-closed defaults for network/tool permissions where practical.
@@ -129,10 +129,11 @@ Primary goals:
 
 ### T2: Tool capability escalation
 
-- Threat: high-risk tool actions execute outside intended sandbox constraints.
+- Threat: built-in tool actions execute outside intended sandbox constraints.
 - Mitigations:
-  - Convention-mode defaults route high-risk tools to WASM runtime.
-  - Security audit validates WASM-only runtime posture for built-in high-risk tools.
+  - Tool runtime planner enforces WASM-only execution for built-in tools regardless of configured sandbox mode.
+  - Security audit validates the WASM-only runtime invariant across built-in tools.
+  - Daemon startup validates tool WASM modules (magic header and non-stub checks) before serving requests.
   - Guardrails/policy checks enforce explicit execution intent.
 - Residual risk: intended local automation still has meaningful capabilities by design.
 
@@ -183,7 +184,7 @@ Primary goals:
 
 ## Ongoing Hardening Priorities
 
-1. Maintain and continuously test WASM-only invariants for high-risk tools.
+1. Maintain and continuously test WASM-only invariants for all built-in tools.
 2. Expand reproducible golden-path reliability metrics in CI.
 3. Improve operator-visible execution timeline and forensic trace depth.
 4. Add machine-readable security audit artifact export for trend analysis.
