@@ -20,7 +20,7 @@ struct Cli {
 #[tokio::main]
 async fn main() -> Result<()> {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info,lance=warn,lancedb=warn"));
+        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
     let token = butterfly_bot::vault::ensure_daemon_auth_token()?;

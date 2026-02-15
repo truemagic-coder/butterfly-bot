@@ -25,7 +25,7 @@ Primary components in scope:
 - Local daemon (`butterfly-botd`)
 - Tool execution layer (`src/tools/`)
 - Guardrails and policy logic (`src/guardrails/`)
-- Local data stores (SQLite/SQLCipher and LanceDB paths)
+- Local data stores (SQLite/SQLCipher and sqlite-vec vectors)
 - Secret handling and vault integration (`src/vault.rs`)
 - Model provider integrations (`src/providers/`)
 

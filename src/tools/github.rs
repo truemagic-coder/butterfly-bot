@@ -11,7 +11,6 @@ use crate::vault;
 #[derive(Clone, Debug)]
 struct GitHubConfig {
     url: String,
-    transport: String,
     headers: HashMap<String, String>,
     pat: Option<String>,
 }
@@ -20,7 +19,6 @@ impl Default for GitHubConfig {
     fn default() -> Self {
         Self {
             url: "https://api.githubcopilot.com/mcp/".to_string(),
-            transport: "http".to_string(),
             headers: HashMap::new(),
             pat: None,
         }
@@ -48,14 +46,6 @@ impl GitHubTool {
         config.get("tools").and_then(|tools| tools.get("github"))
     }
 
-    fn parse_transport(value: Option<&str>) -> String {
-        match value.unwrap_or("") {
-            "sse" => "sse".to_string(),
-            "http" | "streamable-http" => "http".to_string(),
-            _ => "http".to_string(),
-        }
-    }
-
     fn insert_pat_header(headers: &mut HashMap<String, String>, pat: &str) {
         if !headers.contains_key("Authorization") {
             headers.insert("Authorization".to_string(), format!("Bearer {pat}"));
@@ -80,7 +70,6 @@ impl GitHubTool {
                     "servers": [
                         {
                             "name": "github",
-                            "type": config.transport.clone(),
                             "url": config.url.clone(),
                             "headers": config.headers.clone()
                         }
@@ -147,9 +136,6 @@ impl Tool for GitHubTool {
                 if !url.trim().is_empty() {
                     next.url = url.to_string();
                 }
-            }
-            if let Some(transport) = tool_cfg.get("type").and_then(|v| v.as_str()) {
-                next.transport = Self::parse_transport(Some(transport));
             }
             if let Some(pat) = tool_cfg.get("pat").and_then(|v| v.as_str()) {
                 if !pat.trim().is_empty() {

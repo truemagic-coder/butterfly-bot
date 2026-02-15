@@ -12,7 +12,6 @@ use crate::vault;
 #[derive(Clone, Debug)]
 struct ZapierConfig {
     url: String,
-    transport: String,
     headers: HashMap<String, String>,
     token: Option<String>,
 }
@@ -20,8 +19,7 @@ struct ZapierConfig {
 impl Default for ZapierConfig {
     fn default() -> Self {
         Self {
-            url: "https://mcp.zapier.com/api/v1/connect?token=my_token".to_string(),
-            transport: "http".to_string(),
+            url: "https://mcp.zapier.com/api/v1/connect".to_string(),
             headers: HashMap::new(),
             token: None,
         }
@@ -49,14 +47,6 @@ impl ZapierTool {
         config.get("tools").and_then(|tools| tools.get("zapier"))
     }
 
-    fn parse_transport(value: Option<&str>) -> String {
-        match value.unwrap_or("") {
-            "sse" => "sse".to_string(),
-            "http" | "streamable-http" => "http".to_string(),
-            _ => "http".to_string(),
-        }
-    }
-
     fn parse_headers(value: &Value) -> HashMap<String, String> {
         value
             .as_object()
@@ -70,6 +60,43 @@ impl ZapierTool {
 
     fn has_token_in_url(url: &str) -> bool {
         url.contains("token=")
+    }
+
+    fn is_placeholder_token(token: &str) -> bool {
+        let trimmed = token.trim();
+        trimmed.is_empty()
+            || trimmed.eq_ignore_ascii_case("my_token")
+            || trimmed.eq_ignore_ascii_case("your_zapier_token")
+            || trimmed.eq_ignore_ascii_case("token")
+    }
+
+    fn has_authorization_header(headers: &HashMap<String, String>) -> bool {
+        headers
+            .keys()
+            .any(|key| key.eq_ignore_ascii_case("authorization"))
+    }
+
+    fn set_bearer_header(headers: &mut HashMap<String, String>, token: &str) {
+        if !Self::has_authorization_header(headers) {
+            headers.insert("Authorization".to_string(), format!("Bearer {token}"));
+        }
+    }
+
+    fn token_from_url(url: &str) -> Option<String> {
+        let query = url.split_once('?')?.1;
+        for pair in query.split('&') {
+            let (key, value) = pair.split_once('=')?;
+            if key == "token" && !value.trim().is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        None
+    }
+
+    fn has_valid_token_in_url(url: &str) -> bool {
+        Self::token_from_url(url)
+            .map(|token| !Self::is_placeholder_token(&token))
+            .unwrap_or(false)
     }
 
     fn url_with_token(url: &str, token: &str) -> String {
@@ -87,7 +114,6 @@ impl ZapierTool {
                     "servers": [
                         {
                             "name": "zapier",
-                            "type": config.transport.clone(),
                             "url": config.url.clone(),
                             "headers": config.headers.clone()
                         }
@@ -132,10 +158,27 @@ impl Tool for ZapierTool {
         let url = tool_cfg
             .get("url")
             .and_then(|v| v.as_str())
-            .unwrap_or("https://mcp.zapier.com/api/v1/connect?token=my_token");
+            .unwrap_or("https://mcp.zapier.com/api/v1/connect");
         let has_inline_token = tool_cfg.get("token").and_then(|v| v.as_str()).is_some();
+        let has_auth_header = tool_cfg
+            .get("headers")
+            .and_then(|v| v.as_object())
+            .map(|headers| {
+                headers
+                    .keys()
+                    .any(|key| key.eq_ignore_ascii_case("authorization"))
+            })
+            .unwrap_or(false);
+        let has_valid_inline_token = tool_cfg
+            .get("token")
+            .and_then(|v| v.as_str())
+            .map(|token| !Self::is_placeholder_token(token))
+            .unwrap_or(false);
 
-        if Self::has_token_in_url(url) || has_inline_token {
+        if Self::has_valid_token_in_url(url)
+            || has_valid_inline_token
+            || (has_auth_header && !has_inline_token)
+        {
             Vec::new()
         } else {
             vec![ToolSecret::new("zapier_token", "Zapier MCP token")]
@@ -151,11 +194,8 @@ impl Tool for ZapierTool {
                     next.url = url.to_string();
                 }
             }
-            if let Some(transport) = tool_cfg.get("type").and_then(|v| v.as_str()) {
-                next.transport = Self::parse_transport(Some(transport));
-            }
             if let Some(token) = tool_cfg.get("token").and_then(|v| v.as_str()) {
-                if !token.trim().is_empty() {
+                if !Self::is_placeholder_token(token) {
                     next.token = Some(token.to_string());
                 }
             }
@@ -166,7 +206,7 @@ impl Tool for ZapierTool {
 
         if next.token.is_none() {
             if let Some(secret) = vault::get_secret("zapier_token")? {
-                if !secret.trim().is_empty() {
+                if !Self::is_placeholder_token(&secret) {
                     next.token = Some(secret);
                 }
             }
@@ -174,6 +214,23 @@ impl Tool for ZapierTool {
 
         if let Some(token) = next.token.clone() {
             next.url = Self::url_with_token(&next.url, &token);
+            Self::set_bearer_header(&mut next.headers, &token);
+        } else if let Some(token) = Self::token_from_url(&next.url) {
+            if Self::is_placeholder_token(&token) {
+                next.url = "https://mcp.zapier.com/api/v1/connect".to_string();
+            } else {
+                Self::set_bearer_header(&mut next.headers, &token);
+            }
+        }
+
+        if !Self::has_valid_token_in_url(&next.url)
+            && next
+                .headers
+                .get("Authorization")
+                .map(|value| value.trim().is_empty())
+                .unwrap_or(true)
+        {
+            next.url = "https://mcp.zapier.com/api/v1/connect".to_string();
         }
 
         let mut guard = self
@@ -193,9 +250,11 @@ impl Tool for ZapierTool {
 
         let config = self.config.read().await.clone();
 
-        if !Self::has_token_in_url(&config.url) {
+        if !Self::has_valid_token_in_url(&config.url)
+            && !Self::has_authorization_header(&config.headers)
+        {
             return Err(ButterflyBotError::Runtime(
-                "Missing Zapier token (set tools.zapier.token, tools.zapier.url with token=..., or vault zapier_token)"
+                "Missing Zapier token (set tools.zapier.token, tools.zapier.headers.Authorization, tools.zapier.url with token=..., or vault zapier_token)"
                     .to_string(),
             ));
         }

@@ -557,7 +557,7 @@ fn app_view() -> Element {
     });
     let token = use_signal(env_auth_token);
     let user_id =
-        use_signal(|| env::var("BUTTERFLY_BOT_USER_ID").unwrap_or_else(|_| "cli_user".to_string()));
+        use_signal(|| env::var("BUTTERFLY_BOT_USER_ID").unwrap_or_else(|_| "user".to_string()));
     let input = use_signal(String::new);
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
@@ -853,7 +853,6 @@ fn app_view() -> Element {
                 let result = start_local_daemon();
                 match result {
                     Ok(()) => {
-                        daemon_running.set(true);
                         daemon_status.set("Daemon started.".to_string());
                         boot_ready.set(true);
                         boot_status.set(
@@ -878,12 +877,14 @@ fn app_view() -> Element {
                         }
 
                         if !daemon_ready {
+                            daemon_running.set(false);
                             boot_status.set(
                                 "Daemon started but not responding. Continuing without preload."
                                     .to_string(),
                             );
                             boot_ready.set(true);
                         } else {
+                            daemon_running.set(true);
                             let url =
                                 format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
                             let mut request = client
@@ -1064,6 +1065,8 @@ fn app_view() -> Element {
         let token = token.clone();
         let user_id = user_id.clone();
         let messages = messages.clone();
+        let activity_messages = activity_messages.clone();
+            let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
 
         use_effect(move || {
@@ -1075,6 +1078,7 @@ fn app_view() -> Element {
             started.set(true);
 
             let mut messages = messages.clone();
+            let mut activity_messages = activity_messages.clone();
             let mut next_id = next_id.clone();
 
             spawn(async move {
@@ -1111,6 +1115,13 @@ fn app_view() -> Element {
                         text,
                         timestamp: timestamp.unwrap_or_else(now_unix_ts),
                     });
+                }
+
+                let mut activity = activity_messages.write();
+                if activity.is_empty() {
+                    for entry in list.iter().cloned() {
+                        activity.push(entry);
+                    }
                 }
 
                 drop(list);

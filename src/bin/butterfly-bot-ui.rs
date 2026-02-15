@@ -16,8 +16,8 @@ struct UiCli {
     daemon: Option<String>,
 
     /// User id for chat context.
-    #[arg(long, env = "BUTTERFLY_BOT_USER_ID")]
-    user_id: Option<String>,
+    #[arg(long, env = "BUTTERFLY_BOT_USER_ID", default_value = "user")]
+    user_id: String,
 }
 
 fn main() -> butterfly_bot::Result<()> {
@@ -35,9 +35,7 @@ fn main() -> butterfly_bot::Result<()> {
     if let Ok(token) = butterfly_bot::vault::ensure_daemon_auth_token() {
         std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
     }
-    if let Some(user_id) = cli.user_id.as_ref() {
-        std::env::set_var("BUTTERFLY_BOT_USER_ID", user_id);
-    }
+    std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
 
     butterfly_bot::ui::launch_ui();
     Ok(())

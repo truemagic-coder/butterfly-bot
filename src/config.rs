@@ -15,7 +15,6 @@ pub struct OpenAiConfig {
 pub struct MemoryConfig {
     pub enabled: Option<bool>,
     pub sqlite_path: Option<String>,
-    pub lancedb_path: Option<String>,
     pub summary_model: Option<String>,
     pub embedding_model: Option<String>,
     pub rerank_model: Option<String>,
@@ -225,7 +224,6 @@ impl Config {
             memory: Some(MemoryConfig {
                 enabled: Some(true),
                 sqlite_path: Some(db_path.to_string()),
-                lancedb_path: Some("./data/lancedb".to_string()),
                 summary_model: Some(model),
                 embedding_model: Some("embeddinggemma:latest".to_string()),
                 rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),

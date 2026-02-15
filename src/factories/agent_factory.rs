@@ -439,9 +439,6 @@ impl ButterflyBotFactory {
                     let sqlite_path = memory
                         .sqlite_path
                         .unwrap_or_else(|| "./data/butterfly-bot.db".to_string());
-                    let lancedb_path = memory
-                        .lancedb_path
-                        .unwrap_or_else(|| "./data/lancedb".to_string());
                     let reranker = memory.rerank_model.as_ref().map(|rerank_model| {
                         Arc::new(OpenAiProvider::new(
                             memory_api_key.clone(),
@@ -459,7 +456,6 @@ impl ButterflyBotFactory {
                             as Arc<dyn crate::interfaces::providers::LlmProvider>
                     });
                     let mut memory_provider_config = SqliteMemoryProviderConfig::new(sqlite_path);
-                    memory_provider_config.lancedb_path = Some(lancedb_path);
                     memory_provider_config.embedder = Some(llm_for_memory.clone());
                     memory_provider_config.embedding_model = memory.embedding_model.clone();
                     memory_provider_config.reranker = reranker;

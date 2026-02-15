@@ -264,8 +264,6 @@ impl AgentService {
             "\n\nRESPONSE STYLE:\n- For normal user conversation, do NOT expose chain-of-thought or forced sections. Respond naturally.\n- Use explicit 'Thought/Plan/Action/Observation/Summary' formatting ONLY during explicit autonomy ticks or when a tool-run status report is requested.\n- Keep outputs concise and user-friendly.\n",
         );
 
-        let mcp_available = self.tool_registry.has_mcp_servers().await;
-
         let tool_names = self
             .tool_registry
             .get_agent_tools(&self.agent.name)
@@ -288,12 +286,6 @@ impl AgentService {
         system_prompt.push_str(&format!(
             "\nAVAILABLE TOOLS (use ONLY these exact names): {tool_list}\n"
         ));
-
-        if !mcp_available {
-            system_prompt.push_str(
-                "\n\nTOOL AVAILABILITY:\n- MCP is not configured in settings. Do not use the `mcp` tool.\n",
-            );
-        }
 
         Ok(system_prompt)
     }

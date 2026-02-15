@@ -179,6 +179,27 @@ async fn zapier_tool_secret_requirement_and_missing_token_error() {
 }
 
 #[tokio::test]
+async fn zapier_tool_placeholder_token_is_rejected() {
+    let tool = ZapierTool::new();
+    let needed = tool.required_secrets_for_config(&json!({
+        "tools": {"zapier": {"url": "https://mcp.zapier.com/api/v1/connect?token=my_token"}}
+    }));
+    assert_eq!(needed.len(), 1);
+    assert_eq!(needed[0].name, "zapier_token");
+
+    tool.configure(&json!({
+        "tools": {"zapier": {"url": "https://mcp.zapier.com/api/v1/connect?token=my_token"}}
+    }))
+    .expect("configure zapier tool");
+
+    let err = tool
+        .execute(json!({"action": "list_tools"}))
+        .await
+        .expect_err("placeholder token should fail fast");
+    assert_runtime_err_contains(err, "Missing Zapier token");
+}
+
+#[tokio::test]
 async fn search_internet_tool_honors_network_policy_and_query_validation() {
     let tool = SearchInternetTool::new();
     tool.configure(&json!({

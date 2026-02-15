@@ -1,13 +1,14 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Once;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use arrow_array::{Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray};
-use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use deadpool_sqlite::{
-    rusqlite::params, Config as DeadpoolSqliteConfig, Pool as DeadpoolSqlitePool,
+    rusqlite::{ffi::sqlite3_auto_extension, params, OptionalExtension},
+    Config as DeadpoolSqliteConfig,
+    Pool as DeadpoolSqlitePool,
     Runtime as DeadpoolRuntime,
 };
 use diesel::prelude::*;
@@ -18,9 +19,9 @@ use diesel_async::pooled_connection::AsyncDieselConnectionManager;
 use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
 use diesel_async::RunQueryDsl;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
-use futures::TryStreamExt;
 use lru::LruCache;
 use serde_json::json;
+use sqlite_vec::sqlite3_vec_init;
 use time::{macros::format_description, OffsetDateTime};
 use tracing::{info, warn};
 
@@ -34,6 +35,7 @@ const MIGRATIONS: EmbeddedMigrations = embed_migrations!();
 const MEMORY_UP_SQL: &str = include_str!("../../migrations/20250129_create_memory/up.sql");
 const CLEAR_HISTORY_MAX_ATTEMPTS: usize = 6;
 const CLEAR_HISTORY_RETRY_BASE_MS: u64 = 100;
+const MESSAGE_VECTOR_SCHEMA_VERSION: i64 = 1;
 
 type SqliteAsyncConn = SyncConnectionWrapper<SqliteConnection>;
 type SqlitePool = Pool<SqliteAsyncConn>;
@@ -143,135 +145,11 @@ struct NewMemoryLink<'a> {
     created_at: i64,
 }
 
-#[derive(Clone)]
-struct LanceDbStore {
-    db: lancedb::Connection,
-    table: Arc<tokio::sync::Mutex<Option<lancedb::Table>>>,
-}
-
-impl LanceDbStore {
-    async fn new(path: &str) -> Result<Self> {
-        ensure_parent_dir(path)?;
-        let db = lancedb::connect(path)
-            .execute()
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        Ok(Self {
-            db,
-            table: Arc::new(tokio::sync::Mutex::new(None)),
-        })
-    }
-
-    async fn table_exists(&self, name: &str) -> Result<bool> {
-        let tables = self
-            .db
-            .table_names()
-            .execute()
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        Ok(tables.iter().any(|t| t == name))
-    }
-
-    async fn get_or_create_table(&self, dim: i32) -> Result<lancedb::Table> {
-        let mut guard = self.table.lock().await;
-        if let Some(table) = guard.clone() {
-            return Ok(table);
-        }
-
-        let name = "message_vectors";
-        let table = if self.table_exists(name).await? {
-            self.db
-                .open_table(name)
-                .execute()
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-        } else {
-            let schema = Arc::new(Schema::new(vec![
-                Field::new("id", DataType::Int64, false),
-                Field::new("user_id", DataType::Utf8, false),
-                Field::new("role", DataType::Utf8, false),
-                Field::new("content", DataType::Utf8, false),
-                Field::new("timestamp", DataType::Int64, false),
-                Field::new(
-                    "vector",
-                    DataType::FixedSizeList(
-                        Arc::new(Field::new("item", DataType::Float32, true)),
-                        dim,
-                    ),
-                    true,
-                ),
-            ]));
-
-            let batch = RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int64Array::from_iter_values([0i64])),
-                    Arc::new(StringArray::from_iter_values([""])) as Arc<dyn arrow_array::Array>,
-                    Arc::new(StringArray::from_iter_values([""])) as Arc<dyn arrow_array::Array>,
-                    Arc::new(StringArray::from_iter_values([""])) as Arc<dyn arrow_array::Array>,
-                    Arc::new(Int64Array::from_iter_values([0i64])),
-                    Arc::new(arrow_array::FixedSizeListArray::from_iter_primitive::<
-                        arrow_array::types::Float32Type,
-                        _,
-                        _,
-                    >(
-                        vec![Some(vec![Some(0.0); dim as usize])], dim
-                    )),
-                ],
-            )
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-
-            let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
-
-            self.db
-                .create_table(name, batches)
-                .execute()
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-        };
-
-        *guard = Some(table.clone());
-        Ok(table)
-    }
-
-    async fn open_table_if_exists(&self) -> Result<Option<lancedb::Table>> {
-        let mut guard = self.table.lock().await;
-        if let Some(table) = guard.clone() {
-            return Ok(Some(table));
-        }
-        let name = "message_vectors";
-        if !self.table_exists(name).await? {
-            return Ok(None);
-        }
-        let table = self
-            .db
-            .open_table(name)
-            .execute()
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        *guard = Some(table.clone());
-        Ok(Some(table))
-    }
-
-    async fn delete_user_rows(&self, user_id: &str) -> Result<()> {
-        let Some(table) = self.open_table_if_exists().await? else {
-            return Ok(());
-        };
-        let escaped_user_id = user_id.replace('\'', "''");
-        table
-            .delete(&format!("user_id = '{escaped_user_id}'"))
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        Ok(())
-    }
-}
-
 pub struct SqliteMemoryProvider {
     sqlite_path: String,
     pool: SqlitePool,
     deadpool: DeadpoolSqlitePool,
     write_gate: Arc<tokio::sync::Mutex<()>>,
-    lancedb: Option<LanceDbStore>,
     embedder: Option<Arc<dyn LlmProvider>>,
     embedding_model: Option<String>,
     reranker: Option<Arc<dyn LlmProvider>>,
@@ -289,7 +167,6 @@ impl Clone for SqliteMemoryProvider {
             pool: self.pool.clone(),
             deadpool: self.deadpool.clone(),
             write_gate: Arc::clone(&self.write_gate),
-            lancedb: self.lancedb.clone(),
             embedder: self.embedder.clone(),
             embedding_model: self.embedding_model.clone(),
             reranker: self.reranker.clone(),
@@ -304,7 +181,6 @@ impl Clone for SqliteMemoryProvider {
 
 pub struct SqliteMemoryProviderConfig {
     pub sqlite_path: String,
-    pub lancedb_path: Option<String>,
     pub embedder: Option<Arc<dyn LlmProvider>>,
     pub embedding_model: Option<String>,
     pub reranker: Option<Arc<dyn LlmProvider>>,
@@ -318,7 +194,6 @@ impl SqliteMemoryProviderConfig {
     pub fn new(sqlite_path: impl Into<String>) -> Self {
         Self {
             sqlite_path: sqlite_path.into(),
-            lancedb_path: None,
             embedder: None,
             embedding_model: None,
             reranker: None,
@@ -332,6 +207,7 @@ impl SqliteMemoryProviderConfig {
 
 impl SqliteMemoryProvider {
     pub async fn new(config: SqliteMemoryProviderConfig) -> Result<Self> {
+        register_sqlite_vec_extension();
         ensure_parent_dir(&config.sqlite_path)?;
         run_migrations(&config.sqlite_path).await?;
         ensure_memory_tables(&config.sqlite_path).await?;
@@ -348,17 +224,11 @@ impl SqliteMemoryProvider {
             .create_pool(DeadpoolRuntime::Tokio1)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
-        let lancedb = match config.lancedb_path.as_deref() {
-            Some(path) if !path.trim().is_empty() => Some(LanceDbStore::new(path).await?),
-            _ => None,
-        };
-
         Ok(Self {
             sqlite_path: config.sqlite_path,
             pool,
             deadpool,
             write_gate: Arc::new(tokio::sync::Mutex::new(())),
-            lancedb,
             embedder: config.embedder,
             embedding_model: config.embedding_model,
             reranker: config.reranker,
@@ -391,6 +261,21 @@ fn format_timestamp(ts: i64) -> String {
         .ok()
         .and_then(|dt| dt.format(TIMESTAMP_FORMAT).ok())
         .unwrap_or_else(|| ts.to_string())
+}
+
+fn register_sqlite_vec_extension() {
+    static REGISTER: Once = Once::new();
+    REGISTER.call_once(|| unsafe {
+        sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+    });
+}
+
+fn encode_f32_blob(vector: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 fn ensure_parent_dir(path: &str) -> Result<()> {
@@ -458,6 +343,25 @@ async fn ensure_memory_tables(database_url: &str) -> Result<()> {
         )
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
+        diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "CREATE TABLE IF NOT EXISTS message_vector_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS message_vectors (
+                message_id INTEGER PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                timestamp BIGINT NOT NULL,
+                embedding BLOB NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_message_vectors_user_ts
+                ON message_vectors(user_id, timestamp DESC);",
+        )
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
         let fts_check = diesel::connection::SimpleConnection::batch_execute(
             &mut conn,
             "SELECT message_id FROM messages_fts LIMIT 1",
@@ -469,6 +373,26 @@ async fn ensure_memory_tables(database_url: &str) -> Result<()> {
                 || message.contains("SQL logic error")
             {
                 repair_messages_fts_sync(&mut conn)?;
+            } else {
+                return Err(ButterflyBotError::Runtime(message));
+            }
+        }
+
+        let memories_fts_check = diesel::connection::SimpleConnection::batch_execute(
+            &mut conn,
+            "SELECT memory_id FROM memories_fts LIMIT 1",
+        );
+        if let Err(err) = memories_fts_check {
+            let message = err.to_string();
+            if message.contains("no such table")
+                || message.contains("no such column")
+                || message.contains("SQL logic error")
+            {
+                diesel::connection::SimpleConnection::batch_execute(
+                    &mut conn,
+                    REPAIR_MEMORIES_FTS_SQL,
+                )
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
             } else {
                 return Err(ButterflyBotError::Runtime(message));
             }
@@ -517,6 +441,39 @@ const REPAIR_MESSAGES_FTS_SQL: &str = r#"
             VALUES('delete', old.id, old.content, old.user_id, old.id);
             INSERT INTO messages_fts(rowid, content, user_id, message_id)
             VALUES (new.id, new.content, new.user_id, new.id);
+        END;
+"#;
+
+const REPAIR_MEMORIES_FTS_SQL: &str = r#"
+        DROP TRIGGER IF EXISTS memories_ai;
+        DROP TRIGGER IF EXISTS memories_ad;
+        DROP TRIGGER IF EXISTS memories_au;
+        DROP TABLE IF EXISTS memories_fts;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+            summary,
+            user_id,
+            memory_id UNINDEXED
+        );
+
+        INSERT INTO memories_fts(rowid, summary, user_id, memory_id)
+        SELECT id, summary, user_id, id FROM memories;
+
+        CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memories_fts(rowid, summary, user_id, memory_id)
+            VALUES (new.id, new.summary, new.user_id, new.id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, summary, user_id, memory_id)
+            VALUES('delete', old.id, old.summary, old.user_id, old.id);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+            INSERT INTO memories_fts(memories_fts, rowid, summary, user_id, memory_id)
+            VALUES('delete', old.id, old.summary, old.user_id, old.id);
+            INSERT INTO memories_fts(rowid, summary, user_id, memory_id)
+            VALUES (new.id, new.summary, new.user_id, new.id);
         END;
 "#;
 
@@ -607,8 +564,8 @@ impl MemoryProvider for SqliteMemoryProvider {
             RowId { id: inserted_id }
         };
 
-        if let (Some(lancedb), Some(embedder)) = (&self.lancedb, &self.embedder) {
-            let lancedb = lancedb.clone();
+        if let Some(embedder) = &self.embedder {
+            let provider = self.clone();
             let embedder = embedder.clone();
             let embedding_model = self.embedding_model.clone();
             let content = content.to_string();
@@ -636,29 +593,15 @@ impl MemoryProvider for SqliteMemoryProvider {
                     embedding_model
                 );
                 if let Some(vector) = vectors.into_iter().next() {
-                    let dim = vector.len() as i32;
-                    let table = match lancedb.get_or_create_table(dim).await {
-                        Ok(t) => t,
-                        Err(err) => {
-                            info!("LanceDB table error: {}", err);
-                            return;
-                        }
-                    };
-                    let batch =
-                        match build_lancedb_batch(row_id, &user_id, &role, &content, ts, vector) {
-                            Ok(b) => b,
-                            Err(err) => {
-                                info!("LanceDB batch error: {}", err);
-                                return;
-                            }
-                        };
-                    let schema = batch.schema();
-                    let batches = RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
-                    if let Err(err) = table.add(batches).execute().await {
-                        info!("LanceDB add error: {}", err);
+                    let dim = vector.len();
+                    if let Err(err) = provider
+                        .store_vector_row(row_id, &user_id, &role, &content, ts, vector)
+                        .await
+                    {
+                        info!("sqlite-vec add error: {}", err);
                         return;
                     }
-                    info!("Vector stored in LanceDB (dim={}, role={})", dim, role);
+                    info!("Vector stored in sqlite-vec (dim={}, role={})", dim, role);
                 }
             });
         }
@@ -733,13 +676,11 @@ impl MemoryProvider for SqliteMemoryProvider {
 
             match sqlite_result {
                 Ok(_) => {
-                    if let Some(lancedb) = &self.lancedb {
-                        if let Err(err) = lancedb.delete_user_rows(user_id).await {
-                            warn!(
-                                "clear_history LanceDB delete failed for user_id={}: {}",
-                                user_id, err
-                            );
-                        }
+                    if let Err(err) = self.delete_vector_rows(user_id).await {
+                        warn!(
+                            "clear_history sqlite-vec delete failed for user_id={}: {}",
+                            user_id, err
+                        );
                     }
                     info!(
                         "clear_history completed for user_id={} on attempt={}/{} reset_at={}",
@@ -886,12 +827,23 @@ impl SqliteMemoryProvider {
                 conn.execute_batch(REPAIR_MESSAGES_FTS_SQL)
                     .map_err(|e| format!("clear_history step=repair_messages_fts failed: {e}"))?;
 
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS memories_ai;\n\
+                     DROP TRIGGER IF EXISTS memories_ad;\n\
+                     DROP TRIGGER IF EXISTS memories_au;\n\
+                     DROP TABLE IF EXISTS memories_fts;",
+                )
+                .map_err(|e| format!("clear_history step=drop_memories_fts failed: {e}"))?;
+
                 deadpool_sqlite::rusqlite::Connection::execute(
                     conn,
                     "DELETE FROM memories WHERE user_id = ?1",
                     params![&user_id],
                 )
                 .map_err(|e| format!("clear_history step=delete_memories failed: {e}"))?;
+
+                conn.execute_batch(REPAIR_MEMORIES_FTS_SQL)
+                    .map_err(|e| format!("clear_history step=repair_memories_fts failed: {e}"))?;
 
                 deadpool_sqlite::rusqlite::Connection::execute(
                     conn,
@@ -936,6 +888,224 @@ impl SqliteMemoryProvider {
         op_result.map_err(ButterflyBotError::Runtime)
     }
 
+    async fn store_vector_row(
+        &self,
+        message_id: i64,
+        user_id: &str,
+        role: &str,
+        content: &str,
+        timestamp: i64,
+        vector: Vec<f32>,
+    ) -> Result<()> {
+        let key = crate::db::get_sqlcipher_key()?;
+        let user_id = user_id.to_string();
+        let role = role.to_string();
+        let content = content.to_string();
+        let vector_dim = vector.len() as i64;
+        let vector_blob = encode_f32_blob(&vector);
+
+        let conn = self
+            .deadpool
+            .get()
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let op_result = conn
+            .interact(move |conn| -> std::result::Result<(), String> {
+                conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                    .map_err(|e| format!("store_vector step=pragma_busy_timeout failed: {e}"))?;
+
+                if let Some(key) = key {
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("store_vector step=pragma_key failed: {e}"))?;
+                }
+
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS message_vector_meta (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS message_vectors (
+                        message_id INTEGER PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        timestamp BIGINT NOT NULL,
+                        embedding BLOB NOT NULL
+                    );",
+                )
+                .map_err(|e| format!("store_vector step=ensure_tables failed: {e}"))?;
+
+                let existing_dim = conn
+                    .query_row(
+                        "SELECT value FROM message_vector_meta WHERE key = 'embedding_dim'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|e| format!("store_vector step=read_dim failed: {e}"))?;
+
+                if let Some(value) = existing_dim {
+                    let parsed = value
+                        .parse::<i64>()
+                        .map_err(|e| format!("store_vector step=parse_dim failed: {e}"))?;
+                    if parsed != vector_dim {
+                        return Err(format!(
+                            "store_vector step=dimension_mismatch failed: expected {}, got {}",
+                            parsed, vector_dim
+                        ));
+                    }
+                } else {
+                    deadpool_sqlite::rusqlite::Connection::execute(
+                        conn,
+                        "INSERT INTO message_vector_meta(key, value) VALUES ('embedding_dim', ?1)",
+                        params![vector_dim.to_string()],
+                    )
+                    .map_err(|e| format!("store_vector step=write_dim failed: {e}"))?;
+                }
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "INSERT OR REPLACE INTO message_vector_meta(key, value)
+                     VALUES ('schema_version', ?1)",
+                    params![MESSAGE_VECTOR_SCHEMA_VERSION.to_string()],
+                )
+                .map_err(|e| format!("store_vector step=write_schema_version failed: {e}"))?;
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "INSERT OR REPLACE INTO message_vectors
+                     (message_id, user_id, role, content, timestamp, embedding)
+                     VALUES (?1, ?2, ?3, ?4, ?5, vec_f32(?6))",
+                    params![
+                        message_id,
+                        user_id,
+                        role,
+                        content,
+                        timestamp,
+                        vector_blob.as_slice()
+                    ],
+                )
+                .map_err(|e| format!("store_vector step=insert failed: {e}"))?;
+
+                Ok(())
+            })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        op_result.map_err(ButterflyBotError::Runtime)
+    }
+
+    async fn delete_vector_rows(&self, user_id: &str) -> Result<()> {
+        let key = crate::db::get_sqlcipher_key()?;
+        let user_id = user_id.to_string();
+        let conn = self
+            .deadpool
+            .get()
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let op_result = conn
+            .interact(move |conn| -> std::result::Result<(), String> {
+                conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                    .map_err(|e| format!("delete_vector step=pragma_busy_timeout failed: {e}"))?;
+
+                if let Some(key) = key {
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("delete_vector step=pragma_key failed: {e}"))?;
+                }
+
+                deadpool_sqlite::rusqlite::Connection::execute(
+                    conn,
+                    "DELETE FROM message_vectors WHERE user_id = ?1",
+                    params![user_id],
+                )
+                .map_err(|e| format!("delete_vector step=delete failed: {e}"))?;
+
+                Ok(())
+            })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        op_result.map_err(ButterflyBotError::Runtime)
+    }
+
+    async fn search_vector_rows(
+        &self,
+        user_id: &str,
+        reset_ts: i64,
+        vector: &[f32],
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        let key = crate::db::get_sqlcipher_key()?;
+        let user_id = user_id.to_string();
+        let query_blob = encode_f32_blob(vector);
+
+        let conn = self
+            .deadpool
+            .get()
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+        let rows = conn
+            .interact(move |conn| -> std::result::Result<Vec<(String, i64)>, String> {
+                conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                    .map_err(|e| format!("search_vector step=pragma_busy_timeout failed: {e}"))?;
+
+                if let Some(key) = key {
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("search_vector step=pragma_key failed: {e}"))?;
+                }
+
+                let mut stmt = match conn.prepare(
+                    "SELECT content, timestamp
+                     FROM message_vectors
+                     WHERE user_id = ?1
+                       AND timestamp > ?2
+                     ORDER BY vec_distance_cosine(embedding, vec_f32(?3)) ASC
+                     LIMIT ?4",
+                ) {
+                    Ok(stmt) => stmt,
+                    Err(err) => {
+                        let message = err.to_string();
+                        if message.contains("no such table") {
+                            return Ok(Vec::new());
+                        }
+                        return Err(format!("search_vector step=prepare failed: {message}"));
+                    }
+                };
+
+                let mapped = stmt
+                    .query_map(
+                        params![user_id, reset_ts, query_blob.as_slice(), limit as i64],
+                        |row| {
+                            let content: String = row.get(0)?;
+                            let timestamp: i64 = row.get(1)?;
+                            Ok((content, timestamp))
+                        },
+                    )
+                    .map_err(|e| format!("search_vector step=query_map failed: {e}"))?;
+
+                let mut out = Vec::new();
+                for item in mapped {
+                    let pair = item.map_err(|e| format!("search_vector step=row failed: {e}"))?;
+                    out.push(pair);
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+            .map_err(ButterflyBotError::Runtime)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(content, timestamp)| format!("[{}] {}", format_timestamp(timestamp), content))
+            .collect())
+    }
+
     fn sanitize_fts_query(query: &str) -> Option<String> {
         let mut sanitized = String::with_capacity(query.len());
         for ch in query.chars() {
@@ -977,13 +1147,7 @@ impl SqliteMemoryProvider {
 
     async fn search_vector(&self, user_id: &str, query: &str, limit: usize) -> Result<Vec<String>> {
         let reset_ts = get_history_reset_ts(self, user_id).await?;
-        let Some(lancedb) = &self.lancedb else {
-            return Ok(Vec::new());
-        };
         let Some(embedder) = &self.embedder else {
-            return Ok(Vec::new());
-        };
-        let Some(table) = lancedb.open_table_if_exists().await? else {
             return Ok(Vec::new());
         };
 
@@ -1007,44 +1171,8 @@ impl SqliteMemoryProvider {
             vector
         };
 
-        use lancedb::query::QueryBase;
-        let query = table
-            .query()
-            .nearest_to(vector)
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-            .only_if(format!("user_id = '{user_id}'"))
-            .limit(limit.max(1));
-        let stream = lancedb::query::ExecutableQuery::execute(&query)
+        self.search_vector_rows(user_id, reset_ts, &vector, limit.max(1))
             .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-
-        let batches: Vec<RecordBatch> = stream
-            .try_collect()
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-
-        let mut results = Vec::new();
-        for batch in batches {
-            let content_array = batch
-                .column_by_name("content")
-                .and_then(|array| array.as_any().downcast_ref::<StringArray>());
-            let ts_array = batch
-                .column_by_name("timestamp")
-                .and_then(|array| array.as_any().downcast_ref::<Int64Array>());
-            if let (Some(strings), Some(timestamps)) = (content_array, ts_array) {
-                for i in 0..strings.len() {
-                    if strings.is_null(i) || timestamps.is_null(i) {
-                        continue;
-                    }
-                    let ts = timestamps.value(i);
-                    if ts <= reset_ts {
-                        continue;
-                    }
-                    results.push(format!("[{}] {}", format_timestamp(ts), strings.value(i)));
-                }
-            }
-        }
-        Ok(results)
     }
 
     async fn rerank_with_model(
@@ -1374,47 +1502,4 @@ impl SqliteMemoryProvider {
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         Ok(())
     }
-}
-
-fn build_lancedb_batch(
-    id: i64,
-    user_id: &str,
-    role: &str,
-    content: &str,
-    timestamp: i64,
-    vector: Vec<f32>,
-) -> Result<RecordBatch> {
-    let dim = vector.len() as i32;
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("user_id", DataType::Utf8, false),
-        Field::new("role", DataType::Utf8, false),
-        Field::new("content", DataType::Utf8, false),
-        Field::new("timestamp", DataType::Int64, false),
-        Field::new(
-            "vector",
-            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
-            true,
-        ),
-    ]));
-
-    let values: Vec<Option<f32>> = vector.into_iter().map(Some).collect();
-    let vector_array = arrow_array::FixedSizeListArray::from_iter_primitive::<
-        arrow_array::types::Float32Type,
-        _,
-        _,
-    >(vec![Some(values)], dim);
-
-    RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from_iter_values([id])),
-            Arc::new(StringArray::from_iter_values([user_id])),
-            Arc::new(StringArray::from_iter_values([role])),
-            Arc::new(StringArray::from_iter_values([content])),
-            Arc::new(Int64Array::from_iter_values([timestamp])),
-            Arc::new(vector_array),
-        ],
-    )
-    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
 }

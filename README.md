@@ -76,7 +76,7 @@ sudo snap install butterfly-bot
     ┌────────────────┐  ┌───────────────┐  ┌──────────────────┐
     │  Memory System │  │ Tooling Layer │  │  Model Provider  │
     │ (SQLCipher +   │  │ (MCP, HTTP,   │  │ (Ollama/OpenAI)  │
-    │  LanceDB)      │  │ reminders,    │  │                  │
+    │  sqlite-vec)   │  │ reminders,    │  │                  │
     │                │  │ tasks, etc.)  │  │                  │
     │                │  │ + WASM sandbox│  │                  │
     │                │  │   runtime     │  │                  │
@@ -101,7 +101,7 @@ sudo snap install butterfly-bot
                      │                           │
                      v                           v
         ┌──────────────────────────┐   ┌──────────────────────────┐
-        │  Temporal SQLCipher DB   │   │      LanceDB Vectors     │
+        │  Temporal SQLCipher DB   │   │    sqlite-vec Vectors    │
         │  (structured memories)   │   │ (embeddings + rerank)    │
         └─────────────┬────────────┘   └─────────────┬────────────┘
                       │                              │
@@ -124,7 +124,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Why this beats “just summarization” or QMD
 
-- Summaries alone lose details. The system stores structured facts in SQLCipher and semantic traces in LanceDB so exact preferences, dates, and decisions remain queryable even after summarization.
+- Summaries alone lose details. The system stores structured facts in SQLCipher and semantic traces in sqlite-vec so exact preferences, dates, and decisions remain queryable even after summarization.
 - QMD-style recall can miss context. Dual storage (structured + vectors) plus reranking yields higher recall and fewer false positives.
 - Temporal memory matters. The DB keeps time-ordered events so the assistant can answer “when did we decide X?” without relying on brittle summary phrasing.
 - Safer pruning. Summarization is used for compression, not replacement, so older context is condensed while retaining anchors for precise retrieval.
@@ -361,7 +361,8 @@ If no key is set, storage falls back to plaintext SQLite.
 
 ### MCP Tool
 
-The MCP tool supports connection type, custom headers, and multiple servers at once.
+The MCP tool supports custom headers and multiple servers at once.
+Transport behavior is streamable HTTP via `rmcp`.
 
 There are many high-quality MCP server providers like: 
 
@@ -373,7 +374,6 @@ Config fields:
 - `tools.mcp.servers` (required to use MCP)
     - `name` (required)
     - `url` (required)
-    - `type` (optional, defaults to `sse`; supports `sse`, `http`, or `streamable-http`)
     - `headers` (optional)
 
 ```json
@@ -383,7 +383,6 @@ Config fields:
             "servers": [
                 {
                     "name": "local",
-                    "type": "sse",
                     "url": "http://127.0.0.1:3001/sse",
                     "headers": {
                         "Authorization": "Bearer my-token"
@@ -404,7 +403,6 @@ HTTP (streamable) example:
             "servers": [
                 {
                     "name": "github",
-                    "type": "http",
                     "url": "https://api.githubcopilot.com/mcp/",
                     "headers": {
                         "Authorization": "Bearer YOUR_TOKEN"
@@ -423,16 +421,13 @@ Use the built-in GitHub tool to call GitHub MCP tools with a single PAT. This to
 Config fields:
 - `tools.github.pat` (optional; can also come from vault secret `github_pat`)
 - `tools.github.url` (optional; defaults to `https://api.githubcopilot.com/mcp/`)
-- `tools.github.type` (optional; defaults to `http`)
 - `tools.github.headers` (optional; additional headers)
 
 ```json
 {
-        "tools": {
+    "tools": {
         "github": {
-            "pat": "YOUR_GITHUB_PAT",
-            "url": "https://api.githubcopilot.com/mcp/",
-            "type": "http"
+            "pat": "YOUR_GITHUB_PAT"
         }
     }
 }
@@ -445,15 +440,13 @@ Use the built-in Zapier tool to call Zapier MCP tools directly through Zapier's 
 Config fields:
 - `tools.zapier.url` (optional; defaults to `https://mcp.zapier.com/api/v1/connect?token=my_token`)
 - `tools.zapier.token` (optional; can also come from vault secret `zapier_token`; appended to URL when URL does not already include `token=`)
-- `tools.zapier.type` (optional; defaults to `http`)
 - `tools.zapier.headers` (optional; additional headers)
 
 ```json
 {
     "tools": {
         "zapier": {
-            "url": "https://mcp.zapier.com/api/v1/connect?token=YOUR_ZAPIER_TOKEN",
-            "type": "http"
+            "token": "YOUR_ZAPIER_TOKEN"
         }
     }
 }
@@ -667,7 +660,7 @@ Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
 | Broad multi-provider catalog | ✅ (relies on Zapier) | ✅ | ✅ | 🟨 (focused provider path + adapters) |
 | Agent extension architecture | ✅ (Rust-native modules + MCP integrations; maintainer-curated) | ✅ (plugins/extensions) | ✅ | ✅ |
 | Secure tool sandbox model (explicit) | ✅ | 🟨 (sandbox/policy flows exist, but high-risk defaults and misconfiguration exposure remain common) | ✅ | ✅ |
-| Memory subsystem | ✅ (SQLite + LanceDB paths/config) | ✅ (core memory + LanceDB plugin path) | ✅ (SQLite/Markdown + hybrid search) | ✅ (workspace memory + hybrid search) |
+| Memory subsystem | ✅ (SQLite + sqlite-vec hybrid search) | ✅ (core memory + LanceDB plugin path) | ✅ (SQLite/Markdown + hybrid search) | ✅ (workspace memory + hybrid search) |
 | Planning + todo/task orchestration | ✅ (native modules) | 🟨 | 🟨 | ✅ |
 | Scheduled reminders/heartbeat style automation | ✅ | ✅ | ✅ | ✅ (routines/heartbeat) |
 | End-user dynamic plugin building | ❌ (intentional: convention-over-configuration) | 🟨 (plugin/extensibility strong, not builder-centric) | ❌ | ✅ (WASM-oriented builder flow) |
