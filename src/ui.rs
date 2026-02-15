@@ -36,6 +36,7 @@ struct PreloadBootRequest {
     user_id: String,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Deserialize)]
 struct DoctorCheckResponse {
     name: String,
@@ -50,6 +51,7 @@ struct DoctorResponse {
     checks: Vec<DoctorCheckResponse>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Deserialize)]
 struct SecurityAuditFindingResponse {
     id: String,
@@ -60,12 +62,14 @@ struct SecurityAuditFindingResponse {
     auto_fixable: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Deserialize)]
 struct SecurityAuditResponse {
     overall: String,
     findings: Vec<SecurityAuditFindingResponse>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Deserialize)]
 struct FactoryResetConfigResponse {
     message: String,
@@ -94,6 +98,7 @@ async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorR
         .map_err(|err| err.to_string())
 }
 
+#[allow(dead_code)]
 async fn run_security_audit_request(
     daemon_url: String,
     token: String,
@@ -119,6 +124,7 @@ async fn run_security_audit_request(
         .map_err(|err| err.to_string())
 }
 
+#[allow(dead_code)]
 async fn run_factory_reset_config_request(
     daemon_url: String,
     token: String,
@@ -291,6 +297,12 @@ enum UiTab {
     Heartbeat,
 }
 
+#[derive(Clone, Default)]
+struct UiMcpServer {
+    name: String,
+    url: String,
+}
+
 fn is_url_source(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.starts_with("http://") || trimmed.starts_with("https://")
@@ -393,6 +405,7 @@ async fn scroll_activity_after_render() {
     scroll_activity_to_bottom().await;
 }
 
+#[allow(dead_code)]
 fn highlight_json_html(input: &str) -> String {
     static SYNTAX_SET: once_cell::sync::Lazy<SyntaxSet> =
         once_cell::sync::Lazy::new(SyntaxSet::load_defaults_newlines);
@@ -590,11 +603,15 @@ fn app_view() -> Element {
     let doctor_checks = use_signal(Vec::<DoctorCheckResponse>::new);
     let security_audit_status = use_signal(String::new);
     let security_audit_error = use_signal(String::new);
-    let security_audit_running = use_signal(|| false);
+    let _security_audit_running = use_signal(|| false);
     let security_audit_overall = use_signal(String::new);
     let security_audit_findings = use_signal(Vec::<SecurityAuditFindingResponse>::new);
-    let factory_reset_armed = use_signal(|| false);
     let config_json_text = use_signal(String::new);
+    let wakeup_poll_seconds_input = use_signal(|| "60".to_string());
+    let github_pat_input = use_signal(String::new);
+    let zapier_token_input = use_signal(String::new);
+    let mcp_servers_form = use_signal(Vec::<UiMcpServer>::new);
+    let network_allow_form = use_signal(Vec::<String>::new);
     let context_text = use_signal(String::new);
     let context_path = use_signal(|| "database".to_string());
     let context_status = use_signal(String::new);
@@ -627,7 +644,7 @@ fn app_view() -> Element {
         let messages = messages.clone();
         let next_id = next_id.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let daemon_url = daemon_url();
             let token = token();
             let user_id = user_id();
@@ -779,7 +796,7 @@ fn app_view() -> Element {
         let next_id = next_id.clone();
         let error = error.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let daemon_running = daemon_running.clone();
             let daemon_url = daemon_url.clone();
             let token = token.clone();
@@ -827,7 +844,7 @@ fn app_view() -> Element {
         let doctor_overall = doctor_overall.clone();
         let doctor_checks = doctor_checks.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let daemon_status = daemon_status.clone();
             let daemon_running = daemon_running.clone();
             let daemon_url = daemon_url.clone();
@@ -951,7 +968,7 @@ fn app_view() -> Element {
         let security_audit_overall = security_audit_overall.clone();
         let security_audit_findings = security_audit_findings.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let daemon_status = daemon_status.clone();
             let daemon_running = daemon_running.clone();
             let reminders_listening = reminders_listening.clone();
@@ -1465,6 +1482,11 @@ fn app_view() -> Element {
         let tools_loaded = tools_loaded.clone();
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
+        let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
+        let github_pat_input = github_pat_input.clone();
+        let zapier_token_input = zapier_token_input.clone();
+        let mcp_servers_form = mcp_servers_form.clone();
+        let network_allow_form = network_allow_form.clone();
         let boot_status = boot_status.clone();
         let boot_ready = boot_ready.clone();
         let daemon_url = daemon_url.clone();
@@ -1502,6 +1524,11 @@ fn app_view() -> Element {
                 let mut tools_loaded = tools_loaded;
                 let mut settings_status = settings_status;
                 let mut config_json_text = config_json_text;
+                let mut wakeup_poll_seconds_input = wakeup_poll_seconds_input;
+                let mut github_pat_input = github_pat_input;
+                let mut zapier_token_input = zapier_token_input;
+                let mut mcp_servers_form = mcp_servers_form;
+                let mut network_allow_form = network_allow_form;
                 let mut search_provider = search_provider;
                 let mut search_model = search_model;
                 let mut search_citations = search_citations;
@@ -1579,6 +1606,44 @@ fn app_view() -> Element {
                 memory_enabled.set(enabled);
 
                 if let Some(tools_value) = &config.tools {
+                    if let Some(wakeup_cfg) = tools_value.get("wakeup") {
+                        if let Some(poll_seconds) =
+                            wakeup_cfg.get("poll_seconds").and_then(|v| v.as_u64())
+                        {
+                            wakeup_poll_seconds_input.set(poll_seconds.to_string());
+                        }
+                    }
+
+                    if let Some(mcp_servers) = tools_value
+                        .get("mcp")
+                        .and_then(|mcp| mcp.get("servers"))
+                        .and_then(|servers| servers.as_array())
+                    {
+                        let parsed_servers = mcp_servers
+                            .iter()
+                            .filter_map(|entry| {
+                                let name = entry
+                                    .get("name")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+                                let url = entry
+                                    .get("url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+                                if name.is_empty() && url.is_empty() {
+                                    None
+                                } else {
+                                    Some(UiMcpServer { name, url })
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        mcp_servers_form.set(parsed_servers);
+                    }
+
                     if let Some(search_cfg) = tools_value.get("search_internet") {
                         if let Some(provider) = search_cfg.get("provider").and_then(|v| v.as_str())
                         {
@@ -1663,6 +1728,23 @@ fn app_view() -> Element {
                 if !allowlist.is_empty() {
                     search_network_allow.set(allowlist.join(", "));
                 }
+                network_allow_form.set(allowlist);
+
+                match crate::vault::get_secret("github_pat") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        github_pat_input.set(secret);
+                    }
+                    Ok(_) => github_pat_input.set(String::new()),
+                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                }
+
+                match crate::vault::get_secret("zapier_token") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        zapier_token_input.set(secret);
+                    }
+                    Ok(_) => zapier_token_input.set(String::new()),
+                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                }
 
                 let provider_name = search_provider();
                 let secret_name = match provider_name.as_str() {
@@ -1722,151 +1804,187 @@ fn app_view() -> Element {
         });
     }
 
-    let on_format_config = {
-        let settings_error = settings_error.clone();
-        let settings_status = settings_status.clone();
-        let config_json_text = config_json_text.clone();
-
-        use_callback(move |_| {
-            let settings_error = settings_error.clone();
-            let settings_status = settings_status.clone();
-            let config_json_text = config_json_text.clone();
-
-            spawn(async move {
-                let mut settings_error = settings_error;
-                let mut settings_status = settings_status;
-                let mut config_json_text = config_json_text;
-
-                settings_error.set(String::new());
-                settings_status.set(String::new());
-
-                let raw = config_json_text();
-                match serde_json::from_str::<Value>(&raw) {
-                    Ok(value) => {
-                        let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw);
-                        config_json_text.set(pretty);
-                        settings_status.set("Formatted JSON.".to_string());
-                    }
-                    Err(err) => {
-                        settings_error.set(format!("Invalid JSON: {err}"));
-                    }
-                }
-            });
-        })
-    };
-
-    let on_validate_config = {
-        let settings_error = settings_error.clone();
-        let settings_status = settings_status.clone();
-        let config_json_text = config_json_text.clone();
-
-        use_callback(move |_| {
-            let settings_error = settings_error.clone();
-            let settings_status = settings_status.clone();
-            let config_json_text = config_json_text.clone();
-
-            spawn(async move {
-                let mut settings_error = settings_error;
-                let mut settings_status = settings_status;
-                let config_json_text = config_json_text;
-
-                settings_error.set(String::new());
-                settings_status.set(String::new());
-
-                let raw = config_json_text();
-                let value: Value = match serde_json::from_str(&raw) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        settings_error.set(format!("Invalid JSON: {err}"));
-                        return;
-                    }
-                };
-                match serde_json::from_value::<crate::config::Config>(value) {
-                    Ok(_) => settings_status.set("Config is valid.".to_string()),
-                    Err(err) => settings_error.set(format!("Invalid config: {err}")),
-                }
-            });
-        })
-    };
-
     let on_save_config = {
         let settings_error = settings_error.clone();
         let settings_status = settings_status.clone();
         let config_json_text = config_json_text.clone();
+        let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
+        let github_pat_input = github_pat_input.clone();
+        let zapier_token_input = zapier_token_input.clone();
+        let mcp_servers_form = mcp_servers_form.clone();
+        let network_allow_form = network_allow_form.clone();
         let db_path = db_path.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
-        let doctor_status = doctor_status.clone();
-        let doctor_error = doctor_error.clone();
-        let doctor_running = doctor_running.clone();
-        let doctor_overall = doctor_overall.clone();
-        let doctor_checks = doctor_checks.clone();
-        let security_audit_status = security_audit_status.clone();
-        let security_audit_error = security_audit_error.clone();
-        let security_audit_running = security_audit_running.clone();
-        let security_audit_overall = security_audit_overall.clone();
-        let security_audit_findings = security_audit_findings.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let settings_error = settings_error.clone();
             let settings_status = settings_status.clone();
             let config_json_text = config_json_text.clone();
+            let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
+            let github_pat_input = github_pat_input.clone();
+            let zapier_token_input = zapier_token_input.clone();
+            let mcp_servers_form = mcp_servers_form.clone();
+            let network_allow_form = network_allow_form.clone();
             let db_path = db_path.clone();
             let daemon_url = daemon_url.clone();
             let token = token.clone();
-            let doctor_status = doctor_status.clone();
-            let doctor_error = doctor_error.clone();
-            let doctor_running = doctor_running.clone();
-            let doctor_overall = doctor_overall.clone();
-            let doctor_checks = doctor_checks.clone();
-            let security_audit_status = security_audit_status.clone();
-            let security_audit_error = security_audit_error.clone();
-            let security_audit_running = security_audit_running.clone();
-            let security_audit_overall = security_audit_overall.clone();
-            let security_audit_findings = security_audit_findings.clone();
 
             spawn(async move {
                 let mut settings_error = settings_error;
                 let mut settings_status = settings_status;
                 let mut config_json_text = config_json_text;
-                let mut doctor_status = doctor_status;
-                let mut doctor_error = doctor_error;
-                let mut doctor_running = doctor_running;
-                let mut doctor_overall = doctor_overall;
-                let mut doctor_checks = doctor_checks;
-                let mut security_audit_status = security_audit_status;
-                let mut security_audit_error = security_audit_error;
-                let mut security_audit_running = security_audit_running;
-                let mut security_audit_overall = security_audit_overall;
-                let mut security_audit_findings = security_audit_findings;
 
                 settings_error.set(String::new());
                 settings_status.set(String::new());
 
-                let raw = config_json_text();
-                let value: Value = match serde_json::from_str(&raw) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        settings_error.set(format!("Invalid JSON: {err}"));
-                        return;
-                    }
-                };
-                let config: crate::config::Config = match serde_json::from_value(value.clone()) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        settings_error.set(format!("Invalid config: {err}"));
+                let wakeup_poll_seconds = match wakeup_poll_seconds_input().trim().parse::<u64>() {
+                    Ok(value) if value > 0 => value,
+                    _ => {
+                        settings_error
+                            .set("Wakeup interval must be a number greater than 0.".to_string());
                         return;
                     }
                 };
 
-                let pretty = serde_json::to_string_pretty(&value).unwrap_or(raw.clone());
+                let mut mcp_servers = Vec::new();
+                for entry in mcp_servers_form().iter() {
+                    let name = entry.name.trim();
+                    let url = entry.url.trim();
+                    if name.is_empty() && url.is_empty() {
+                        continue;
+                    }
+                    if name.is_empty() || url.is_empty() {
+                        settings_error
+                            .set("Each MCP server needs both a name and URL.".to_string());
+                        return;
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        settings_error.set(format!(
+                            "MCP server URL must start with http:// or https:// ({url})."
+                        ));
+                        return;
+                    }
+                    mcp_servers.push((name.to_string(), url.to_string()));
+                }
+
+                let network_allow = network_allow_form()
+                    .iter()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>();
+
+                let mut config = match crate::config::Config::from_store(&db_path) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        settings_error.set(format!("Failed to load current config: {err}"));
+                        return;
+                    }
+                };
+
+                let tools_value = config
+                    .tools
+                    .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !tools_value.is_object() {
+                    *tools_value = Value::Object(serde_json::Map::new());
+                }
+                let Some(tools_obj) = tools_value.as_object_mut() else {
+                    settings_error.set("Failed to update tools config.".to_string());
+                    return;
+                };
+
+                let wakeup_cfg = tools_obj
+                    .entry("wakeup")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !wakeup_cfg.is_object() {
+                    *wakeup_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(wakeup_obj) = wakeup_cfg.as_object_mut() {
+                    wakeup_obj.insert(
+                        "poll_seconds".to_string(),
+                        Value::Number(serde_json::Number::from(wakeup_poll_seconds)),
+                    );
+                }
+
+                let mcp_cfg = tools_obj
+                    .entry("mcp")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !mcp_cfg.is_object() {
+                    *mcp_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(mcp_obj) = mcp_cfg.as_object_mut() {
+                    mcp_obj.insert(
+                        "servers".to_string(),
+                        Value::Array(
+                            mcp_servers
+                                .into_iter()
+                                .map(|(name, url)| {
+                                    let mut server = serde_json::Map::new();
+                                    server.insert("name".to_string(), Value::String(name));
+                                    server.insert("url".to_string(), Value::String(url));
+                                    Value::Object(server)
+                                })
+                                .collect(),
+                        ),
+                    );
+                }
+
+                let settings_cfg = tools_obj
+                    .entry("settings")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !settings_cfg.is_object() {
+                    *settings_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(settings_obj) = settings_cfg.as_object_mut() {
+                    let permissions = settings_obj
+                        .entry("permissions")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !permissions.is_object() {
+                        *permissions = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(perms_obj) = permissions.as_object_mut() {
+                        perms_obj.insert(
+                            "network_allow".to_string(),
+                            Value::Array(
+                                network_allow
+                                    .into_iter()
+                                    .map(Value::String)
+                                    .collect::<Vec<_>>(),
+                            ),
+                        );
+                    }
+                }
+
+                let github_pat = github_pat_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret("github_pat", &github_pat) {
+                    settings_error.set(format!("Failed to store GitHub token: {err}"));
+                    return;
+                }
+
+                let zapier_token = zapier_token_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret("zapier_token", &zapier_token) {
+                    settings_error.set(format!("Failed to store Zapier token: {err}"));
+                    return;
+                }
+
+                let pretty = match serde_json::to_string_pretty(&config) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        settings_error.set(format!("Failed to serialize config: {err}"));
+                        return;
+                    }
+                };
+
                 if let Err(err) = crate::vault::set_secret("app_config_json", &pretty) {
                     settings_error.set(format!("Failed to store config in keyring: {err}"));
                     return;
                 }
 
+                let config_for_save = config.clone();
+                let db_path_for_save = db_path.clone();
+
                 let result = tokio::task::spawn_blocking(move || {
-                    crate::config_store::save_config(&db_path, &config)
+                    crate::config_store::save_config(&db_path_for_save, &config_for_save)
                 })
                 .await;
 
@@ -1883,43 +2001,7 @@ fn app_view() -> Element {
                         }
                         match request.send().await {
                             Ok(response) if response.status().is_success() => {
-                                settings_status.set("Config saved and reloaded.".to_string());
-                                doctor_running.set(true);
-                                doctor_error.set(String::new());
-                                doctor_status.set("Running diagnostics…".to_string());
-                                match run_doctor_request(daemon_url(), token()).await {
-                                    Ok(report) => {
-                                        let overall = report.overall.clone();
-                                        doctor_overall.set(overall.clone());
-                                        doctor_checks.set(report.checks);
-                                        doctor_status
-                                            .set(format!("Diagnostics complete ({overall})."));
-                                    }
-                                    Err(err) => {
-                                        doctor_error.set(format!("Diagnostics failed: {err}"));
-                                        doctor_status.set(String::new());
-                                    }
-                                }
-                                doctor_running.set(false);
-
-                                security_audit_running.set(true);
-                                security_audit_error.set(String::new());
-                                security_audit_status.set("Running security audit…".to_string());
-                                match run_security_audit_request(daemon_url(), token()).await {
-                                    Ok(report) => {
-                                        let overall = report.overall.clone();
-                                        security_audit_overall.set(overall.clone());
-                                        security_audit_findings.set(report.findings);
-                                        security_audit_status
-                                            .set(format!("Security audit complete ({overall})."));
-                                    }
-                                    Err(err) => {
-                                        security_audit_error
-                                            .set(format!("Security audit failed: {err}"));
-                                        security_audit_status.set(String::new());
-                                    }
-                                }
-                                security_audit_running.set(false);
+                                settings_status.set("Settings saved.".to_string());
                             }
                             Ok(response) => {
                                 let status = response.status();
@@ -1928,12 +2010,12 @@ fn app_view() -> Element {
                                     .await
                                     .unwrap_or_else(|_| "Unable to read error body".to_string());
                                 settings_status.set(format!(
-                                    "Config saved, but reload failed ({status}). Restart required. {text}"
+                                    "Settings saved, but reload failed ({status}). Restart required. {text}"
                                 ));
                             }
                             Err(err) => {
                                 settings_status.set(format!(
-                                    "Config saved, but reload failed: {err}. Restart required."
+                                    "Settings saved, but reload failed: {err}. Restart required."
                                 ));
                             }
                         }
@@ -1945,276 +2027,13 @@ fn app_view() -> Element {
         })
     };
 
-    let on_run_doctor = {
-        let daemon_running = daemon_running.clone();
-        let daemon_url = daemon_url.clone();
-        let token = token.clone();
-        let doctor_status = doctor_status.clone();
-        let doctor_error = doctor_error.clone();
-        let doctor_running = doctor_running.clone();
-        let doctor_overall = doctor_overall.clone();
-        let doctor_checks = doctor_checks.clone();
-
-        use_callback(move |_: ()| {
-            let daemon_running = daemon_running.clone();
-            let daemon_url = daemon_url.clone();
-            let token = token.clone();
-            let doctor_status = doctor_status.clone();
-            let doctor_error = doctor_error.clone();
-            let doctor_running = doctor_running.clone();
-            let doctor_overall = doctor_overall.clone();
-            let doctor_checks = doctor_checks.clone();
-
-            spawn(async move {
-                let mut doctor_status = doctor_status;
-                let mut doctor_error = doctor_error;
-                let mut doctor_running = doctor_running;
-                let mut doctor_overall = doctor_overall;
-                let mut doctor_checks = doctor_checks;
-
-                if !*daemon_running.read() {
-                    doctor_error.set("Daemon is not running. Start daemon first.".to_string());
-                    return;
-                }
-
-                doctor_running.set(true);
-                doctor_error.set(String::new());
-                doctor_status.set("Running diagnostics…".to_string());
-
-                match run_doctor_request(daemon_url(), token()).await {
-                    Ok(report) => {
-                        let overall = report.overall.clone();
-                        doctor_overall.set(overall.clone());
-                        doctor_checks.set(report.checks);
-                        doctor_status.set(format!("Diagnostics complete ({overall})."));
-                    }
-                    Err(err) => {
-                        doctor_error.set(format!("Diagnostics failed: {err}"));
-                        doctor_status.set(String::new());
-                    }
-                }
-
-                doctor_running.set(false);
-            });
-        })
-    };
-
-    let on_run_security_audit = {
-        let daemon_running = daemon_running.clone();
-        let daemon_url = daemon_url.clone();
-        let token = token.clone();
-        let security_audit_status = security_audit_status.clone();
-        let security_audit_error = security_audit_error.clone();
-        let security_audit_running = security_audit_running.clone();
-        let security_audit_overall = security_audit_overall.clone();
-        let security_audit_findings = security_audit_findings.clone();
-
-        use_callback(move |_: ()| {
-            let daemon_running = daemon_running.clone();
-            let daemon_url = daemon_url.clone();
-            let token = token.clone();
-            let security_audit_status = security_audit_status.clone();
-            let security_audit_error = security_audit_error.clone();
-            let security_audit_running = security_audit_running.clone();
-            let security_audit_overall = security_audit_overall.clone();
-            let security_audit_findings = security_audit_findings.clone();
-
-            spawn(async move {
-                let mut security_audit_status = security_audit_status;
-                let mut security_audit_error = security_audit_error;
-                let mut security_audit_running = security_audit_running;
-                let mut security_audit_overall = security_audit_overall;
-                let mut security_audit_findings = security_audit_findings;
-
-                if !*daemon_running.read() {
-                    security_audit_error
-                        .set("Daemon is not running. Start daemon first.".to_string());
-                    return;
-                }
-
-                security_audit_running.set(true);
-                security_audit_error.set(String::new());
-                security_audit_status.set("Running security audit…".to_string());
-
-                match run_security_audit_request(daemon_url(), token()).await {
-                    Ok(report) => {
-                        let overall = report.overall.clone();
-                        security_audit_overall.set(overall.clone());
-                        security_audit_findings.set(report.findings);
-                        security_audit_status.set(format!("Security audit complete ({overall})."));
-                    }
-                    Err(err) => {
-                        security_audit_error.set(format!("Security audit failed: {err}"));
-                        security_audit_status.set(String::new());
-                    }
-                }
-
-                security_audit_running.set(false);
-            });
-        })
-    };
-
-    let on_factory_reset_config = {
-        let daemon_running = daemon_running.clone();
-        let daemon_url = daemon_url.clone();
-        let token = token.clone();
-        let db_path = db_path.clone();
-        let factory_reset_armed = factory_reset_armed.clone();
-        let settings_error = settings_error.clone();
-        let settings_status = settings_status.clone();
-        let config_json_text = config_json_text.clone();
-        let doctor_status = doctor_status.clone();
-        let doctor_error = doctor_error.clone();
-        let doctor_running = doctor_running.clone();
-        let doctor_overall = doctor_overall.clone();
-        let doctor_checks = doctor_checks.clone();
-        let security_audit_status = security_audit_status.clone();
-        let security_audit_error = security_audit_error.clone();
-        let security_audit_running = security_audit_running.clone();
-        let security_audit_overall = security_audit_overall.clone();
-        let security_audit_findings = security_audit_findings.clone();
-
-        use_callback(move |_| {
-            let daemon_running = daemon_running.clone();
-            let daemon_url = daemon_url.clone();
-            let token = token.clone();
-            let db_path = db_path.clone();
-            let factory_reset_armed = factory_reset_armed.clone();
-            let settings_error = settings_error.clone();
-            let settings_status = settings_status.clone();
-            let config_json_text = config_json_text.clone();
-            let doctor_status = doctor_status.clone();
-            let doctor_error = doctor_error.clone();
-            let doctor_running = doctor_running.clone();
-            let doctor_overall = doctor_overall.clone();
-            let doctor_checks = doctor_checks.clone();
-            let security_audit_status = security_audit_status.clone();
-            let security_audit_error = security_audit_error.clone();
-            let security_audit_running = security_audit_running.clone();
-            let security_audit_overall = security_audit_overall.clone();
-            let security_audit_findings = security_audit_findings.clone();
-
-            spawn(async move {
-                let mut settings_error = settings_error;
-                let mut settings_status = settings_status;
-                let mut config_json_text = config_json_text;
-                let mut factory_reset_armed = factory_reset_armed;
-                let mut doctor_status = doctor_status;
-                let mut doctor_error = doctor_error;
-                let mut doctor_running = doctor_running;
-                let mut doctor_overall = doctor_overall;
-                let mut doctor_checks = doctor_checks;
-                let mut security_audit_status = security_audit_status;
-                let mut security_audit_error = security_audit_error;
-                let mut security_audit_running = security_audit_running;
-                let mut security_audit_overall = security_audit_overall;
-                let mut security_audit_findings = security_audit_findings;
-
-                settings_error.set(String::new());
-                settings_status.set(String::new());
-
-                if !factory_reset_armed() {
-                    factory_reset_armed.set(true);
-                    settings_status.set(
-                        "Factory reset is armed. Click Factory Reset again to confirm.".to_string(),
-                    );
-                    return;
-                }
-                factory_reset_armed.set(false);
-
-                if !daemon_running() {
-                    let defaults = crate::config::Config::convention_defaults(&db_path);
-                    let pretty = serde_json::to_string_pretty(&defaults)
-                        .unwrap_or_else(|_| "{}".to_string());
-
-                    let db_path_for_save = db_path.clone();
-                    let config_for_save = defaults.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        crate::config_store::save_config(&db_path_for_save, &config_for_save)
-                    })
-                    .await;
-
-                    match result {
-                        Ok(Ok(())) => {
-                            let mut message =
-                                "Factory reset applied locally. Start daemon to reload runtime and run diagnostics."
-                                    .to_string();
-                            if let Err(err) = crate::vault::set_secret("app_config_json", &pretty) {
-                                message.push_str(&format!(" Keyring sync failed: {err}."));
-                            }
-                            config_json_text.set(pretty);
-                            settings_status.set(message);
-                        }
-                        Ok(Err(err)) => {
-                            factory_reset_armed.set(false);
-                            settings_error.set(format!("Factory reset failed: {err}"));
-                        }
-                        Err(err) => {
-                            factory_reset_armed.set(false);
-                            settings_error.set(format!("Factory reset failed: {err}"));
-                        }
-                    }
-                    return;
-                }
-
-                match run_factory_reset_config_request(daemon_url(), token()).await {
-                    Ok(response) => {
-                        let pretty = serde_json::to_string_pretty(&response.config)
-                            .unwrap_or_else(|_| "{}".to_string());
-                        config_json_text.set(pretty);
-                        settings_status.set(response.message);
-
-                        doctor_running.set(true);
-                        doctor_error.set(String::new());
-                        doctor_status.set("Running diagnostics…".to_string());
-                        match run_doctor_request(daemon_url(), token()).await {
-                            Ok(report) => {
-                                let overall = report.overall.clone();
-                                doctor_overall.set(overall.clone());
-                                doctor_checks.set(report.checks);
-                                doctor_status.set(format!("Diagnostics complete ({overall})."));
-                            }
-                            Err(err) => {
-                                doctor_error.set(format!("Diagnostics failed: {err}"));
-                                doctor_status.set(String::new());
-                            }
-                        }
-                        doctor_running.set(false);
-
-                        security_audit_running.set(true);
-                        security_audit_error.set(String::new());
-                        security_audit_status.set("Running security audit…".to_string());
-                        match run_security_audit_request(daemon_url(), token()).await {
-                            Ok(report) => {
-                                let overall = report.overall.clone();
-                                security_audit_overall.set(overall.clone());
-                                security_audit_findings.set(report.findings);
-                                security_audit_status
-                                    .set(format!("Security audit complete ({overall})."));
-                            }
-                            Err(err) => {
-                                security_audit_error.set(format!("Security audit failed: {err}"));
-                                security_audit_status.set(String::new());
-                            }
-                        }
-                        security_audit_running.set(false);
-                    }
-                    Err(err) => {
-                        factory_reset_armed.set(false);
-                        settings_error.set(format!("Factory reset failed: {err}"));
-                    }
-                }
-            });
-        })
-    };
-
     let on_validate_context = {
         let context_text = context_text.clone();
         let context_path = context_path.clone();
         let context_status = context_status.clone();
         let context_error = context_error.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let context_text = context_text.clone();
             let context_path = context_path.clone();
             let context_status = context_status.clone();
@@ -2266,7 +2085,7 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let context_text = context_text.clone();
             let context_path = context_path.clone();
             let context_status = context_status.clone();
@@ -2349,7 +2168,7 @@ fn app_view() -> Element {
         let heartbeat_status = heartbeat_status.clone();
         let heartbeat_error = heartbeat_error.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let heartbeat_text = heartbeat_text.clone();
             let heartbeat_path = heartbeat_path.clone();
             let heartbeat_status = heartbeat_status.clone();
@@ -2401,7 +2220,7 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
 
-        use_callback(move |_| {
+        use_callback(move |_: ()| {
             let heartbeat_text = heartbeat_text.clone();
             let heartbeat_path = heartbeat_path.clone();
             let heartbeat_status = heartbeat_status.clone();
@@ -2703,7 +2522,71 @@ fn app_view() -> Element {
             }}
             .tool-list {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }}
             .tool-item {{ display: flex; align-items: center; gap: 10px; }}
-            .status {{ color: #34d399; font-weight: 600; }}
+            .status {{ color: rgba(229,231,235,0.7); font-weight: 500; }}
+            .simple-settings {{
+                display: flex;
+                flex-direction: column;
+                gap: 18px;
+            }}
+            .simple-top {{
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 14px;
+            }}
+            .simple-top > div {{
+                min-width: 0;
+            }}
+            .simple-top input {{
+                box-sizing: border-box;
+            }}
+            .simple-section {{
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+                padding-top: 6px;
+            }}
+            .simple-list {{
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+            }}
+            .simple-row {{
+                display: flex;
+                align-items: center;
+                gap: 10px;
+            }}
+            .simple-row input {{
+                margin: 0;
+            }}
+            .simple-row button {{
+                min-width: 108px;
+                padding: 10px 12px;
+                border-radius: 12px;
+            }}
+            .simple-row .mcp-name {{
+                flex: 0 0 190px;
+            }}
+            .simple-row .mcp-url {{
+                flex: 1;
+            }}
+            .simple-row .host-input {{
+                flex: 1;
+            }}
+            .simple-actions {{
+                display: flex;
+                justify-content: center;
+                margin-top: 2px;
+            }}
+            .add-host-actions {{
+                margin-top: 12px;
+            }}
+            @media (max-width: 860px) {{
+                .simple-top {{ grid-template-columns: 1fr; }}
+                .simple-row {{ flex-direction: column; align-items: stretch; }}
+                .simple-row .mcp-name {{ flex: 1 1 auto; }}
+                .simple-row .mcp-url {{ flex: 1 1 auto; }}
+                .simple-row button {{ width: 100%; }}
+            }}
         "# }
         div { class: "container",
             div { class: "header",
@@ -2840,125 +2723,162 @@ fn app_view() -> Element {
                     }
                     if *tools_loaded.read() {
                         div { class: "settings-card",
-                            label { "Config (JSON)" }
-                            div { class: "config-head",
-                                label { "Editor" }
-                                label { "Preview" }
-                            }
-                            div { class: "config-grid",
-                                div { class: "config-panel",
-                                    textarea {
-                                        id: "config-json",
-                                        value: "{config_json_text}",
-                                        rows: "18",
-                                        class: "config-editor",
-                                        oninput: move |evt| {
-                                            let mut config_json_text = config_json_text.clone();
-                                            config_json_text.set(evt.value());
-                                        },
+                            label { "Simple Settings" }
+                            p { class: "hint", "Only essential settings are editable here." }
+
+                            div { class: "simple-settings",
+                                div { class: "simple-top",
+                                    div {
+                                        label { "Wakeup Interval (seconds)" }
+                                        input {
+                                            r#type: "number",
+                                            min: "1",
+                                            value: "{wakeup_poll_seconds_input}",
+                                            oninput: move |evt| {
+                                                let mut wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
+                                                wakeup_poll_seconds_input.set(evt.value());
+                                            },
+                                        }
                                     }
-                                }
-                                div { class: "config-panel",
-                                    pre {
-                                        class: "config-preview",
-                                        dangerous_inner_html: "{highlight_json_html(&config_json_text.read())}",
+                                    div {
+                                        label { "GitHub Token" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{github_pat_input}",
+                                            oninput: move |evt| {
+                                                let mut github_pat_input = github_pat_input.clone();
+                                                github_pat_input.set(evt.value());
+                                            },
+                                            placeholder: "Paste PAT",
+                                        }
                                     }
-                                }
-                            }
-                            div { class: "config-actions",
-                                button { onclick: move |_| on_format_config.call(()), "Format JSON" }
-                                button { onclick: move |_| on_validate_config.call(()), "Validate" }
-                                button { onclick: move |_| on_save_config.call(()), "Save Config" }
-                                button {
-                                    onclick: move |_| on_factory_reset_config.call(()),
-                                    if *factory_reset_armed.read() {
-                                        "Confirm Reset"
-                                    } else {
-                                        "Factory Reset"
-                                    }
-                                }
-                            }
-                            p { class: "hint", "Saved to the OS keyring. Changes reload automatically. Factory Reset restores convention defaults and works with or without daemon." }
-                        }
-                        div { class: "settings-card",
-                            label { "Diagnostics" }
-                            p { class: "hint", "Runs config, vault, DB, provider, and daemon auth checks." }
-                            div { class: "config-actions",
-                                button {
-                                    onclick: move |_| on_run_doctor.call(()),
-                                    disabled: *doctor_running.read() || !*daemon_running.read(),
-                                    if *doctor_running.read() { "Running…" } else { "Run Diagnostics" }
-                                }
-                            }
-                            if !doctor_overall.read().is_empty() {
-                                p { class: "hint", "Overall: {doctor_overall}" }
-                            }
-                            if !doctor_checks.read().is_empty() {
-                                div {
-                                    class: "tool-list",
-                                    for check in doctor_checks.read().iter() {
-                                        div {
-                                            class: "settings-card",
-                                            label { "{check.name}" }
-                                            p { class: "hint", "Status: {check.status}" }
-                                            p { class: "hint", "{check.message}" }
-                                            if let Some(hint) = &check.fix_hint {
-                                                p { class: "hint", "Fix: {hint}" }
-                                            }
+                                    div {
+                                        label { "Zapier Token" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{zapier_token_input}",
+                                            oninput: move |evt| {
+                                                let mut zapier_token_input = zapier_token_input.clone();
+                                                zapier_token_input.set(evt.value());
+                                            },
+                                            placeholder: "Paste Zapier token",
                                         }
                                     }
                                 }
-                            }
-                        }
-                        div { class: "settings-card",
-                            label { "Security Audit" }
-                            p { class: "hint", "Checks risky local settings and reports ranked findings." }
-                            div { class: "config-actions",
-                                button {
-                                    onclick: move |_| on_run_security_audit.call(()),
-                                    disabled: *security_audit_running.read() || !*daemon_running.read(),
-                                    if *security_audit_running.read() { "Running…" } else { "Run Security Audit" }
-                                }
-                            }
-                            if !security_audit_overall.read().is_empty() {
-                                p { class: "hint", "Overall risk: {security_audit_overall}" }
-                            }
-                            if !security_audit_findings.read().is_empty() {
-                                div {
-                                    class: "tool-list",
-                                    for finding in security_audit_findings.read().iter() {
-                                        div {
-                                            class: "settings-card",
-                                            label { "{finding.id}" }
-                                            p { class: "hint", "Severity: {finding.severity}" }
-                                            p { class: "hint", "Status: {finding.status}" }
-                                            p { class: "hint", "{finding.message}" }
-                                            p { class: "hint", "Auto-fixable: {finding.auto_fixable}" }
-                                            if let Some(hint) = &finding.fix_hint {
-                                                p { class: "hint", "Fix: {hint}" }
+
+                                div { class: "simple-section",
+                                    label { "MCP Servers" }
+                                    div { class: "simple-list",
+                                        for (index, server) in mcp_servers_form.read().iter().enumerate() {
+                                            div { class: "simple-row",
+                                                input {
+                                                    class: "mcp-name",
+                                                    value: "{server.name}",
+                                                    placeholder: "Server name",
+                                                    oninput: move |evt| {
+                                                        let mut mcp_servers_form = mcp_servers_form.clone();
+                                                        let mut list = mcp_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.name = evt.value();
+                                                        }
+                                                        mcp_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-url",
+                                                    value: "{server.url}",
+                                                    placeholder: "https://server.example/mcp",
+                                                    oninput: move |evt| {
+                                                        let mut mcp_servers_form = mcp_servers_form.clone();
+                                                        let mut list = mcp_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.url = evt.value();
+                                                        }
+                                                        mcp_servers_form.set(list);
+                                                    },
+                                                }
+                                                button {
+                                                    onclick: move |_| {
+                                                        let mut mcp_servers_form = mcp_servers_form.clone();
+                                                        let mut list = mcp_servers_form();
+                                                        if index < list.len() {
+                                                            list.remove(index);
+                                                        }
+                                                        mcp_servers_form.set(list);
+                                                    },
+                                                    "Remove"
+                                                }
                                             }
                                         }
+                                    }
+                                    div { class: "simple-actions",
+                                        button {
+                                            onclick: move |_| {
+                                                let mut mcp_servers_form = mcp_servers_form.clone();
+                                                let mut list = mcp_servers_form();
+                                                list.push(UiMcpServer::default());
+                                                mcp_servers_form.set(list);
+                                            },
+                                            "+ Add MCP Server"
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-section",
+                                    label { "Network Allow List" }
+                                    div { class: "simple-list",
+                                        for (index, host) in network_allow_form.read().iter().enumerate() {
+                                            div { class: "simple-row",
+                                                input {
+                                                    class: "host-input",
+                                                    value: "{host}",
+                                                    placeholder: "api.example.com",
+                                                    oninput: move |evt| {
+                                                        let mut network_allow_form = network_allow_form.clone();
+                                                        let mut list = network_allow_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            *item = evt.value();
+                                                        }
+                                                        network_allow_form.set(list);
+                                                    },
+                                                }
+                                                button {
+                                                    onclick: move |_| {
+                                                        let mut network_allow_form = network_allow_form.clone();
+                                                        let mut list = network_allow_form();
+                                                        if index < list.len() {
+                                                            list.remove(index);
+                                                        }
+                                                        network_allow_form.set(list);
+                                                    },
+                                                    "Remove"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "simple-actions add-host-actions",
+                                        button {
+                                            onclick: move |_| {
+                                                let mut network_allow_form = network_allow_form.clone();
+                                                let mut list = network_allow_form();
+                                                list.push(String::new());
+                                                network_allow_form.set(list);
+                                            },
+                                            "+ Add Host"
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-actions",
+                                    button {
+                                        onclick: move |_| on_save_config.call(()),
+                                        "Save Settings"
                                     }
                                 }
                             }
                         }
                         if !settings_error.read().is_empty() {
                             div { class: "error", "{settings_error}" }
-                        }
-                        if !settings_status.read().is_empty() {
-                            div { class: "status", "{settings_status}" }
-                        }
-                        if !doctor_error.read().is_empty() {
-                            div { class: "error", "{doctor_error}" }
-                        }
-                        if !doctor_status.read().is_empty() {
-                            div { class: "status", "{doctor_status}" }
-                        }
-                        if !security_audit_error.read().is_empty() {
-                            div { class: "error", "{security_audit_error}" }
-                        }
-                        if !security_audit_status.read().is_empty() {
-                            div { class: "status", "{security_audit_status}" }
                         }
                     }
                 }
@@ -3034,9 +2954,6 @@ fn app_view() -> Element {
                     if !context_error.read().is_empty() {
                         div { class: "error", "{context_error}" }
                     }
-                    if !context_status.read().is_empty() {
-                        div { class: "status", "{context_status}" }
-                    }
                 }
             }
             if *active_tab.read() == UiTab::Heartbeat {
@@ -3082,9 +2999,6 @@ fn app_view() -> Element {
                     }
                     if !heartbeat_error.read().is_empty() {
                         div { class: "error", "{heartbeat_error}" }
-                    }
-                    if !heartbeat_status.read().is_empty() {
-                        div { class: "status", "{heartbeat_status}" }
                     }
                 }
             }

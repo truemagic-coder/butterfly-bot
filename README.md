@@ -58,7 +58,7 @@ sudo snap install butterfly-bot
 ```
         ┌──────────────────────────────────────┐
         │           Desktop UI (Dioxus)        │
-        │  - chat, config, notifications       │
+        │  - chat, activity, simple settings   │
         │  - streams tool + agent events       │
         └───────────────┬──────────────────────┘
                 │ IPC / local client
@@ -256,26 +256,21 @@ Butterfly Bot uses convention-first defaults. You can run without editing config
 
 - Default-first behavior: provider/model/storage/tool defaults are preselected.
 - Inline blocking prompts only: if a required secret is missing, the app requests it when needed.
-- Optional overrides: use the Config tab for advanced customization.
-- Factory reset: use **Config → Factory Reset** to restore convention defaults.
+- Simple Config tab (form-based) exposes only essential controls:
+    - Wakeup interval (`tools.wakeup.poll_seconds`)
+    - GitHub token (vault secret `github_pat`)
+    - Zapier token (vault secret `zapier_token`)
+    - MCP servers list (`tools.mcp.servers`)
+    - Network allow list (`tools.settings.permissions.network_allow`)
+- Model selection and memory tuning are intentionally not exposed in the UI (convention over configuration).
 - Zero-step startup: launching `butterfly-bot` or `butterfly-bot-ui` writes convention defaults when missing and attempts to start the daemon automatically.
 
 Config is stored in the OS keychain for top security and safety.
 
-### Diagnostics (Doctor)
+### Diagnostics & Security Audit
 
-- Use **Config → Diagnostics → Run Diagnostics** to run health checks in the app UX.
-- Checks include config load/parse, vault resolution, DB read/write probe, provider reachability, and daemon auth token status.
-- Results are returned as pass/warn/fail with actionable fix hints so bug reports are easier to reproduce and resolve.
-
-### Security Audit (UI)
-
-- Use **Config → Security Audit → Run Security Audit** to run local security posture checks.
-- Findings are risk-ranked as **critical/high/medium/low** and include fix guidance.
-- The audit is intentionally **read-only**: no automatic config mutations are applied.
-- `auto_fixable` is currently informational and defaults to `false` because automatic hardening can create unintended downtime.
-- If a finding cannot be safely auto-remediated, guidance is presented as explicit manual steps.
-- See [docs/security-audit.md](docs/security-audit.md) for operating recommendations and limits.
+- Health diagnostics and security audit capabilities remain available at the daemon/API layer.
+- Security posture guidance and limits are documented in [docs/security-audit.md](docs/security-audit.md).
 
 ### Threat Model (Important)
 
