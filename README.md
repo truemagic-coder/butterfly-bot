@@ -172,6 +172,12 @@ cargo run --release --bin butterfly-bot
 
 Launches the desktop app.
 
+To protect daemon endpoints, set a shared token before launching:
+
+```bash
+export BUTTERFLY_BOT_TOKEN="change-me"
+```
+
 ## Config
 
 Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.
@@ -438,7 +444,7 @@ Config fields:
 - `grok_x_search` (optional; defaults to `true`)
 - `grok_timeout` (optional; defaults to `90`)
 - `permissions.network_allow` (optional allowlist for outbound domains)
-- `permissions.default_deny` (optional; defaults to `false`)
+- `permissions.default_deny` (optional; defaults to `true` from code-level convention defaults)
 - `tools.settings.permissions.*` (optional global defaults; tool-level `permissions` can override `network_allow`)
 
 ```json
@@ -454,7 +460,7 @@ Config fields:
             "grok_timeout": 90,
             "permissions": {
                 "network_allow": ["api.openai.com"],
-                "default_deny": false
+                "default_deny": true
             }
         }
     }

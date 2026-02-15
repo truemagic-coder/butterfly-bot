@@ -80,6 +80,40 @@ async fn daemon_health_and_auth() {
 }
 
 #[tokio::test]
+async fn daemon_empty_token_fails_closed() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let reminder_db = NamedTempFile::new().unwrap();
+    let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        token: "".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/process_text")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"user_id":"u","text":"hi"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn daemon_process_text_and_memory_search() {
     let server = MockServer::start_async().await;
     let chat_mock = server

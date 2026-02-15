@@ -1,5 +1,5 @@
 use serde::{de, Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::fs;
 use std::path::Path;
 
@@ -180,6 +180,38 @@ pub struct Config {
     pub brains: Option<Value>,
 }
 impl Config {
+    fn apply_security_defaults(mut self) -> Self {
+        let tools = self
+            .tools
+            .get_or_insert_with(|| Value::Object(Map::new()));
+        if let Some(tools_obj) = tools.as_object_mut() {
+            let settings = tools_obj
+                .entry("settings")
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(settings_obj) = settings.as_object_mut() {
+                let permissions = settings_obj
+                    .entry("permissions")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(perms_obj) = permissions.as_object_mut() {
+                    perms_obj
+                        .entry("default_deny")
+                        .or_insert_with(|| Value::Bool(true));
+                    perms_obj.entry("network_allow").or_insert_with(|| {
+                        Value::Array(vec![
+                            Value::String("localhost".to_string()),
+                            Value::String("127.0.0.1".to_string()),
+                            Value::String("api.openai.com".to_string()),
+                            Value::String("api.x.ai".to_string()),
+                            Value::String("api.perplexity.ai".to_string()),
+                            Value::String("api.githubcopilot.com".to_string()),
+                        ])
+                    });
+                }
+            }
+        }
+        self
+    }
+
     pub fn convention_defaults(db_path: &str) -> Self {
         let model = "ministral-3:14b".to_string();
         Self {
@@ -202,9 +234,10 @@ impl Config {
                 summary_threshold: None,
                 retention_days: None,
             }),
-            tools: None,
+            tools: Some(Value::Object(Map::new())),
             brains: None,
         }
+        .apply_security_defaults()
     }
 
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -213,7 +246,7 @@ impl Config {
             .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
         let config: Config =
             serde_json::from_str(&content).map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-        Ok(config)
+        Ok(config.apply_security_defaults())
     }
 
     pub fn from_store(db_path: &str) -> Result<Self> {
@@ -223,10 +256,10 @@ impl Config {
                     .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
                 let config: Config = serde_json::from_value(value)
                     .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-                return Ok(config);
+                return Ok(config.apply_security_defaults());
             }
         }
-        crate::config_store::load_config(db_path)
+        crate::config_store::load_config(db_path).map(|config| config.apply_security_defaults())
     }
 
     pub fn resolve_vault(mut self) -> Result<Self> {

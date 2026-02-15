@@ -512,9 +512,10 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
     if state.token.trim().is_empty() {
         findings.push(security_finding(
             "daemon_auth_token",
-            "high",
-            "fail",
-            "Daemon auth token is empty; local endpoints are unprotected.".to_string(),
+            "medium",
+            "warn",
+            "Daemon auth token is empty; protected endpoints fail closed until a token is configured."
+                .to_string(),
             Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
             false,
         ));
@@ -684,7 +685,8 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
         checks.push(doctor_check(
             "daemon_auth_token",
             "warn",
-            "Daemon auth token is empty; local endpoints are unprotected.".to_string(),
+            "Daemon auth token is empty; protected endpoints fail closed until a token is configured."
+                .to_string(),
             Some("Set BUTTERFLY_BOT_TOKEN (or UI token) and restart daemon."),
         ));
     } else {
@@ -1369,6 +1371,16 @@ fn authorize(
     headers: &HeaderMap,
     token: &str,
 ) -> std::result::Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let expected_token = token.trim();
+    if expected_token.is_empty() {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Unauthorized".to_string(),
+            }),
+        ));
+    }
+
     let header = headers
         .get("authorization")
         .and_then(|value| value.to_str().ok())
@@ -1379,7 +1391,7 @@ fn authorize(
         .unwrap_or_default();
     let bearer = header.strip_prefix("Bearer ").unwrap_or("");
 
-    if bearer == token || api_key == token {
+    if bearer == expected_token || api_key == expected_token {
         Ok(())
     } else {
         Err((
