@@ -14,20 +14,27 @@ Open the app, provide the prompt, and watch your always-on agent do its job!
 
 <img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
 
-### Install
+### Install on Linux
 
-#### Mac
+#### Cargo
 
 ```bash
-brew tap truemagic-coder/butterfly-bot https://github.com/truemagic-coder/butterfly-bot
-brew install butterfly-bot
+cargo install butterfly-bot
 ```
 
-#### Linux
+#### OR
+
+
+#### Snap (coming soon...)
 
 ```bash
 sudo snap install butterfly-bot
 ```
+
+### Install on Mac
+
+Coming soon...
+
 
 ### Why users pick it:
 
@@ -163,17 +170,11 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Requirements
 
-#### Linux or Windows (WSL)
+#### Linux
 - Rust 1.93+
 - Ubuntu recommended
 - 16GB+ RAM with 8GB+ VRAM
 - Certain system libraries for Linux
-
-#### Mac
-- Rust 1.93+
-- Mac Tahoe
-- 16GB+ RAM
-- M2 Pro+
 
 #### Models Used
 
@@ -189,8 +190,6 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 - AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant response)
 - MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
-- Mac M2 Pro Mini with 16GB RAM (10-20 seconds per response)
-- Not tested on Windows (WSL)
 
 ### Build
 
@@ -268,22 +267,29 @@ Notes:
 - Bundled modules are mounted at `./wasm/<tool>_tool.wasm` inside the app runtime directory.
 - `BUTTERFLY_BOT_DISABLE_KEYRING=1` is enabled by default in the snap launcher (override if your snap environment provides a working keyring backend).
 
-### Config
 
-Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.
+### How To (Context, Heartbeat, Config)
 
-- Default-first behavior: provider/model/storage/tool defaults are preselected.
-- Inline blocking prompts only: if a required secret is missing, the app requests it when needed.
-- Simple Config tab (form-based) exposes only essential controls:
-    - Wakeup interval (`tools.wakeup.poll_seconds`)
-    - GitHub token (vault secret `github_pat`)
-    - Zapier token (vault secret `zapier_token`)
-    - MCP servers list (`tools.mcp.servers`)
-    - Network allow list (`tools.settings.permissions.network_allow`)
-- Model selection and memory tuning are intentionally not exposed in the UI (convention over configuration).
-- Zero-step startup: launching `butterfly-bot` or `butterfly-bot-ui` writes convention defaults when missing and attempts to start the daemon automatically.
+Use this quick sequence for best results with minimal setup:
 
-Config is stored in the OS keychain for top security and safety.
+1. Set your Context first
+    - Open the `Context` tab and paste your operating context (goals, constraints, preferences, project notes).
+    - Keep it short and actionable; update only when your priorities change.
+
+2. Start Heartbeat for always-on automation
+    - Open `Heartbeat` and start the loop so the daemon can run wakeups, tasks, reminders, and tool actions continuously.
+    - If you want fewer background checks, lower activity by increasing the wakeup interval in Config.
+
+3. Use Config only when needed
+    - Open `Config` to set required secrets and connectivity:
+      - GitHub token
+      - Zapier token
+      - Coding OpenAI API key
+      - Search provider + search API key
+      - MCP servers
+      - Network allow list
+    - If something fails with a tool call, check provider/key/allowlist first before changing anything else.
+    - Config is stored in the OS keychain for top security and safety.
 
 ### Diagnostics & Security Audit
 
