@@ -16,6 +16,45 @@ When a tool executes, Butterfly Bot:
 
 Because no host imports are provided, this is a strict host-isolated execution path by default.
 
+## Capability ABI (v1 scaffold)
+
+The runtime now recognizes a capability envelope returned by WASM modules:
+
+```json
+{
+  "status": "capability_call",
+  "abi_version": 1,
+  "capability_call": {
+    "name": "kv.sqlite.todo.create",
+    "args": {"user_id":"cli_user","title":"buy milk"}
+  }
+}
+```
+
+Current state (scaffold only):
+
+- `abi_version` must be `1` when present.
+- Capability name must be explicitly allowlisted in per-tool sandbox config.
+- Undeclared capability names are rejected with deterministic `forbidden` error.
+- Implemented handlers:
+  - `clock.now_unix`
+  - `log.emit`
+  - `coding.generate`
+  - `http.request`
+  - `mcp.list_tools`
+  - `mcp.call`
+  - `github.list_tools`
+  - `github.call_tool`
+  - `search.internet`
+  - `secrets.get` (supports strict scoped allowlist entries like `secrets.get.github_pat`)
+  - `kv.sqlite.todo.{create,list}`
+  - `kv.sqlite.tasks.{schedule,list,enable,disable,delete}`
+  - `kv.sqlite.reminders.{create,list,complete,delete,snooze,clear}`
+  - `kv.sqlite.planning.{create,list,get,update,delete}`
+  - `kv.sqlite.wakeup.{create,list,enable,disable,delete}`
+- Other declared capability names currently return deterministic `internal` until additional host bridge handlers land.
+- Runtime rejects deprecated `host_call` fallback for all tools.
+
 ## Required Exports
 
 Your `.wasm` tool must export:
@@ -39,21 +78,7 @@ Output bytes must be UTF-8 JSON.
 - Input: JSON object containing tool params.
 - Output: JSON value (object preferred) consumed as tool result.
 
-### Host-call delegation (current built-in modules)
-
-Built-in tool modules may return:
-
-```json
-{
-  "status": "host_call",
-  "host_call": {
-    "tool": "reminders",
-    "args": {"action": "list", "user_id": "cli_user"}
-  }
-}
-```
-
-When this shape is returned, the host runtime validates `host_call.tool` matches the executing tool name and executes the registered backend using `host_call.args`.
+`host_call` is deprecated and rejected by runtime.
 
 ## Configuration Example (minimal)
 
@@ -70,6 +95,12 @@ When this shape is returned, the host runtime validates `host_call.tool` matches
               "entrypoint": "execute",
               "timeout_ms": 3000,
               "fuel": 5000000
+            },
+            "capabilities": {
+              "abi_version": 1,
+              "allow": [
+                "log.emit"
+              ]
             }
           }
         }
@@ -87,6 +118,8 @@ When this shape is returned, the host runtime validates `host_call.tool` matches
 - Per-tool `wasm.module` is optional. If omitted, module path defaults to `./wasm/<tool>_tool.wasm`.
 - `timeout_ms` interrupts long-running WASM execution by epoch deadline.
 - `fuel` sets a deterministic instruction budget for guest execution.
+- `capabilities.abi_version` validates ABI compatibility at startup (`1` supported).
+- `capabilities.allow` is a per-tool allowlist for `capability_call.name`.
 - Sandbox decisions are audit-logged through `ToolRegistry`.
 
 ## Important: Placeholder module caveat

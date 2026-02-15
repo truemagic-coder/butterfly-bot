@@ -50,6 +50,13 @@ pub struct NetworkPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CapabilityPolicy {
+    pub abi_version: Option<u32>,
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WasmToolConfig {
     pub module: Option<String>,
     pub entrypoint: Option<String>,
@@ -65,6 +72,8 @@ pub struct ToolSandboxConfig {
     pub filesystem: FilesystemPolicy,
     #[serde(default)]
     pub network: NetworkPolicy,
+    #[serde(default)]
+    pub capabilities: CapabilityPolicy,
 }
 
 impl Default for ToolSandboxConfig {
@@ -73,7 +82,17 @@ impl Default for ToolSandboxConfig {
             wasm: WasmToolConfig::default(),
             filesystem: FilesystemPolicy::default(),
             network: NetworkPolicy::default(),
+            capabilities: CapabilityPolicy::default(),
         }
+    }
+}
+
+impl ToolSandboxConfig {
+    pub fn is_capability_allowed(&self, capability: &str) -> bool {
+        self.capabilities
+            .allow
+            .iter()
+            .any(|allowed| allowed == capability)
     }
 }
 
@@ -309,6 +328,61 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn capability_allowlist_parses_from_config() {
+        let root = serde_json::json!({
+            "tools": {
+                "settings": {
+                    "sandbox": {
+                        "tools": {
+                            "todo": {
+                                "capabilities": {
+                                    "abi_version": 1,
+                                    "allow": ["kv.sqlite.todo.create", "clock.now_unix"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let settings = SandboxSettings::from_root_config(&root);
+        let plan = settings.execution_plan("todo");
+        assert_eq!(plan.tool_config.capabilities.abi_version, Some(1));
+        assert!(
+            plan.tool_config
+                .is_capability_allowed("kv.sqlite.todo.create")
+        );
+        assert!(!plan.tool_config.is_capability_allowed("kv.sqlite.todo.delete"));
+    }
+
+    #[test]
+    fn capability_abi_version_mismatch_rejected() {
+        let root = serde_json::json!({
+            "tools": {
+                "settings": {
+                    "sandbox": {
+                        "tools": {
+                            "todo": {
+                                "capabilities": {
+                                    "abi_version": 2,
+                                    "allow": ["kv.sqlite.todo.create"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let settings = SandboxSettings::from_root_config(&root);
+        let plan = settings.execution_plan("todo");
+        let err = WasmRuntime::validate_capability_abi("todo", &plan.tool_config)
+            .expect_err("expected abi_version mismatch to fail");
+        assert!(err.to_string().contains("unsupported capability ABI version"));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -334,6 +408,7 @@ impl Drop for TimeoutCompletion {
 impl WasmRuntime {
     const MAX_INPUT_BYTES: usize = 256 * 1024;
     const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+    pub const SUPPORTED_CAPABILITY_ABI_VERSION: u32 = 1;
 
     fn default_module_path(tool_name: &str) -> String {
         format!("./wasm/{tool_name}_tool.wasm")
@@ -425,6 +500,19 @@ impl WasmRuntime {
             return Err(ButterflyBotError::Runtime(format!(
                 "WASM module for tool '{tool_name}' at {module_path} is a placeholder stub. Build/install a real WASM implementation before starting the daemon."
             )));
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_capability_abi(tool_name: &str, config: &ToolSandboxConfig) -> Result<()> {
+        if let Some(version) = config.capabilities.abi_version {
+            if version != Self::SUPPORTED_CAPABILITY_ABI_VERSION {
+                return Err(ButterflyBotError::Runtime(format!(
+                    "Tool '{tool_name}' uses unsupported capability ABI version {version}; supported version is {}",
+                    Self::SUPPORTED_CAPABILITY_ABI_VERSION
+                )));
+            }
         }
 
         Ok(())

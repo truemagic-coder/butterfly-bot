@@ -35,9 +35,11 @@ fn execute_for_tool(tool: &str, input: &Value) -> Value {
         "reminders" => execute_reminders(input),
         "planning" => execute_planning(input),
         "wakeup" => execute_wakeup(input),
-        "coding" | "mcp" | "http_call" | "github" | "search_internet" => {
-            host_call(tool, passthrough_args(input))
-        }
+        "coding" => execute_coding(input),
+        "mcp" => execute_mcp(input),
+        "http_call" => execute_http_call(input),
+        "github" => execute_github(input),
+        "search_internet" => execute_search_internet(input),
         _ => json!({
             "status": "error",
             "code": "internal",
@@ -46,11 +48,12 @@ fn execute_for_tool(tool: &str, input: &Value) -> Value {
     }
 }
 
-fn host_call(tool: &str, args: Value) -> Value {
+fn capability_call(name: &str, args: Value) -> Value {
     json!({
-        "status": "host_call",
-        "host_call": {
-            "tool": tool,
+        "status": "capability_call",
+        "abi_version": 1,
+        "capability_call": {
+            "name": name,
             "args": args
         }
     })
@@ -62,14 +65,6 @@ fn invalid_args(message: &str) -> Value {
         "code": "invalid_args",
         "error": message,
     })
-}
-
-fn passthrough_args(input: &Value) -> Value {
-    if input.is_object() {
-        input.clone()
-    } else {
-        json!({"input": input})
-    }
 }
 
 fn input_object(input: &Value) -> Result<Map<String, Value>, Value> {
@@ -154,11 +149,22 @@ fn execute_todo(input: &Value) -> Value {
         return err;
     }
 
-    host_call("todo", Value::Object(args))
+    let capability = match action {
+        "create" => "kv.sqlite.todo.create",
+        "create_many" => "kv.sqlite.todo.create_many",
+        "list" => "kv.sqlite.todo.list",
+        "complete" => "kv.sqlite.todo.complete",
+        "reopen" => "kv.sqlite.todo.reopen",
+        "delete" => "kv.sqlite.todo.delete",
+        "reorder" => "kv.sqlite.todo.reorder",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
 }
 
 fn execute_tasks(input: &Value) -> Value {
-    let args = match input_object(input) {
+    let mut args = match input_object(input) {
         Ok(args) => args,
         Err(err) => return err,
     };
@@ -172,6 +178,11 @@ fn execute_tasks(input: &Value) -> Value {
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
+    let action = match action.as_str() {
+        "cancel" => "disable".to_string(),
+        other => other.to_string(),
+    };
+    args.insert("action".to_string(), Value::String(action.clone()));
 
     let valid = match action.as_str() {
         "schedule" => {
@@ -188,7 +199,16 @@ fn execute_tasks(input: &Value) -> Value {
         return err;
     }
 
-    host_call("tasks", Value::Object(args))
+    let capability = match action.as_str() {
+        "schedule" => "kv.sqlite.tasks.schedule",
+        "list" => "kv.sqlite.tasks.list",
+        "enable" => "kv.sqlite.tasks.enable",
+        "disable" => "kv.sqlite.tasks.disable",
+        "delete" => "kv.sqlite.tasks.delete",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
 }
 
 fn execute_reminders(input: &Value) -> Value {
@@ -248,7 +268,17 @@ fn execute_reminders(input: &Value) -> Value {
         return err;
     }
 
-    host_call("reminders", Value::Object(args))
+    let capability = match action {
+        "create" => "kv.sqlite.reminders.create",
+        "list" => "kv.sqlite.reminders.list",
+        "complete" => "kv.sqlite.reminders.complete",
+        "delete" => "kv.sqlite.reminders.delete",
+        "snooze" => "kv.sqlite.reminders.snooze",
+        "clear" => "kv.sqlite.reminders.clear",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
 }
 
 fn execute_planning(input: &Value) -> Value {
@@ -278,7 +308,16 @@ fn execute_planning(input: &Value) -> Value {
         return err;
     }
 
-    host_call("planning", Value::Object(args))
+    let capability = match action.as_str() {
+        "create" => "kv.sqlite.planning.create",
+        "list" => "kv.sqlite.planning.list",
+        "get" => "kv.sqlite.planning.get",
+        "update" => "kv.sqlite.planning.update",
+        "delete" => "kv.sqlite.planning.delete",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
 }
 
 fn execute_wakeup(input: &Value) -> Value {
@@ -312,7 +351,107 @@ fn execute_wakeup(input: &Value) -> Value {
         return err;
     }
 
-    host_call("wakeup", Value::Object(args))
+    let capability = match action.as_str() {
+        "create" => "kv.sqlite.wakeup.create",
+        "list" => "kv.sqlite.wakeup.list",
+        "enable" => "kv.sqlite.wakeup.enable",
+        "disable" => "kv.sqlite.wakeup.disable",
+        "delete" => "kv.sqlite.wakeup.delete",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
+}
+
+fn execute_coding(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    if let Err(err) = require_string(&args, "prompt") {
+        return err;
+    }
+
+    capability_call("coding.generate", Value::Object(args))
+}
+
+fn execute_http_call(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    if let Err(err) = require_string(&args, "method") {
+        return err;
+    }
+
+    capability_call("http.request", Value::Object(args))
+}
+
+fn execute_mcp(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    let action = args
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let capability = match action.as_str() {
+        "list_tools" => "mcp.list_tools",
+        "call_tool" => {
+            if let Err(err) = require_string(&args, "tool") {
+                return err;
+            }
+            "mcp.call"
+        }
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
+}
+
+fn execute_github(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    let action = args
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let capability = match action.as_str() {
+        "list_tools" => "github.list_tools",
+        "call_tool" => {
+            if let Err(err) = require_string(&args, "tool") {
+                return err;
+            }
+            "github.call_tool"
+        }
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
+}
+
+fn execute_search_internet(input: &Value) -> Value {
+    let args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    if let Err(err) = require_string(&args, "query") {
+        return err;
+    }
+
+    capability_call("search.internet", Value::Object(args))
 }
 
 #[no_mangle]
@@ -370,9 +509,23 @@ mod tests {
             &json!({"action":"add_many","user_id":"u1","items":["a"]}),
         );
 
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
         assert_eq!(
-            output["host_call"]["args"]["action"].as_str(),
+            output["capability_call"]["args"]["action"].as_str(),
             Some("create_many")
+        );
+    }
+
+    #[test]
+    fn todo_create_uses_capability_call() {
+        let output = execute_for_tool(
+            "todo",
+            &json!({"action":"create","user_id":"u1","title":"t"}),
+        );
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("kv.sqlite.todo.create")
         );
     }
 
@@ -400,7 +553,7 @@ mod tests {
             &json!({"action":"schedule","user_id":"u1","title":"t"}),
         );
         assert_eq!(
-            output["host_call"]["args"]["action"].as_str(),
+            output["capability_call"]["args"]["action"].as_str(),
             Some("create")
         );
 
@@ -427,9 +580,58 @@ mod tests {
     }
 
     #[test]
-    fn p2_tools_still_passthrough() {
-        let output = execute_for_tool("github", &json!({"action":"search"}));
-        assert_eq!(output["status"].as_str(), Some("host_call"));
-        assert_eq!(output["host_call"]["tool"].as_str(), Some("github"));
+    fn p2_tools_use_capability_calls() {
+        let coding = execute_for_tool("coding", &json!({"prompt":"hi"}));
+        assert_eq!(coding["status"].as_str(), Some("capability_call"));
+        assert_eq!(coding["capability_call"]["name"], "coding.generate");
+
+        let github = execute_for_tool("github", &json!({"action":"list_tools"}));
+        assert_eq!(github["status"].as_str(), Some("capability_call"));
+        assert_eq!(github["capability_call"]["name"], "github.list_tools");
+
+        let search = execute_for_tool("search_internet", &json!({"query":"rust"}));
+        assert_eq!(search["status"].as_str(), Some("capability_call"));
+        assert_eq!(search["capability_call"]["name"], "search.internet");
+    }
+
+    #[test]
+    fn p2_invalid_args_are_rejected() {
+        let mcp_missing_tool = execute_for_tool("mcp", &json!({"action":"call_tool"}));
+        assert_eq!(mcp_missing_tool["status"].as_str(), Some("error"));
+        assert_eq!(mcp_missing_tool["code"].as_str(), Some("invalid_args"));
+
+        let github_unsupported = execute_for_tool("github", &json!({"action":"search"}));
+        assert_eq!(github_unsupported["status"].as_str(), Some("error"));
+        assert_eq!(github_unsupported["code"].as_str(), Some("invalid_args"));
+
+        let http_missing_method = execute_for_tool("http_call", &json!({"url":"https://example.com"}));
+        assert_eq!(http_missing_method["status"].as_str(), Some("error"));
+        assert_eq!(http_missing_method["code"].as_str(), Some("invalid_args"));
+    }
+
+    #[test]
+    fn no_tool_returns_host_call_envelope() {
+        let cases = [
+            ("todo", json!({"action":"list","user_id":"u1"})),
+            ("tasks", json!({"action":"list","user_id":"u1"})),
+            ("reminders", json!({"action":"list","user_id":"u1"})),
+            ("planning", json!({"action":"list","user_id":"u1"})),
+            ("wakeup", json!({"action":"list","user_id":"u1"})),
+            ("coding", json!({"prompt":"hello"})),
+            ("mcp", json!({"action":"list_tools"})),
+            ("http_call", json!({"method":"GET"})),
+            ("github", json!({"action":"list_tools"})),
+            ("search_internet", json!({"query":"rust"})),
+        ];
+
+        for (tool, input) in cases {
+            let output = execute_for_tool(tool, &input);
+            assert_ne!(
+                output["status"].as_str(),
+                Some("host_call"),
+                "tool '{}' unexpectedly emitted host_call envelope",
+                tool
+            );
+        }
     }
 }
