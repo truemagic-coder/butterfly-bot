@@ -26,12 +26,12 @@ pub struct AgentService {
     llm_provider: Arc<dyn LlmProvider>,
     pub tool_registry: Arc<ToolRegistry>,
     agent: AIAgent,
-    skill_source: Option<String>,
-    skill_markdown: RwLock<Option<String>>,
+    context_source: Option<String>,
+    context_markdown: RwLock<Option<String>>,
     heartbeat_markdown: RwLock<Option<String>>,
     prompt_markdown: RwLock<Option<String>>,
-    last_skill_refresh: RwLock<Option<Instant>>,
-    skill_refresh_guard: tokio::sync::Mutex<()>,
+    last_context_refresh: RwLock<Option<Instant>>,
+    context_refresh_guard: tokio::sync::Mutex<()>,
     brain_manager: Arc<BrainManager>,
     started: RwLock<bool>,
     ui_event_tx: Option<broadcast::Sender<UiEvent>>,
@@ -54,8 +54,8 @@ impl AgentService {
     pub fn new(
         llm_provider: Arc<dyn LlmProvider>,
         agent: AIAgent,
-        skill_source: Option<String>,
-        skill_markdown: Option<String>,
+        context_source: Option<String>,
+        context_markdown: Option<String>,
         heartbeat_markdown: Option<String>,
         prompt_markdown: Option<String>,
         brain_manager: Arc<BrainManager>,
@@ -65,12 +65,12 @@ impl AgentService {
             llm_provider,
             tool_registry: Arc::new(ToolRegistry::new()),
             agent,
-            skill_source,
-            skill_markdown: RwLock::new(skill_markdown),
+            context_source,
+            context_markdown: RwLock::new(context_markdown),
             heartbeat_markdown: RwLock::new(heartbeat_markdown),
             prompt_markdown: RwLock::new(prompt_markdown),
-            last_skill_refresh: RwLock::new(None),
-            skill_refresh_guard: tokio::sync::Mutex::new(()),
+            last_context_refresh: RwLock::new(None),
+            context_refresh_guard: tokio::sync::Mutex::new(()),
             brain_manager,
             started: RwLock::new(false),
             ui_event_tx,
@@ -87,77 +87,84 @@ impl AgentService {
         *guard = prompt_markdown;
     }
 
-    pub async fn refresh_skill_for_user(&self, user_id: &str) -> Result<bool> {
-        self.refresh_skill(user_id).await
+    pub async fn refresh_context_for_user(&self, user_id: &str) -> Result<bool> {
+        self.refresh_context(user_id).await
     }
 
-    pub async fn get_skill_markdown(&self) -> Option<String> {
-        let guard = self.skill_markdown.read().await;
+    pub async fn get_context_markdown(&self) -> Option<String> {
+        let guard = self.context_markdown.read().await;
         guard.clone()
     }
 
-    async fn refresh_skill(&self, user_id: &str) -> Result<bool> {
+    async fn refresh_context(&self, user_id: &str) -> Result<bool> {
         // Debounce refresh to avoid stampede on boot.
         let refresh_interval = Duration::from_secs(30);
-        if let Some(last) = *self.last_skill_refresh.read().await {
+        if let Some(last) = *self.last_context_refresh.read().await {
             if last.elapsed() < refresh_interval {
                 return Ok(true);
             }
         }
 
-        let _guard = self.skill_refresh_guard.lock().await;
-        if let Some(last) = *self.last_skill_refresh.read().await {
+        let _guard = self.context_refresh_guard.lock().await;
+        if let Some(last) = *self.last_context_refresh.read().await {
             if last.elapsed() < refresh_interval {
                 return Ok(true);
             }
         }
 
-        let Some(source) = &self.skill_source else {
-            warn!("No skill_source configured – the agent has no skill file");
-            // Still allow the agent to run, but log clearly.
+        let Some(source) = &self.context_source else {
+            let existing = self.context_markdown.read().await;
+            if existing
+                .as_ref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            {
+                return Ok(true);
+            }
+            warn!("No context_source URL configured and no context markdown in memory");
             return Ok(false);
         };
         if source.trim().is_empty() {
-            warn!("skill_source is blank – the agent has no skill file");
+            warn!("context_source is blank – the agent has no context file");
             return Ok(false);
         }
 
-        info!("Refreshing skill from {}", source);
+        info!("Refreshing context from {}", source);
         match load_markdown_source(Some(source)).await {
             Ok(Some(text)) if !text.trim().is_empty() => {
-                info!("Skill loaded OK from {} ({} bytes)", source, text.len());
-                let mut guard = self.skill_markdown.write().await;
+                info!("Context loaded OK from {} ({} bytes)", source, text.len());
+                let mut guard = self.context_markdown.write().await;
                 *guard = Some(text.clone());
-                let mut last_guard = self.last_skill_refresh.write().await;
+                let mut last_guard = self.last_context_refresh.write().await;
                 *last_guard = Some(Instant::now());
                 self.emit_tool_event(
                     user_id,
-                    "skill",
+                    "context",
                     "ok",
                     json!({"source": source, "length": text.len()}),
                 );
                 Ok(true)
             }
             Ok(_) => {
-                error!("Skill source {} returned empty content", source);
+                error!("Context source {} returned empty content", source);
                 self.emit_tool_event(
                     user_id,
-                    "skill",
+                    "context",
                     "error",
-                    json!({"source": source, "error": "empty skill markdown"}),
+                    json!({"source": source, "error": "empty context markdown"}),
                 );
                 Ok(false)
             }
             Err(err) => {
-                error!("Failed to load skill from {}: {}", source, err);
+                error!("Failed to load context from {}: {}", source, err);
                 self.emit_tool_event(
                     user_id,
-                    "skill",
+                    "context",
                     "error",
                     json!({"source": source, "error": err.to_string()}),
                 );
                 Err(ButterflyBotError::Config(format!(
-                    "Failed to load skill markdown from {}: {}",
+                    "Failed to load context markdown from {}: {}",
                     source, err
                 )))
             }
@@ -206,22 +213,22 @@ impl AgentService {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             .as_secs();
 
-        // NOTE: refresh_skill() is called by callers BEFORE this method.
+        // NOTE: refresh_context() is called by callers BEFORE this method.
         // Do NOT re-fetch here – it swallows errors and causes silent failures.
 
-        let skill_guard = self.skill_markdown.read().await;
-        let has_skill = skill_guard.as_ref().map_or(false, |s| !s.trim().is_empty());
+        let context_guard = self.context_markdown.read().await;
+        let has_context = context_guard.as_ref().map_or(false, |s| !s.trim().is_empty());
         let instructions = &self.agent.instructions;
 
-        if has_skill {
-            debug!("Skill markdown loaded; system prompt will reference memory only");
+        if has_context {
+            debug!("Primary context markdown loaded; system prompt will reference memory only");
         } else {
-            warn!("No skill markdown loaded; system prompt will use defaults only");
+            warn!("No primary context markdown loaded; system prompt will use defaults only");
         }
 
-        let instructions_block = if has_skill {
+        let instructions_block = if has_context {
             format!(
-                "{}\n\nSKILL NOTE: The full skill file is stored in memory as SKILL_DOC. Use it as authoritative guidance.",
+                "{}\n\nCONTEXT NOTE: The full primary prompt context is stored in memory as CONTEXT_DOC. Use it as authoritative guidance.",
                 instructions
             )
         } else {
@@ -250,7 +257,7 @@ impl AgentService {
         }
 
         system_prompt.push_str(
-            "\n\nSKILL GOVERNANCE:\n- The skill markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the skill file asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n- ALWAYS organize work using the planning, todo, and tasks tools. Do not just execute actions in isolation — create plans for goals, todos for action items, and scheduled tasks for recurring work.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
+            "\n\nCONTEXT GOVERNANCE:\n- The primary prompt context markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the context asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n- ALWAYS organize work using the planning, todo, and tasks tools. Do not just execute actions in isolation — create plans for goals, todos for action items, and scheduled tasks for recurring work.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
         );
         system_prompt.push_str(
             "\n\nREACT LOOP — MANDATORY FORMAT (BRIEF):\n- Your response MUST start with 'Thought:' (1 sentence) before any tools.\n- Then 'Plan:' (short numbered list with tool names).\n- Then for each tool: 'Action: call X' before, 'Observation: Y' after.\n- End with 'Summary:' (2 sentences max).\n- KEEP IT SHORT to avoid truncation. One sentence per section where possible.\n- Make ONE tool call at a time.\n",
@@ -336,9 +343,9 @@ impl AgentService {
         memory_context: &str,
         prompt_override: Option<&str>,
     ) -> Result<String> {
-        let skill_loaded = self.refresh_skill(user_id).await?;
-        if !skill_loaded {
-            warn!("Proceeding without skill file for user {}", user_id);
+        let context_loaded = self.refresh_context(user_id).await?;
+        if !context_loaded {
+            warn!("Proceeding without context file for user {}", user_id);
         }
         let system_prompt = self.get_agent_system_prompt().await?;
         let mut full_prompt = String::new();
@@ -355,7 +362,7 @@ impl AgentService {
             full_prompt.push_str("\n\n");
         }
         full_prompt.push_str(
-            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the skill or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. When working on any multi-step objective, use the `planning` tool to create/update plans, the `todo` tool to track action items, and the `tasks` tool for scheduled work. Always explain your thinking before acting. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
+            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the prompt context or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. When working on any multi-step objective, use the `planning` tool to create/update plans, the `todo` tool to track action items, and the `tasks` tool for scheduled work. Always explain your thinking before acting. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
         );
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
@@ -382,9 +389,9 @@ impl AgentService {
     ) -> BoxStream<'a, Result<String>> {
         Box::pin(try_stream! {
             self.ensure_brain_started(user_id).await?;
-            let skill_loaded = self.refresh_skill(user_id).await?;
-            if !skill_loaded {
-                warn!("Proceeding without skill file for user {} (stream)", user_id);
+            let context_loaded = self.refresh_context(user_id).await?;
+            if !context_loaded {
+                warn!("Proceeding without context file for user {} (stream)", user_id);
             }
             let ctx = BrainContext {
                 agent_name: self.agent.name.clone(),

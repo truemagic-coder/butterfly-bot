@@ -27,7 +27,7 @@ use syntect::parsing::SyntaxSet;
 use tokio::io::{self, AsyncBufReadExt};
 
 #[cfg(not(test))]
-use butterfly_bot::config::{Config, MemoryConfig, OpenAiConfig};
+use butterfly_bot::config::Config;
 #[cfg(not(test))]
 use butterfly_bot::config_store;
 #[cfg(not(test))]
@@ -355,24 +355,13 @@ async fn main() -> Result<()> {
             std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
         }
         std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
-        if let Ok(config) = Config::from_store(&cli.db) {
-            ensure_ollama_models(&config)?;
-        }
+        let config = ensure_default_config(&cli.db)?;
+        ensure_ollama_models(&config)?;
         ui::launch_ui();
         return Ok(());
     }
-    let needs_onboarding = !matches!(
-        cli.command,
-        Some(Commands::Init) | Some(Commands::ConfigImport { .. })
-    );
-    if needs_onboarding && Config::from_store(&cli.db).is_err() {
-        run_onboarding(&cli.db)?;
-        println!("Onboarding complete. Run 'butterfly-bot config show' to review.");
-    }
-
-    if let Ok(config) = Config::from_store(&cli.db) {
-        ensure_ollama_models(&config)?;
-    }
+    let config = ensure_default_config(&cli.db)?;
+    ensure_ollama_models(&config)?;
 
     let uses_daemon = cli.prompt.is_some()
         || matches!(
@@ -397,8 +386,10 @@ async fn main() -> Result<()> {
     if let Some(command) = &cli.command {
         match command {
             Commands::Init => {
-                run_onboarding(&cli.db)?;
-                println!("Onboarding complete. Run 'butterfly-bot config show' to review.");
+                let _ = ensure_default_config(&cli.db)?;
+                println!(
+                    "Default configuration is ready. Use Config UI for optional overrides."
+                );
                 return Ok(());
             }
             Commands::ConfigImport { path } => {
@@ -638,26 +629,23 @@ fn ensure_search_internet_provider(config: &mut Config) -> Result<bool> {
         return Ok(false);
     }
 
-    println!("Select provider for search_internet:");
-    println!("  1) openai");
-    println!("  2) perplexity");
-    println!("  3) grok");
-    let choice = prompt_line("Provider [openai]: ")?;
-    let provider = match choice.trim() {
-        "2" | "perplexity" => "perplexity",
-        "3" | "grok" => "grok",
-        "" | "1" | "openai" => "openai",
-        other => {
-            println!("Unknown provider '{other}', defaulting to openai.");
-            "openai"
-        }
-    };
-
     tool_map.insert(
         "provider".to_string(),
-        serde_json::Value::String(provider.to_string()),
+        serde_json::Value::String("openai".to_string()),
     );
     Ok(true)
+}
+
+#[cfg(not(test))]
+fn ensure_default_config(db_path: &str) -> Result<Config> {
+    match Config::from_store(db_path) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            let config = Config::convention_defaults(db_path);
+            config_store::save_config(db_path, &config)?;
+            Ok(config)
+        }
+    }
 }
 
 #[cfg(not(test))]
@@ -684,95 +672,6 @@ fn write_config_file(path: &str, value: &serde_json::Value) -> Result<()> {
     std::fs::write(path_obj, rendered)
         .map_err(|e| butterfly_bot::error::ButterflyBotError::Runtime(e.to_string()))?;
     Ok(())
-}
-
-#[cfg(not(test))]
-fn run_onboarding(db_path: &str) -> Result<()> {
-    println!("{}", style("ButterFly Bot setup").color256(214).bold());
-    println!("{}", style("Using local Ollama defaults.").color256(245));
-    println!();
-
-    let base_url = "http://localhost:11434/v1".to_string();
-    let model = "ministral-3:14b".to_string();
-    let memory_enabled = true;
-
-    let memory = if memory_enabled {
-        let sqlite_path = prompt_with_default("Memory SQLite path", db_path)?;
-        let lancedb_path = prompt_with_default("LanceDB path", "./data/lancedb")?;
-        let embedding_model = "embeddinggemma:latest".to_string();
-        let rerank_model = "qllama/bge-reranker-v2-m3".to_string();
-        let summary_model = model.clone();
-        let summary_threshold = prompt_optional_u32("Summary threshold (messages)")?;
-        let retention_days = prompt_optional_u32("Retention days (blank for unlimited)")?;
-
-        Some(MemoryConfig {
-            enabled: Some(true),
-            sqlite_path: Some(sqlite_path),
-            lancedb_path: Some(lancedb_path),
-            summary_model: Some(summary_model),
-            embedding_model: Some(embedding_model),
-            rerank_model: Some(rerank_model),
-            openai: None,
-            skill_embed_enabled: Some(false),
-            summary_threshold: summary_threshold.map(|value| value as usize),
-            retention_days,
-        })
-    } else {
-        Some(MemoryConfig {
-            enabled: Some(false),
-            sqlite_path: None,
-            lancedb_path: None,
-            summary_model: None,
-            embedding_model: None,
-            rerank_model: None,
-            openai: None,
-            skill_embed_enabled: Some(false),
-            summary_threshold: None,
-            retention_days: None,
-        })
-    };
-
-    let config = Config {
-        openai: Some(OpenAiConfig {
-            api_key: None,
-            model: Some(model),
-            base_url: Some(base_url),
-        }),
-        skill_file: Some("./skill.md".to_string()),
-        heartbeat_file: Some("./heartbeat.md".to_string()),
-        prompt_file: None,
-        memory,
-        tools: None,
-        brains: None,
-    };
-
-    config_store::save_config(db_path, &config)?;
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn prompt_with_default(label: &str, default: &str) -> Result<String> {
-    let prompt = format!("{} [{}]: ", label, default);
-    let input = prompt_line(&prompt)?;
-    if input.trim().is_empty() {
-        Ok(default.to_string())
-    } else {
-        Ok(input.trim().to_string())
-    }
-}
-
-#[cfg(not(test))]
-fn prompt_optional_u32(label: &str) -> Result<Option<u32>> {
-    let prompt = format!("{}: ", label);
-    let input = prompt_line(&prompt)?;
-    if input.trim().is_empty() {
-        return Ok(None);
-    }
-    input
-        .trim()
-        .parse::<u32>()
-        .map(Some)
-        .map_err(|e| butterfly_bot::error::ButterflyBotError::Config(e.to_string()))
 }
 
 #[cfg(not(test))]

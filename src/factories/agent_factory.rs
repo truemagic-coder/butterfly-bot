@@ -62,7 +62,7 @@ use crate::brain::plugins::trust_boundaries::TrustBoundariesBrain;
 use crate::brain::plugins::trust_transparency::TrustTransparencyBrain;
 use crate::brain::plugins::zep_context_enricher::ZepContextEnricherBrain;
 use crate::brain::plugins::zero_cost_reasoning::ZeroCostReasoningBrain;
-use crate::config::Config;
+use crate::config::{Config, MarkdownSource};
 use crate::domains::agent::AIAgent;
 use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
@@ -82,7 +82,6 @@ use crate::tools::search_internet::SearchInternetTool;
 use crate::tools::tasks::TasksTool;
 use crate::tools::todo::TodoTool;
 use crate::tools::wakeup::WakeupTool;
-use tokio::fs;
 use tokio::sync::broadcast;
 
 pub struct ButterflyBotFactory;
@@ -153,31 +152,31 @@ impl ButterflyBotFactory {
             memory_base_url.clone(),
         ));
 
-        let skill_source = config.skill_file.clone();
+        let context_source = config.prompt_source.clone();
         tracing::info!(
-            "Skill source from config: {:?}",
-            skill_source.as_deref().unwrap_or("(none)")
+            "Primary prompt source from config (used as primary context): {:?}",
+            context_source
         );
-        let skill_markdown = load_markdown_source(skill_source.as_deref()).await?;
-        let heartbeat_markdown = load_markdown_source(config.heartbeat_file.as_deref()).await?;
-        let prompt_markdown = load_markdown_source(config.prompt_file.as_deref()).await?;
-        match &skill_markdown {
+        let context_markdown = load_markdown_content(&context_source).await?;
+        let heartbeat_markdown = load_markdown_content(&config.heartbeat_source).await?;
+        let prompt_markdown = load_markdown_content(&config.prompt_source).await?;
+        match &context_markdown {
             Some(text) if !text.trim().is_empty() => {
                 tracing::info!(
-                    "Skill file loaded at startup: {} bytes from {:?}",
+                    "Primary prompt loaded at startup: {} bytes from {:?}",
                     text.len(),
-                    skill_source
+                    context_source.as_url().map(ToString::to_string),
                 );
             }
             _ => {
                 tracing::warn!(
-                    "No skill file content at startup! skill_source={:?}",
-                    skill_source
+                    "No primary prompt content at startup! prompt_source={:?}",
+                    context_source
                 );
             }
         }
         let instructions =
-            "You are Butterfly, a helpful assistant. Follow the skill file (stored in memory) and user instructions."
+            "You are Butterfly, a helpful assistant. Follow the primary prompt context (stored in memory) and user instructions."
                 .to_string();
         let instructions_for_prompt = instructions.clone();
         let specialization = "general".to_string();
@@ -342,7 +341,7 @@ impl ButterflyBotFactory {
         let agent_service = AgentService::new(
             llm.clone(),
             agent.clone(),
-            skill_source,
+            context_source.as_url().map(ToString::to_string),
             Some(instructions_for_prompt),
             heartbeat_markdown,
             prompt_markdown,
@@ -460,8 +459,8 @@ impl ButterflyBotFactory {
                     memory_provider_config.embedding_model = memory.embedding_model.clone();
                     memory_provider_config.reranker = reranker;
                     memory_provider_config.summarizer = summarizer;
-                    memory_provider_config.skill_embed_enabled =
-                        memory.skill_embed_enabled.unwrap_or(false);
+                    memory_provider_config.context_embed_enabled =
+                        memory.context_embed_enabled.unwrap_or(false);
                     memory_provider_config.summary_threshold = memory.summary_threshold;
                     memory_provider_config.retention_days = memory.retention_days;
                     Arc::new(SqliteMemoryProvider::new(memory_provider_config).await?)
@@ -524,13 +523,15 @@ pub(crate) async fn load_markdown_source(source: Option<&str>) -> Result<Option<
         return Ok(Some(text));
     }
 
-    tracing::info!("Loading markdown from local file: {}", trimmed);
-    let text = fs::read_to_string(trimmed)
-        .await
-        .map_err(|e| {
-            tracing::error!("Failed to read local file {}: {}", trimmed, e);
-            ButterflyBotError::Config(e.to_string())
-        })?;
-    tracing::info!("Loaded {} bytes from {}", text.len(), trimmed);
-    Ok(Some(text))
+    Err(ButterflyBotError::Config(format!(
+        "Unsupported markdown source '{}': only http(s) URLs are allowed",
+        trimmed
+    )))
+}
+
+pub(crate) async fn load_markdown_content(source: &MarkdownSource) -> Result<Option<String>> {
+    match source {
+        MarkdownSource::Url { url } => load_markdown_source(Some(url.as_str())).await,
+        MarkdownSource::Database { markdown } => Ok(Some(markdown.clone())),
+    }
 }

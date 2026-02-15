@@ -20,7 +20,6 @@ use syntect::highlighting::ThemeSet;
 use syntect::html::styled_line_to_highlighted_html;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
-use tokio::fs;
 use tokio::time::{sleep, timeout, Duration};
 
 #[derive(Clone, Serialize)]
@@ -63,6 +62,12 @@ struct SecurityAuditFindingResponse {
 struct SecurityAuditResponse {
     overall: String,
     findings: Vec<SecurityAuditFindingResponse>,
+}
+
+#[derive(Clone, Deserialize)]
+struct FactoryResetConfigResponse {
+    message: String,
+    config: Value,
 }
 
 async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
@@ -112,6 +117,31 @@ async fn run_security_audit_request(
         .map_err(|err| err.to_string())
 }
 
+async fn run_factory_reset_config_request(
+    daemon_url: String,
+    token: String,
+) -> Result<FactoryResetConfigResponse, String> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/factory_reset_config", daemon_url.trim_end_matches('/'));
+    let mut request = client.post(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("HTTP {status}: {text}"));
+    }
+    response
+        .json::<FactoryResetConfigResponse>()
+        .await
+        .map_err(|err| err.to_string())
+}
+
 #[derive(Clone)]
 struct ChatMessage {
     id: u64,
@@ -129,9 +159,8 @@ enum MessageRole {
 enum UiTab {
     Chat,
     Config,
-    Skill,
+    Context,
     Heartbeat,
-    Prompt,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -151,9 +180,34 @@ async fn load_markdown_source(source: &str) -> Result<String, String> {
         }
         return response.text().await.map_err(|err| err.to_string());
     }
-    fs::read_to_string(trimmed)
-        .await
-        .map_err(|err| err.to_string())
+    Err("Only URL markdown sources are supported for external loading.".to_string())
+}
+
+async fn save_markdown_source_to_store(
+    db_path: String,
+    target: &'static str,
+    source: crate::config::MarkdownSource,
+) -> Result<(), String> {
+    let mut config = crate::config::Config::from_store(&db_path).map_err(|err| err.to_string())?;
+    match target {
+        "heartbeat" => config.heartbeat_source = source,
+        "prompt" => config.prompt_source = source,
+        _ => return Err("Unknown markdown source target".to_string()),
+    }
+
+    let pretty = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+
+    let db_path_for_save = db_path.clone();
+    let config_for_save = config.clone();
+    let save_result = tokio::task::spawn_blocking(move || {
+        crate::config_store::save_config(&db_path_for_save, &config_for_save)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+
+    save_result.map_err(|err| err.to_string())?;
+    crate::vault::set_secret("app_config_json", &pretty).map_err(|err| err.to_string())?;
+    Ok(())
 }
 
 fn markdown_to_html(input: &str) -> String {
@@ -362,7 +416,7 @@ fn app_view() -> Element {
     let settings_load_started = use_signal(|| false);
     let boot_ready = use_signal(|| false);
     let boot_status = use_signal(String::new);
-    let boot_skill_ready = use_signal(|| false);
+    let boot_prompt_ready = use_signal(|| false);
     let boot_heartbeat_ready = use_signal(|| false);
     let settings_error = use_signal(String::new);
     let settings_status = use_signal(String::new);
@@ -376,19 +430,16 @@ fn app_view() -> Element {
     let security_audit_running = use_signal(|| false);
     let security_audit_overall = use_signal(String::new);
     let security_audit_findings = use_signal(Vec::<SecurityAuditFindingResponse>::new);
+    let factory_reset_armed = use_signal(|| false);
     let config_json_text = use_signal(String::new);
-    let skill_text = use_signal(String::new);
-    let skill_path = use_signal(|| "./skill.md".to_string());
-    let skill_status = use_signal(String::new);
-    let skill_error = use_signal(String::new);
+    let context_text = use_signal(String::new);
+    let context_path = use_signal(|| "database".to_string());
+    let context_status = use_signal(String::new);
+    let context_error = use_signal(String::new);
     let heartbeat_text = use_signal(String::new);
-    let heartbeat_path = use_signal(|| "./heartbeat.md".to_string());
+    let heartbeat_path = use_signal(|| "database".to_string());
     let heartbeat_status = use_signal(String::new);
     let heartbeat_error = use_signal(String::new);
-    let prompt_text = use_signal(String::new);
-    let prompt_path = use_signal(|| "./prompt.md".to_string());
-    let prompt_status = use_signal(String::new);
-    let prompt_error = use_signal(String::new);
 
     let search_provider = use_signal(|| "openai".to_string());
     let search_model = use_signal(String::new);
@@ -413,7 +464,6 @@ fn app_view() -> Element {
         let error = error.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
-        let boot_ready = boot_ready.clone();
 
         use_callback(move |_| {
             let daemon_url = daemon_url();
@@ -435,11 +485,6 @@ fn app_view() -> Element {
 
                 if *busy.read() {
                     error.set("A request is already in progress. Please wait.".to_string());
-                    return;
-                }
-
-                if !*boot_ready.read() {
-                    error.set("Initializing skill/heartbeat. Please wait...".to_string());
                     return;
                 }
 
@@ -606,8 +651,9 @@ fn app_view() -> Element {
                     Ok(()) => {
                         daemon_running.set(true);
                         daemon_status.set("Daemon started.".to_string());
-                        boot_ready.set(false);
-                        boot_status.set("Starting daemon…".to_string());
+                        boot_ready.set(true);
+                        boot_status
+                            .set("Daemon starting… boot preload will continue in background.".to_string());
 
                         // Wait for daemon to be ready (retry up to 10 times with 500ms delay)
                         let client = reqwest::Client::new();
@@ -642,11 +688,13 @@ fn app_view() -> Element {
                             }
                             match request.send().await {
                                 Ok(resp) if resp.status().is_success() => {
-                                    boot_status.set("Boot preload started…".to_string());
+                                    boot_status
+                                        .set("Boot preload started in background…".to_string());
                                 }
                                 Ok(resp) => {
                                     let status = resp.status();
-                                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                                    boot_status
+                                        .set(format!("Boot preload failed: HTTP {status}"));
                                 }
                                 Err(err) => {
                                     boot_status.set(format!("Boot preload error: {err}"));
@@ -734,7 +782,7 @@ fn app_view() -> Element {
                         reminders_listening.set(false);
                         ui_events_listening.set(false);
                         boot_ready.set(false);
-                        boot_status.set("Daemon stopped. Start it to preload skill + heartbeat.".to_string());
+                        boot_status.set("Daemon stopped. Start it to preload prompt + heartbeat.".to_string());
                         daemon_status.set("Daemon stopped.".to_string());
                         doctor_status.set(String::new());
                         doctor_error.set(String::new());
@@ -873,7 +921,7 @@ fn app_view() -> Element {
         let daemon_running = daemon_running.clone();
         let mut boot_ready = boot_ready.clone();
         let mut boot_status = boot_status.clone();
-        let mut boot_skill_ready = boot_skill_ready.clone();
+        let mut boot_prompt_ready = boot_prompt_ready.clone();
         let mut boot_heartbeat_ready = boot_heartbeat_ready.clone();
 
         use_effect(move || {
@@ -948,16 +996,16 @@ fn app_view() -> Element {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
 
-                                    // Always update boot readiness for boot/skill/heartbeat events
-                                    if (event_type == "boot" || tool == "skill") && status == "ok" {
-                                        boot_skill_ready.set(true);
+                                    // Always update boot readiness for boot/prompt/heartbeat events
+                                    if (event_type == "boot" || tool == "prompt") && status == "ok" {
+                                        boot_prompt_ready.set(true);
                                     }
                                     if (event_type == "boot" || tool == "heartbeat") && status == "ok" {
                                         boot_heartbeat_ready.set(true);
                                     }
-                                    if *boot_skill_ready.read() && *boot_heartbeat_ready.read() {
+                                    if *boot_prompt_ready.read() && *boot_heartbeat_ready.read() {
                                         boot_ready.set(true);
-                                        let _ = boot_status.set("Skill + heartbeat ready".to_string());
+                                        let _ = boot_status.set("Prompt + heartbeat ready".to_string());
                                     }
 
                                     let show_success =
@@ -1037,15 +1085,12 @@ fn app_view() -> Element {
         let search_api_key_status = search_api_key_status.clone();
         let reminders_sqlite_path = reminders_sqlite_path.clone();
         let memory_enabled = memory_enabled.clone();
-        let skill_text = skill_text.clone();
-        let skill_path = skill_path.clone();
-        let skill_error = skill_error.clone();
+        let context_text = context_text.clone();
+        let context_path = context_path.clone();
+        let context_error = context_error.clone();
         let heartbeat_text = heartbeat_text.clone();
         let heartbeat_path = heartbeat_path.clone();
         let heartbeat_error = heartbeat_error.clone();
-        let prompt_text = prompt_text.clone();
-        let prompt_path = prompt_path.clone();
-        let prompt_error = prompt_error.clone();
         let db_path = db_path.clone();
 
         use_effect(move || {
@@ -1072,17 +1117,14 @@ fn app_view() -> Element {
                 let mut search_api_key_status = search_api_key_status;
                 let mut reminders_sqlite_path = reminders_sqlite_path;
                 let mut memory_enabled = memory_enabled;
-                let mut skill_text = skill_text;
-                let mut skill_path = skill_path;
-                let mut skill_error = skill_error;
+                let mut context_text = context_text;
+                let mut context_path = context_path;
+                let mut context_error = context_error;
                 let mut heartbeat_text = heartbeat_text;
                 let mut heartbeat_path = heartbeat_path;
                 let heartbeat_error = heartbeat_error;
                 let mut boot_status = boot_status;
                 let mut boot_ready = boot_ready;
-                let prompt_path = prompt_path;
-                let prompt_text = prompt_text;
-                let prompt_error = prompt_error;
 
             let config = match crate::config::Config::from_store(&db_path) {
                 Ok(value) => value,
@@ -1182,38 +1224,33 @@ fn app_view() -> Element {
                 }
             }
 
-            let skill_source = config
-                .skill_file
-                .clone()
-                .unwrap_or_else(|| "./skill.md".to_string());
-            skill_path.set(skill_source.clone());
-            match load_markdown_source(&skill_source).await {
-                Ok(text) => skill_text.set(text),
-                Err(err) => skill_error.set(format!("Skill file error: {err}")),
+            match &config.prompt_source {
+                crate::config::MarkdownSource::Url { url } => {
+                    context_path.set(url.clone());
+                    match load_markdown_source(url).await {
+                        Ok(text) => context_text.set(text),
+                        Err(err) => context_error.set(format!("Prompt URL error: {err}")),
+                    }
+                }
+                crate::config::MarkdownSource::Database { markdown } => {
+                    context_path.set("database".to_string());
+                    context_text.set(markdown.clone());
+                }
             }
 
-            let heartbeat_source = config
-                .heartbeat_file
-                .clone()
-                .unwrap_or_else(|| "./heartbeat.md".to_string());
             let mut heartbeat_error = heartbeat_error;
-            heartbeat_path.set(heartbeat_source.clone());
-            match load_markdown_source(&heartbeat_source).await {
-                Ok(text) => heartbeat_text.set(text),
-                Err(err) => heartbeat_error.set(format!("Heartbeat error: {err}")),
-            }
-
-            let mut prompt_path = prompt_path;
-            let mut prompt_text = prompt_text;
-            let mut prompt_error = prompt_error;
-            let prompt_source = config
-                .prompt_file
-                .clone()
-                .unwrap_or_else(|| "./prompt.md".to_string());
-            prompt_path.set(prompt_source.clone());
-            match load_markdown_source(&prompt_source).await {
-                Ok(text) => prompt_text.set(text),
-                Err(err) => prompt_error.set(format!("Prompt error: {err}")),
+            match &config.heartbeat_source {
+                crate::config::MarkdownSource::Url { url } => {
+                    heartbeat_path.set(url.clone());
+                    match load_markdown_source(url).await {
+                        Ok(text) => heartbeat_text.set(text),
+                        Err(err) => heartbeat_error.set(format!("Heartbeat URL error: {err}")),
+                    }
+                }
+                crate::config::MarkdownSource::Database { markdown } => {
+                    heartbeat_path.set("database".to_string());
+                    heartbeat_text.set(markdown.clone());
+                }
             }
 
             search_default_deny.set(default_deny);
@@ -1240,10 +1277,11 @@ fn app_view() -> Element {
             }
 
             if !*daemon_running.read() {
-                boot_status.set("Daemon is stopped. Start it to preload skill + heartbeat.".to_string());
+                boot_status.set("Daemon is stopped. Start it to preload prompt + heartbeat.".to_string());
             } else {
-                // Preload skill into memory and heartbeat into agent.
-                boot_status.set("Initializing skill + heartbeat...".to_string());
+                // Preload prompt into memory and heartbeat into agent.
+                boot_ready.set(true);
+                boot_status.set("Initializing prompt + heartbeat in background...".to_string());
                 let client = reqwest::Client::new();
                 let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
                 let mut request = client.post(&url).json(&PreloadBootRequest {
@@ -1255,27 +1293,14 @@ fn app_view() -> Element {
                 }
                 match request.send().await {
                     Ok(resp) if resp.status().is_success() => {
-                        boot_status.set("Boot preload started...".to_string());
-                        let boot_ready = boot_ready.clone();
-                        let boot_status = boot_status.clone();
-                        spawn(async move {
-                            let mut boot_ready = boot_ready;
-                            let mut boot_status = boot_status;
-                            sleep(Duration::from_secs(15)).await;
-                            if !*boot_ready.read() {
-                                boot_status.set("Boot preload timed out; continuing".to_string());
-                                boot_ready.set(true);
-                            }
-                        });
+                        boot_status.set("Boot preload started in background...".to_string());
                     }
                     Ok(resp) => {
                         let status = resp.status();
                         boot_status.set(format!("Boot preload failed: HTTP {status}. Continuing without preload."));
-                        boot_ready.set(true);
                     }
                     Err(err) => {
                         boot_status.set(format!("Boot preload error: {err}. Continuing without preload."));
-                        boot_ready.set(true);
                     }
                 }
             }
@@ -1619,92 +1644,291 @@ fn app_view() -> Element {
         })
     };
 
-    let on_validate_skill = {
-        let skill_text = skill_text.clone();
-        let skill_path = skill_path.clone();
-        let skill_status = skill_status.clone();
-        let skill_error = skill_error.clone();
+    let on_factory_reset_config = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let db_path = db_path.clone();
+        let factory_reset_armed = factory_reset_armed.clone();
+        let settings_error = settings_error.clone();
+        let settings_status = settings_status.clone();
+        let config_json_text = config_json_text.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
+        let security_audit_status = security_audit_status.clone();
+        let security_audit_error = security_audit_error.clone();
+        let security_audit_running = security_audit_running.clone();
+        let security_audit_overall = security_audit_overall.clone();
+        let security_audit_findings = security_audit_findings.clone();
 
         use_callback(move |_| {
-            let skill_text = skill_text.clone();
-            let skill_path = skill_path.clone();
-            let skill_status = skill_status.clone();
-            let skill_error = skill_error.clone();
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let db_path = db_path.clone();
+            let factory_reset_armed = factory_reset_armed.clone();
+            let settings_error = settings_error.clone();
+            let settings_status = settings_status.clone();
+            let config_json_text = config_json_text.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
+            let security_audit_status = security_audit_status.clone();
+            let security_audit_error = security_audit_error.clone();
+            let security_audit_running = security_audit_running.clone();
+            let security_audit_overall = security_audit_overall.clone();
+            let security_audit_findings = security_audit_findings.clone();
 
             spawn(async move {
-                let mut skill_status = skill_status;
-                let mut skill_error = skill_error;
+                let mut settings_error = settings_error;
+                let mut settings_status = settings_status;
+                let mut config_json_text = config_json_text;
+                let mut factory_reset_armed = factory_reset_armed;
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
+                let mut security_audit_status = security_audit_status;
+                let mut security_audit_error = security_audit_error;
+                let mut security_audit_running = security_audit_running;
+                let mut security_audit_overall = security_audit_overall;
+                let mut security_audit_findings = security_audit_findings;
 
-                skill_status.set(String::new());
-                skill_error.set(String::new());
+                settings_error.set(String::new());
+                settings_status.set(String::new());
 
-                let source = skill_path();
+                if !factory_reset_armed() {
+                    factory_reset_armed.set(true);
+                    settings_status.set(
+                        "Factory reset is armed. Click Factory Reset again to confirm."
+                            .to_string(),
+                    );
+                    return;
+                }
+                factory_reset_armed.set(false);
+
+                if !daemon_running() {
+                    let defaults = crate::config::Config::convention_defaults(&db_path);
+                    let pretty = serde_json::to_string_pretty(&defaults)
+                        .unwrap_or_else(|_| "{}".to_string());
+
+                    let db_path_for_save = db_path.clone();
+                    let config_for_save = defaults.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        crate::config_store::save_config(&db_path_for_save, &config_for_save)
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(())) => {
+                            let mut message =
+                                "Factory reset applied locally. Start daemon to reload runtime and run diagnostics."
+                                    .to_string();
+                            if let Err(err) = crate::vault::set_secret("app_config_json", &pretty) {
+                                message.push_str(&format!(" Keyring sync failed: {err}."));
+                            }
+                            config_json_text.set(pretty);
+                            settings_status.set(message);
+                        }
+                        Ok(Err(err)) => {
+                            factory_reset_armed.set(false);
+                            settings_error.set(format!("Factory reset failed: {err}"));
+                        }
+                        Err(err) => {
+                            factory_reset_armed.set(false);
+                            settings_error.set(format!("Factory reset failed: {err}"));
+                        }
+                    }
+                    return;
+                }
+
+                match run_factory_reset_config_request(daemon_url(), token()).await {
+                    Ok(response) => {
+                        let pretty = serde_json::to_string_pretty(&response.config)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        config_json_text.set(pretty);
+                        settings_status.set(response.message);
+
+                        doctor_running.set(true);
+                        doctor_error.set(String::new());
+                        doctor_status.set("Running diagnostics…".to_string());
+                        match run_doctor_request(daemon_url(), token()).await {
+                            Ok(report) => {
+                                let overall = report.overall.clone();
+                                doctor_overall.set(overall.clone());
+                                doctor_checks.set(report.checks);
+                                doctor_status.set(format!("Diagnostics complete ({overall})."));
+                            }
+                            Err(err) => {
+                                doctor_error.set(format!("Diagnostics failed: {err}"));
+                                doctor_status.set(String::new());
+                            }
+                        }
+                        doctor_running.set(false);
+
+                        security_audit_running.set(true);
+                        security_audit_error.set(String::new());
+                        security_audit_status.set("Running security audit…".to_string());
+                        match run_security_audit_request(daemon_url(), token()).await {
+                            Ok(report) => {
+                                let overall = report.overall.clone();
+                                security_audit_overall.set(overall.clone());
+                                security_audit_findings.set(report.findings);
+                                security_audit_status
+                                    .set(format!("Security audit complete ({overall})."));
+                            }
+                            Err(err) => {
+                                security_audit_error
+                                    .set(format!("Security audit failed: {err}"));
+                                security_audit_status.set(String::new());
+                            }
+                        }
+                        security_audit_running.set(false);
+                    }
+                    Err(err) => {
+                        factory_reset_armed.set(false);
+                        settings_error.set(format!("Factory reset failed: {err}"));
+                    }
+                }
+            });
+        })
+    };
+
+    let on_validate_context = {
+        let context_text = context_text.clone();
+        let context_path = context_path.clone();
+        let context_status = context_status.clone();
+        let context_error = context_error.clone();
+
+        use_callback(move |_| {
+            let context_text = context_text.clone();
+            let context_path = context_path.clone();
+            let context_status = context_status.clone();
+            let context_error = context_error.clone();
+
+            spawn(async move {
+                let mut context_status = context_status;
+                let mut context_error = context_error;
+
+                context_status.set(String::new());
+                context_error.set(String::new());
+
+                let source = context_path();
                 if source.trim().is_empty() {
-                    skill_error.set("Skill file path is empty.".to_string());
+                    context_error.set("Context file path is empty.".to_string());
                     return;
                 }
 
                 if is_url_source(&source) {
                     match load_markdown_source(&source).await {
                         Ok(text) if !text.trim().is_empty() => {
-                            skill_status.set("Skill URL is reachable.".to_string())
+                            context_status.set("Context URL is reachable.".to_string())
                         }
-                        Ok(_) => skill_error.set("Skill URL returned empty content.".to_string()),
-                        Err(err) => skill_error.set(format!("Skill URL error: {err}")),
+                        Ok(_) => context_error.set("Context URL returned empty content.".to_string()),
+                        Err(err) => context_error.set(format!("Context URL error: {err}")),
                     }
                     return;
                 }
 
-                let content = skill_text();
+                let content = context_text();
                 if content.trim().is_empty() {
-                    skill_error.set("Skill markdown is empty.".to_string());
+                    context_error.set("Context markdown is empty.".to_string());
                     return;
                 }
-                skill_status.set("Skill markdown looks valid.".to_string());
+                context_status.set("Context markdown looks valid.".to_string());
             });
         })
     };
 
-    let on_save_skill = {
-        let skill_text = skill_text.clone();
-        let skill_path = skill_path.clone();
-        let skill_status = skill_status.clone();
-        let skill_error = skill_error.clone();
+    let on_save_context = {
+        let context_text = context_text.clone();
+        let context_path = context_path.clone();
+        let context_status = context_status.clone();
+        let context_error = context_error.clone();
+        let db_path = db_path.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
 
         use_callback(move |_| {
-            let skill_text = skill_text.clone();
-            let skill_path = skill_path.clone();
-            let skill_status = skill_status.clone();
-            let skill_error = skill_error.clone();
+            let context_text = context_text.clone();
+            let context_path = context_path.clone();
+            let context_status = context_status.clone();
+            let context_error = context_error.clone();
+            let db_path = db_path.clone();
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
 
             spawn(async move {
-                let mut skill_status = skill_status;
-                let mut skill_error = skill_error;
+                let mut context_status = context_status;
+                let mut context_error = context_error;
 
-                skill_status.set(String::new());
-                skill_error.set(String::new());
+                context_status.set(String::new());
+                context_error.set(String::new());
 
-                let source = skill_path();
+                let source = context_path();
                 if source.trim().is_empty() {
-                    skill_error.set("Skill file path is empty.".to_string());
+                    context_error.set("Context source is empty.".to_string());
                     return;
                 }
                 if is_url_source(&source) {
-                    skill_error.set("Skill source is a URL and cannot be saved here.".to_string());
+                    context_error.set("Context source is a URL and cannot be saved in the DB editor.".to_string());
                     return;
                 }
 
-                let content = skill_text();
+                let content = context_text();
                 if content.trim().is_empty() {
-                    skill_error.set("Skill markdown is empty.".to_string());
+                    context_error.set("Context markdown is empty.".to_string());
                     return;
                 }
 
-                if let Err(err) = fs::write(&source, content).await {
-                    skill_error.set(format!("Failed to save skill file: {err}"));
+                if let Err(err) = save_markdown_source_to_store(
+                    db_path.clone(),
+                    "prompt",
+                    crate::config::MarkdownSource::Database {
+                        markdown: content,
+                    },
+                )
+                .await
+                {
+                    context_error.set(format!("Failed to save context to DB: {err}"));
                     return;
                 }
-                skill_status.set("Skill file saved.".to_string());
+
+                if *daemon_running.read() {
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
+                    let mut request = client.post(url);
+                    let token_value = token();
+                    if !token_value.trim().is_empty() {
+                        request = request.header("authorization", format!("Bearer {token_value}"));
+                    }
+                    match request.send().await {
+                        Ok(response) if response.status().is_success() => {
+                            context_status.set("Context saved to DB and runtime reloaded.".to_string())
+                        }
+                        Ok(response) => {
+                            context_status.set(format!(
+                                "Context saved to DB. Reload failed (HTTP {}). Restart daemon to apply.",
+                                response.status()
+                            ))
+                        }
+                        Err(err) => {
+                            context_status.set(format!(
+                                "Context saved to DB. Reload failed: {err}. Restart daemon to apply."
+                            ))
+                        }
+                    }
+                } else {
+                    context_status.set("Context saved to DB.".to_string());
+                }
             });
         })
     };
@@ -1762,12 +1986,20 @@ fn app_view() -> Element {
         let heartbeat_path = heartbeat_path.clone();
         let heartbeat_status = heartbeat_status.clone();
         let heartbeat_error = heartbeat_error.clone();
+        let db_path = db_path.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
 
         use_callback(move |_| {
             let heartbeat_text = heartbeat_text.clone();
             let heartbeat_path = heartbeat_path.clone();
             let heartbeat_status = heartbeat_status.clone();
             let heartbeat_error = heartbeat_error.clone();
+            let db_path = db_path.clone();
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
 
             spawn(async move {
                 let mut heartbeat_status = heartbeat_status;
@@ -1778,12 +2010,12 @@ fn app_view() -> Element {
 
                 let source = heartbeat_path();
                 if source.trim().is_empty() {
-                    heartbeat_error.set("Heartbeat path or URL is empty.".to_string());
+                    heartbeat_error.set("Heartbeat source is empty.".to_string());
                     return;
                 }
                 if is_url_source(&source) {
                     heartbeat_error
-                        .set("Heartbeat source is a URL and cannot be saved here.".to_string());
+                        .set("Heartbeat source is a URL and cannot be saved in the DB editor.".to_string());
                     return;
                 }
 
@@ -1793,110 +2025,55 @@ fn app_view() -> Element {
                     return;
                 }
 
-                if let Err(err) = fs::write(&source, content).await {
-                    heartbeat_error.set(format!("Failed to save heartbeat file: {err}"));
-                    return;
-                }
-                heartbeat_status.set("Heartbeat file saved.".to_string());
-            });
-        })
-    };
-
-    let on_validate_prompt = {
-        let prompt_text = prompt_text.clone();
-        let prompt_path = prompt_path.clone();
-        let prompt_status = prompt_status.clone();
-        let prompt_error = prompt_error.clone();
-
-        use_callback(move |_| {
-            let prompt_text = prompt_text.clone();
-            let prompt_path = prompt_path.clone();
-            let prompt_status = prompt_status.clone();
-            let prompt_error = prompt_error.clone();
-
-            spawn(async move {
-                let mut prompt_status = prompt_status;
-                let mut prompt_error = prompt_error;
-
-                prompt_status.set(String::new());
-                prompt_error.set(String::new());
-
-                let source = prompt_path();
-                if source.trim().is_empty() {
-                    prompt_error.set("Prompt path or URL is empty.".to_string());
+                if let Err(err) = save_markdown_source_to_store(
+                    db_path.clone(),
+                    "heartbeat",
+                    crate::config::MarkdownSource::Database {
+                        markdown: content,
+                    },
+                )
+                .await
+                {
+                    heartbeat_error.set(format!("Failed to save heartbeat to DB: {err}"));
                     return;
                 }
 
-                if is_url_source(&source) {
-                    match load_markdown_source(&source).await {
-                        Ok(text) if !text.trim().is_empty() => {
-                            prompt_status.set("Prompt URL is reachable.".to_string())
-                        }
-                        Ok(_) => prompt_error.set("Prompt URL returned empty content.".to_string()),
-                        Err(err) => prompt_error.set(format!("Prompt URL error: {err}")),
+                if *daemon_running.read() {
+                    let client = reqwest::Client::new();
+                    let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
+                    let mut request = client.post(url);
+                    let token_value = token();
+                    if !token_value.trim().is_empty() {
+                        request = request.header("authorization", format!("Bearer {token_value}"));
                     }
-                    return;
+                    match request.send().await {
+                        Ok(response) if response.status().is_success() => {
+                            heartbeat_status
+                                .set("Heartbeat saved to DB and runtime reloaded.".to_string())
+                        }
+                        Ok(response) => {
+                            heartbeat_status.set(format!(
+                                "Heartbeat saved to DB. Reload failed (HTTP {}). Restart daemon to apply.",
+                                response.status()
+                            ))
+                        }
+                        Err(err) => {
+                            heartbeat_status.set(format!(
+                                "Heartbeat saved to DB. Reload failed: {err}. Restart daemon to apply."
+                            ))
+                        }
+                    }
+                } else {
+                    heartbeat_status.set("Heartbeat saved to DB.".to_string());
                 }
-
-                let content = prompt_text();
-                if content.trim().is_empty() {
-                    prompt_error.set("Prompt markdown is empty.".to_string());
-                    return;
-                }
-                prompt_status.set("Prompt markdown looks valid.".to_string());
-            });
-        })
-    };
-
-    let on_save_prompt = {
-        let prompt_text = prompt_text.clone();
-        let prompt_path = prompt_path.clone();
-        let prompt_status = prompt_status.clone();
-        let prompt_error = prompt_error.clone();
-
-        use_callback(move |_| {
-            let prompt_text = prompt_text.clone();
-            let prompt_path = prompt_path.clone();
-            let prompt_status = prompt_status.clone();
-            let prompt_error = prompt_error.clone();
-
-            spawn(async move {
-                let mut prompt_status = prompt_status;
-                let mut prompt_error = prompt_error;
-
-                prompt_status.set(String::new());
-                prompt_error.set(String::new());
-
-                let source = prompt_path();
-                if source.trim().is_empty() {
-                    prompt_error.set("Prompt path or URL is empty.".to_string());
-                    return;
-                }
-                if is_url_source(&source) {
-                    prompt_error.set("Prompt source is a URL and cannot be saved here.".to_string());
-                    return;
-                }
-
-                let content = prompt_text();
-                if content.trim().is_empty() {
-                    prompt_error.set("Prompt markdown is empty.".to_string());
-                    return;
-                }
-
-                if let Err(err) = fs::write(&source, content).await {
-                    prompt_error.set(format!("Failed to save prompt file: {err}"));
-                    return;
-                }
-                prompt_status.set("Prompt file saved.".to_string());
             });
         })
     };
 
     let active_tab_chat = active_tab.clone();
     let active_tab_config = active_tab.clone();
-    let active_tab_skill = active_tab.clone();
+    let active_tab_context = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
-    let active_tab_prompt = active_tab.clone();
     let prompt_input = prompt.clone();
     let message_input = input.clone();
 
@@ -2109,12 +2286,12 @@ fn app_view() -> Element {
                         "Config"
                     }
                     button {
-                        class: if *active_tab.read() == UiTab::Skill { "active" } else { "" },
+                        class: if *active_tab.read() == UiTab::Context { "active" } else { "" },
                         onclick: move |_| {
-                            let mut active_tab_skill = active_tab_skill.clone();
-                            active_tab_skill.set(UiTab::Skill);
+                            let mut active_tab_context = active_tab_context.clone();
+                            active_tab_context.set(UiTab::Context);
                         },
-                        "Skill"
+                        "Context"
                     }
                     button {
                         class: if *active_tab.read() == UiTab::Heartbeat { "active" } else { "" },
@@ -2124,21 +2301,13 @@ fn app_view() -> Element {
                         },
                         "Heartbeat"
                     }
-                    button {
-                        class: if *active_tab.read() == UiTab::Prompt { "active" } else { "" },
-                        onclick: move |_| {
-                            let mut active_tab_prompt = active_tab_prompt.clone();
-                            active_tab_prompt.set(UiTab::Prompt);
-                        },
-                        "Prompt"
-                    }
                 }
             }
             if !error.read().is_empty() {
                 div { class: "error", "{error}" }
             }
             if *active_tab.read() == UiTab::Chat {
-                if !*boot_ready.read() && !boot_status.read().is_empty() {
+                if !boot_status.read().is_empty() {
                     div { class: "hint", "{boot_status}" }
                 }
                 div { class: "chat", id: "chat-scroll",
@@ -2189,7 +2358,7 @@ fn app_view() -> Element {
                             }
                             button {
                                 class: "send",
-                                disabled: *busy.read() || !*boot_ready.read(),
+                                disabled: *busy.read(),
                                 onclick: move |_| on_send.call(()),
                                 "Send"
                             }
@@ -2252,8 +2421,16 @@ fn app_view() -> Element {
                                 button { onclick: move |_| on_format_config.call(()), "Format JSON" }
                                 button { onclick: move |_| on_validate_config.call(()), "Validate" }
                                 button { onclick: move |_| on_save_config.call(()), "Save Config" }
+                                button {
+                                    onclick: move |_| on_factory_reset_config.call(()),
+                                    if *factory_reset_armed.read() {
+                                        "Confirm Reset"
+                                    } else {
+                                        "Factory Reset"
+                                    }
+                                }
                             }
-                            p { class: "hint", "Saved to the OS keyring. Changes reload automatically." }
+                            p { class: "hint", "Saved to the OS keyring. Changes reload automatically. Factory Reset restores convention defaults and works with or without daemon." }
                         }
                         div { class: "settings-card",
                             label { "Diagnostics" }
@@ -2338,11 +2515,11 @@ fn app_view() -> Element {
                     }
                 }
             }
-            if *active_tab.read() == UiTab::Skill {
+            if *active_tab.read() == UiTab::Context {
                 div { class: "settings",
                     div { class: "settings-card",
-                        label { "Skill (Markdown)" }
-                        p { class: "hint", "Source: {skill_path}" }
+                        label { "Context (Markdown)" }
+                        p { class: "hint", "Source: {context_path}" }
                         div { class: "config-head",
                             label { "Editor" }
                             label { "Preview" }
@@ -2350,40 +2527,40 @@ fn app_view() -> Element {
                         div { class: "config-grid",
                             div { class: "config-panel",
                                 textarea {
-                                    id: "skill-md",
-                                    value: "{skill_text}",
+                                    id: "context-md",
+                                    value: "{context_text}",
                                     rows: "18",
                                     class: "config-editor",
                                     oninput: move |evt| {
-                                        let mut skill_text = skill_text.clone();
-                                        skill_text.set(evt.value());
+                                        let mut context_text = context_text.clone();
+                                        context_text.set(evt.value());
                                     },
                                 }
                             }
                             div { class: "config-panel",
                                 div {
                                     class: "config-preview",
-                                    dangerous_inner_html: "{markdown_to_html(&skill_text.read())}",
+                                    dangerous_inner_html: "{markdown_to_html(&context_text.read())}",
                                 }
                             }
                         }
                         div { class: "config-actions",
-                            button { onclick: move |_| on_validate_skill.call(()), "Validate" }
+                            button { onclick: move |_| on_validate_context.call(()), "Validate" }
                             button {
-                                disabled: is_url_source(&skill_path.read()),
-                                onclick: move |_| on_save_skill.call(()),
-                                "Save Skill"
+                                disabled: is_url_source(&context_path.read()),
+                                onclick: move |_| on_save_context.call(()),
+                                "Save Context"
                             }
                         }
-                        if is_url_source(&skill_path.read()) {
+                        if is_url_source(&context_path.read()) {
                             p { class: "hint", "Remote URL sources are read-only." }
                         }
                     }
-                    if !skill_error.read().is_empty() {
-                        div { class: "error", "{skill_error}" }
+                    if !context_error.read().is_empty() {
+                        div { class: "error", "{context_error}" }
                     }
-                    if !skill_status.read().is_empty() {
-                        div { class: "status", "{skill_status}" }
+                    if !context_status.read().is_empty() {
+                        div { class: "status", "{context_status}" }
                     }
                 }
             }
@@ -2433,55 +2610,6 @@ fn app_view() -> Element {
                     }
                     if !heartbeat_status.read().is_empty() {
                         div { class: "status", "{heartbeat_status}" }
-                    }
-                }
-            }
-            if *active_tab.read() == UiTab::Prompt {
-                div { class: "settings",
-                    div { class: "settings-card",
-                        label { "Prompt (Markdown)" }
-                        p { class: "hint", "Source: {prompt_path}" }
-                        div { class: "config-head",
-                            label { "Editor" }
-                            label { "Preview" }
-                        }
-                        div { class: "config-grid",
-                            div { class: "config-panel",
-                                textarea {
-                                    id: "prompt-md",
-                                    value: "{prompt_text}",
-                                    rows: "18",
-                                    class: "config-editor",
-                                    oninput: move |evt| {
-                                        let mut prompt_text = prompt_text.clone();
-                                        prompt_text.set(evt.value());
-                                    },
-                                }
-                            }
-                            div { class: "config-panel",
-                                div {
-                                    class: "config-preview",
-                                    dangerous_inner_html: "{markdown_to_html(&prompt_text.read())}",
-                                }
-                            }
-                        }
-                        div { class: "config-actions",
-                            button { onclick: move |_| on_validate_prompt.call(()), "Validate" }
-                            button {
-                                disabled: is_url_source(&prompt_path.read()),
-                                onclick: move |_| on_save_prompt.call(()),
-                                "Save Prompt"
-                            }
-                        }
-                        if is_url_source(&prompt_path.read()) {
-                            p { class: "hint", "Remote URL sources are read-only." }
-                        }
-                    }
-                    if !prompt_error.read().is_empty() {
-                        div { class: "error", "{prompt_error}" }
-                    }
-                    if !prompt_status.read().is_empty() {
-                        div { class: "status", "{prompt_status}" }
                     }
                 }
             }

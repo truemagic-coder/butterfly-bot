@@ -1,15 +1,16 @@
 ## Butterfly Bot
 
-`Butterfly Bot` is your personal AI assistant accessible via a native desktop app. It includes memory, tool integrations, a skill/heartbeat system, easy configuration, and streaming responses in a polished UI. The codebase still exposes a Rust library for building bots, but the primary focus is the app experience.
+`Butterfly Bot` is your personal AI assistant accessible via a native desktop app. It includes memory, tool integrations, convention-first defaults, and streaming responses in a polished UI. The codebase still exposes a Rust library for building bots, but the primary focus is the app experience.
 
 ## Highlights
 
 - Liquid Glass cross-platform desktop app with streaming chat.
 - Reminders and notifications both in chat and OS notifications.
 - Long-term agentic memory stored locally.
-- Skill and heartbeat Markdown file integration.
+- Optional prompt-context/heartbeat Markdown overrides.
 - Agent tools including MCP.
 - Config stored in the OS keychain for maximum security.
+- No first-run wizard required for the default path.
 
 ## Architecture (Daemon + UI + Always-On Agent)
 
@@ -164,9 +165,16 @@ cargo build --release
 cargo run --release --bin butterfly-bot
 ```
 
+Launches the desktop app.
+
 ## Config
 
-Use the Config tab in the app to configure all settings via JSON. The config no longer includes an `agent` section — the assistant identity and behavior come from the skill Markdown.
+Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.
+
+- Default-first behavior: provider/model/storage/tool defaults are preselected.
+- Inline blocking prompts only: if a required secret is missing, the app requests it when needed.
+- Optional overrides: use the Config tab for advanced customization.
+- Factory reset: use **Config → Factory Reset** to restore convention defaults.
 
 Config is stored in the OS keychain for top security and safety.
 
@@ -185,11 +193,12 @@ Config is stored in the OS keychain for top security and safety.
 - If a finding cannot be safely auto-remediated, guidance is presented as explicit manual steps.
 - See [docs/security-audit.md](docs/security-audit.md) for operating recommendations and limits.
 
-### Skill & Heartbeat
+### Prompt Context & Heartbeat
 
-- `skill_file` is a Markdown file (local path or URL) that defines the assistant’s identity, style, and rules.
-- `heartbeat_file` is optional Markdown (local path or URL) that is appended to the system prompt for ongoing guidance.
-- `prompt_file` is optional Markdown (local path or URL) for custom, non-skill instructions you want injected into the system prompt.
+- `prompt_source` is optional Markdown (URL or inline database markdown) for custom assistant identity/style/rules.
+- `heartbeat_file` is optional Markdown (local path or URL) appended for periodic guidance.
+- `prompt_file` is optional Markdown (local path or URL) for extra instructions.
+- If these files are omitted, built-in defaults are used.
 - The heartbeat file is reloaded on every wakeup tick (using `tools.wakeup.poll_seconds`) so changes take effect without a restart.
 
 ### Memory LLM Configuration
@@ -197,7 +206,9 @@ Config is stored in the OS keychain for top security and safety.
 - `memory.openai` lets memory operations (embeddings, summarization, reranking) use a different OpenAI-compatible provider than the main agent.
 - This is useful for running the agent on a remote provider (e.g., Cerebras) while keeping memory on a local Ollama instance.
 
-### Full config.json
+### Advanced: config.json override example
+
+This is optional and intended for advanced customization.
 
 ```json
 {
@@ -206,9 +217,8 @@ Config is stored in the OS keychain for top security and safety.
         "model": "ministral-3:14b",
         "base_url": "http://localhost:11434/v1"
     },
-    "skill_file": "./skill.md",
-    "heartbeat_file": "./heartbeat.md",
-    "prompt_file": "./prompt.md",
+    "prompt_source": {"type": "url", "url": "https://example.com/prompt.md"},
+    "heartbeat_source": {"type": "url", "url": "https://example.com/heartbeat.md"},
     "memory": {
         "enabled": true,
         "sqlite_path": "./data/butterfly-bot.db",
@@ -289,13 +299,9 @@ tool call
 
 ## SQLCipher (encrypted storage)
 
-Butterfly Bot uses SQLCipher-backed SQLite when you provide a DB key. Set it via the CLI or environment:
+Butterfly Bot uses SQLCipher-backed SQLite when you provide a DB key.
 
-```bash
-cargo run --release --bin butterfly-bot -- db-key-set --key "your-strong-passphrase"
-```
-
-Or set the environment variable before running:
+Set the environment variable before running:
 
 ```bash
 export BUTTERFLY_BOT_DB_KEY="your-strong-passphrase"

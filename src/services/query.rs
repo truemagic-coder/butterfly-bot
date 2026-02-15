@@ -50,7 +50,7 @@ pub struct QueryService {
     agent_service: Arc<AgentService>,
     memory_provider: Option<Arc<dyn MemoryProvider>>,
     reminder_store: Option<Arc<ReminderStore>>,
-    skill_cache: tokio::sync::RwLock<Option<u64>>,
+    context_cache: tokio::sync::RwLock<Option<u64>>,
 }
 
 impl QueryService {
@@ -63,49 +63,49 @@ impl QueryService {
             agent_service,
             memory_provider,
             reminder_store,
-            skill_cache: tokio::sync::RwLock::new(None),
+            context_cache: tokio::sync::RwLock::new(None),
         }
     }
 
-    async fn ensure_skill_in_memory(&self, user_id: &str) -> Result<()> {
+    async fn ensure_context_in_memory(&self, user_id: &str) -> Result<()> {
         let started = Instant::now();
         let Some(provider) = &self.memory_provider else {
             return Ok(());
         };
-        let _ = self.agent_service.refresh_skill_for_user(user_id).await?;
-        info!("ensure_skill_in_memory: refresh_skill took {:?}", started.elapsed());
-        let Some(skill) = self.agent_service.get_skill_markdown().await else {
+        let _ = self.agent_service.refresh_context_for_user(user_id).await?;
+        info!("ensure_context_in_memory: refresh_context took {:?}", started.elapsed());
+        let Some(context_markdown) = self.agent_service.get_context_markdown().await else {
             return Ok(());
         };
-        if skill.trim().is_empty() {
+        if context_markdown.trim().is_empty() {
             return Ok(());
         }
 
         let mut md5_hasher = Md5::new();
-        md5_hasher.update(skill.as_bytes());
+        md5_hasher.update(context_markdown.as_bytes());
         let md5_hash = format!("{:x}", md5_hasher.finalize());
-        if let Ok(Some(stored)) = vault::get_secret("skill_md5") {
+        if let Ok(Some(stored)) = vault::get_secret("context_md5") {
             if stored == md5_hash {
-                let mut guard = self.skill_cache.write().await;
+                let mut guard = self.context_cache.write().await;
                 if guard.is_none() {
                     *guard = Some(0);
                 }
-                info!("ensure_skill_in_memory: md5 unchanged, skipping import (elapsed {:?})", started.elapsed());
+                info!("ensure_context_in_memory: md5 unchanged, skipping import (elapsed {:?})", started.elapsed());
                 return Ok(());
             }
         }
 
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&skill, &mut hasher);
+        std::hash::Hash::hash(&context_markdown, &mut hasher);
         let hash = hasher.finish();
 
-        let mut guard = self.skill_cache.write().await;
+        let mut guard = self.context_cache.write().await;
         if guard.map_or(true, |prev| prev != hash) {
-            let content = format!("SKILL_DOC:\n{}", skill);
-            provider.append_message(user_id, "skill", &content).await?;
+            let content = format!("CONTEXT_DOC:\n{}", context_markdown);
+            provider.append_message(user_id, "context", &content).await?;
             *guard = Some(hash);
-            let _ = vault::set_secret("skill_md5", &md5_hash);
-            info!("ensure_skill_in_memory: imported skill into memory (elapsed {:?})", started.elapsed());
+            let _ = vault::set_secret("context_md5", &md5_hash);
+            info!("ensure_context_in_memory: imported context into memory (elapsed {:?})", started.elapsed());
         }
         Ok(())
     }
@@ -118,7 +118,7 @@ impl QueryService {
     ) -> Result<String> {
         let processed_query = query.to_string();
 
-        self.ensure_skill_in_memory(user_id).await?;
+        self.ensure_context_in_memory(user_id).await?;
 
         if let Some(response) = self
             .try_handle_search_command(user_id, &processed_query)
@@ -157,11 +157,11 @@ impl QueryService {
             reminder_context.unwrap_or_default()
         };
 
-        if let Some(skill) = self.skill_context_for(user_id, &processed_query).await {
+        if let Some(context_markdown) = self.context_for_autonomy(user_id, &processed_query).await {
             if !memory_context.is_empty() {
                 memory_context.push_str("\n\n");
             }
-            memory_context.push_str(&skill);
+            memory_context.push_str(&context_markdown);
         }
 
         let response = self
@@ -199,7 +199,7 @@ impl QueryService {
             }
         };
 
-        self.ensure_skill_in_memory(user_id).await?;
+        self.ensure_context_in_memory(user_id).await?;
 
         if let Some(response) = self.try_handle_search_command(user_id, &text).await? {
             if let Some(provider) = &self.memory_provider {
@@ -233,11 +233,11 @@ impl QueryService {
             reminder_context.unwrap_or_default()
         };
 
-        if let Some(skill) = self.skill_context_for(user_id, &text).await {
+        if let Some(context_markdown) = self.context_for_autonomy(user_id, &text).await {
             if !memory_context.is_empty() {
                 memory_context.push_str("\n\n");
             }
-            memory_context.push_str(&skill);
+            memory_context.push_str(&context_markdown);
         }
 
         let result = if let Some(schema) = options.json_schema {
@@ -305,7 +305,7 @@ impl QueryService {
         Box::pin(try_stream! {
             let processed_query = query.to_string();
 
-            self.ensure_skill_in_memory(user_id).await?;
+            self.ensure_context_in_memory(user_id).await?;
 
             if let Some(response) = self.try_handle_search_command(user_id, &processed_query).await? {
                 if let Some(provider) = &self.memory_provider {
@@ -338,11 +338,11 @@ impl QueryService {
                 reminder_context.unwrap_or_default()
             };
 
-            if let Some(skill) = self.skill_context_for(user_id, &processed_query).await {
+            if let Some(context_markdown) = self.context_for_autonomy(user_id, &processed_query).await {
                 if !memory_context.is_empty() {
                     memory_context.push_str("\n\n");
                 }
-                memory_context.push_str(&skill);
+                memory_context.push_str(&context_markdown);
             }
 
             let mut response_text = String::new();
@@ -372,27 +372,27 @@ impl QueryService {
         self.agent_service.clone()
     }
 
-    async fn skill_context_for(&self, user_id: &str, query: &str) -> Option<String> {
+    async fn context_for_autonomy(&self, user_id: &str, query: &str) -> Option<String> {
         let lower = query.to_lowercase();
         let is_autonomy_tick = lower.contains("autonomous") && lower.contains("heartbeat");
         if user_id != "system" && !is_autonomy_tick {
             return None;
         }
-        let skill = self.agent_service.get_skill_markdown().await?;
-        if skill.trim().is_empty() {
+        let context_markdown = self.agent_service.get_context_markdown().await?;
+        if context_markdown.trim().is_empty() {
             return None;
         }
         let max_len = 8000usize;
-        let trimmed = if skill.len() > max_len {
-            format!("{}\n...\n[SKILL_DOC TRUNCATED]", &skill[..max_len])
+        let trimmed = if context_markdown.len() > max_len {
+            format!("{}\n...\n[CONTEXT_DOC TRUNCATED]", &context_markdown[..max_len])
         } else {
-            skill
+            context_markdown
         };
-        Some(format!("SKILL_DOC (authoritative):\n{}", trimmed))
+        Some(format!("CONTEXT_DOC (authoritative):\n{}", trimmed))
     }
 
-    pub async fn preload_skill(&self, user_id: &str) -> Result<()> {
-        self.ensure_skill_in_memory(user_id).await
+    pub async fn preload_context(&self, user_id: &str) -> Result<()> {
+        self.ensure_context_in_memory(user_id).await
     }
 
     pub async fn delete_user_history(&self, user_id: &str) -> Result<()> {
@@ -498,7 +498,7 @@ fn should_include_semantic_memory(query: &str) -> bool {
     let lower = trimmed.to_lowercase();
     if lower.contains("hackathon")
         || lower.contains("colosseum")
-        || lower.contains("skill")
+        || lower.contains("context")
         || lower.contains("agent hackathon")
     {
         return true;

@@ -9,7 +9,7 @@ use serde_json::json;
 
 use butterfly_bot::brain::manager::BrainManager;
 use butterfly_bot::client::ButterflyBot;
-use butterfly_bot::config::{Config, OpenAiConfig};
+use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
 use butterfly_bot::domains::agent::AIAgent;
 use butterfly_bot::error::ButterflyBotError;
 use butterfly_bot::interfaces::providers::{ImageData, ImageInput};
@@ -164,9 +164,8 @@ async fn query_service_and_client() {
             model: None,
             base_url: None,
         }),
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,
@@ -206,8 +205,8 @@ async fn query_service_and_client() {
         tmp.path(),
         json!({
             "openai": {"api_key":"key","model":"gpt-4o-mini","base_url": server.base_url()},
-            "skill_file": null,
-            "heartbeat_file": null
+            "heartbeat_source": {"type": "database", "markdown": ""},
+            "prompt_source": {"type": "database", "markdown": ""}
         })
         .to_string(),
     )

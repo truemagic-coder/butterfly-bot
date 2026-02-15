@@ -243,7 +243,7 @@ pub struct SqliteMemoryProvider {
     summarizer: Option<Arc<dyn LlmProvider>>,
     summary_threshold: usize,
     retention_days: Option<u32>,
-    skill_embed_enabled: bool,
+    context_embed_enabled: bool,
     embedding_cache: Arc<tokio::sync::Mutex<LruCache<String, Vec<f32>>>>,
 }
 
@@ -258,7 +258,7 @@ impl Clone for SqliteMemoryProvider {
             summarizer: self.summarizer.clone(),
             summary_threshold: self.summary_threshold,
             retention_days: self.retention_days,
-            skill_embed_enabled: self.skill_embed_enabled,
+            context_embed_enabled: self.context_embed_enabled,
             embedding_cache: Arc::clone(&self.embedding_cache),
         }
     }
@@ -271,7 +271,7 @@ pub struct SqliteMemoryProviderConfig {
     pub embedding_model: Option<String>,
     pub reranker: Option<Arc<dyn LlmProvider>>,
     pub summarizer: Option<Arc<dyn LlmProvider>>,
-    pub skill_embed_enabled: bool,
+    pub context_embed_enabled: bool,
     pub summary_threshold: Option<usize>,
     pub retention_days: Option<u32>,
 }
@@ -285,7 +285,7 @@ impl SqliteMemoryProviderConfig {
             embedding_model: None,
             reranker: None,
             summarizer: None,
-            skill_embed_enabled: false,
+            context_embed_enabled: false,
             summary_threshold: None,
             retention_days: None,
         }
@@ -319,7 +319,7 @@ impl SqliteMemoryProvider {
             summarizer: config.summarizer,
             summary_threshold: config.summary_threshold.unwrap_or(12),
             retention_days: config.retention_days,
-            skill_embed_enabled: config.skill_embed_enabled,
+            context_embed_enabled: config.context_embed_enabled,
             embedding_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(256).unwrap(),
             ))),
@@ -513,7 +513,7 @@ impl MemoryProvider for SqliteMemoryProvider {
         let mut conn = self.conn().await?;
         let mut query = messages::table
             .filter(messages::user_id.eq(user_id))
-            .filter(messages::role.ne("skill"))
+            .filter(messages::role.ne("context"))
             .order(messages::timestamp.desc())
             .select((messages::role, messages::content, messages::timestamp))
             .into_boxed();
@@ -608,7 +608,7 @@ impl SqliteMemoryProvider {
         };
         let mut conn = self.conn().await?;
         let rows: Vec<SearchRow> = diesel::sql_query(
-                "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role IN ('user','skill')\n             ORDER BY timestamp DESC\n             LIMIT ?3",
+                "SELECT mem.summary as content, mem.created_at as timestamp\n             FROM memories_fts f\n             JOIN memories mem ON mem.id = f.memory_id\n             WHERE f.user_id = ?1 AND f.summary MATCH ?2\n             UNION ALL\n             SELECT m.content as content, m.timestamp as timestamp\n             FROM messages_fts f\n             JOIN messages m ON m.id = f.message_id\n             WHERE f.user_id = ?1 AND f.content MATCH ?2 AND m.role IN ('user','context')\n             ORDER BY timestamp DESC\n             LIMIT ?3",
         )
         .bind::<Text, _>(user_id)
         .bind::<Text, _>(query)

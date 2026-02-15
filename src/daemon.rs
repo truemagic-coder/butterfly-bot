@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::client::ButterflyBot;
-use crate::config::{Config, MemoryConfig, OpenAiConfig};
+use crate::config::Config;
 use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
-use crate::factories::agent_factory::load_markdown_source;
+use crate::factories::agent_factory::load_markdown_content;
 use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::{resolve_reminder_db_path, ReminderStore};
 use crate::sandbox::{SandboxMode, SandboxSettings, ToolRuntime};
@@ -30,6 +30,7 @@ use crate::scheduler::Scheduler;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
 use crate::tasks::TaskStore;
+use crate::vault;
 use crate::wakeup::WakeupStore;
 use tokio::sync::{broadcast, RwLock};
 
@@ -70,7 +71,7 @@ struct WakeupJob {
     interval: Duration,
     ui_event_tx: broadcast::Sender<UiEvent>,
     audit_log_path: Option<String>,
-    heartbeat_source: Option<String>,
+    heartbeat_source: crate::config::MarkdownSource,
     db_path: String,
 }
 
@@ -172,47 +173,46 @@ impl ScheduledJob for WakeupJob {
         let now = now_ts();
         let dynamic_source = Config::from_store(&self.db_path)
             .ok()
-            .and_then(|cfg| cfg.heartbeat_file)
-            .or_else(|| self.heartbeat_source.clone());
+            .map(|cfg| cfg.heartbeat_source)
+            .unwrap_or_else(|| self.heartbeat_source.clone());
         let prompt_source = Config::from_store(&self.db_path)
             .ok()
-            .and_then(|cfg| cfg.prompt_file);
-        if let Some(source) = &dynamic_source {
-            match load_markdown_source(Some(source.as_str())).await {
-                Ok(markdown) => {
-                    let agent = self.agent.read().await.clone();
-                    agent.set_heartbeat_markdown(markdown.clone()).await;
-                    let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
-                        "ok"
-                    } else {
-                        "empty"
-                    };
-                    let event = UiEvent {
-                        event_type: "wakeup".to_string(),
-                        user_id: "system".to_string(),
-                        tool: "heartbeat".to_string(),
-                        status: status.to_string(),
-                        payload: json!({"source": source}),
-                        timestamp: now_ts(),
-                    };
-                    let _ = self.ui_event_tx.send(event);
-                }
-                Err(err) => {
-                    let event = UiEvent {
-                        event_type: "wakeup".to_string(),
-                        user_id: "system".to_string(),
-                        tool: "heartbeat".to_string(),
-                        status: "error".to_string(),
-                        payload: json!({"source": source, "error": err.to_string()}),
-                        timestamp: now_ts(),
-                    };
-                    let _ = self.ui_event_tx.send(event);
-                }
+            .map(|cfg| cfg.prompt_source);
+
+        match load_markdown_content(&dynamic_source).await {
+            Ok(markdown) => {
+                let agent = self.agent.read().await.clone();
+                agent.set_heartbeat_markdown(markdown.clone()).await;
+                let status = if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                    "ok"
+                } else {
+                    "empty"
+                };
+                let event = UiEvent {
+                    event_type: "wakeup".to_string(),
+                    user_id: "system".to_string(),
+                    tool: "heartbeat".to_string(),
+                    status: status.to_string(),
+                    payload: json!({"source": dynamic_source}),
+                    timestamp: now_ts(),
+                };
+                let _ = self.ui_event_tx.send(event);
+            }
+            Err(err) => {
+                let event = UiEvent {
+                    event_type: "wakeup".to_string(),
+                    user_id: "system".to_string(),
+                    tool: "heartbeat".to_string(),
+                    status: "error".to_string(),
+                    payload: json!({"source": dynamic_source, "error": err.to_string()}),
+                    timestamp: now_ts(),
+                };
+                let _ = self.ui_event_tx.send(event);
             }
         }
 
         if let Some(source) = &prompt_source {
-            match load_markdown_source(Some(source.as_str())).await {
+            match load_markdown_content(source).await {
                 Ok(markdown) => {
                     let agent = self.agent.read().await.clone();
                     agent.set_prompt_markdown(markdown.clone()).await;
@@ -340,7 +340,7 @@ struct PreloadBootRequest {
 
 #[derive(Serialize)]
 struct PreloadBootResponse {
-    skill_status: String,
+    context_status: String,
     heartbeat_status: String,
 }
 
@@ -394,6 +394,13 @@ struct SecurityAuditResponse {
     findings: Vec<SecurityAuditFinding>,
 }
 
+#[derive(Serialize)]
+struct FactoryResetConfigResponse {
+    status: String,
+    message: String,
+    config: Value,
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -405,6 +412,7 @@ pub fn build_router(state: AppState) -> Router {
     .route("/preload_boot", post(preload_boot))
         .route("/reminder_stream", get(reminder_stream))
         .route("/ui_events", get(ui_events))
+    .route("/factory_reset_config", post(factory_reset_config))
         .route("/reload_config", post(reload_config))
         .with_state(state)
 }
@@ -977,35 +985,48 @@ async fn preload_boot(
     let user_id = payload.user_id.clone();
 
     tokio::spawn(async move {
-        let skill_status = match agent.preload_skill(&user_id).await {
+        let context_status = match agent.preload_context(&user_id).await {
             Ok(()) => "ok".to_string(),
             Err(err) => format!("error: {err}"),
         };
         let _ = ui_event_tx.send(UiEvent {
             event_type: "boot".to_string(),
             user_id: user_id.clone(),
-            tool: "skill".to_string(),
-            status: skill_status.clone(),
-            payload: json!({"user_id": user_id, "status": skill_status}),
+            tool: "prompt".to_string(),
+            status: context_status.clone(),
+            payload: json!({"user_id": user_id, "status": context_status}),
             timestamp: now_ts(),
         });
 
         let heartbeat_status = if let Ok(config) = Config::from_store(&db_path) {
-            let source = config.heartbeat_file;
-            if let Some(source) = source {
-                match load_markdown_source(Some(source.as_str())).await {
-                    Ok(markdown) => {
-                        agent.set_heartbeat_markdown(markdown.clone()).await;
-                        if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
-                            "ok".to_string()
-                        } else {
-                            "empty".to_string()
-                        }
+            let source = config.heartbeat_source;
+            match load_markdown_content(&source).await {
+                Ok(markdown) => {
+                    agent.set_heartbeat_markdown(markdown.clone()).await;
+                    if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                        "ok".to_string()
+                    } else {
+                        "empty".to_string()
                     }
-                    Err(err) => format!("error: {err}"),
                 }
-            } else {
-                "missing".to_string()
+                Err(err) => format!("error: {err}"),
+            }
+        } else {
+            "config_error".to_string()
+        };
+
+        let prompt_status = if let Ok(config) = Config::from_store(&db_path) {
+            let source = config.prompt_source;
+            match load_markdown_content(&source).await {
+                Ok(markdown) => {
+                    agent.set_prompt_markdown(markdown.clone()).await;
+                    if markdown.as_ref().map(|m| !m.trim().is_empty()).unwrap_or(false) {
+                        "ok".to_string()
+                    } else {
+                        "empty".to_string()
+                    }
+                }
+                Err(err) => format!("error: {err}"),
             }
         } else {
             "config_error".to_string()
@@ -1014,13 +1035,15 @@ async fn preload_boot(
         let _ = ui_event_tx.send(UiEvent {
             event_type: "boot".to_string(),
             user_id: user_id.clone(),
-            tool: "heartbeat".to_string(),
-            status: heartbeat_status.clone(),
-            payload: json!({"status": heartbeat_status}),
+            tool: "prompt".to_string(),
+            status: prompt_status.clone(),
+            payload: json!({"status": prompt_status}),
             timestamp: now_ts(),
         });
 
-        if heartbeat_status == "ok" || heartbeat_status == "empty" {
+        if (heartbeat_status == "ok" || heartbeat_status == "empty")
+            && (prompt_status == "ok" || prompt_status == "empty")
+        {
             let agent = agent.clone();
             let ui_event_tx = ui_event_tx.clone();
             let user_id = user_id.clone();
@@ -1033,7 +1056,7 @@ async fn preload_boot(
     (
         StatusCode::OK,
         Json(PreloadBootResponse {
-            skill_status: "started".to_string(),
+            context_status: "started".to_string(),
             heartbeat_status: "started".to_string(),
         }),
     )
@@ -1147,6 +1170,75 @@ async fn reload_config(State(state): State<AppState>, headers: HeaderMap) -> imp
     }
 }
 
+async fn factory_reset_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let config = Config::convention_defaults(&state.db_path);
+    if let Err(err) = config_store::save_config(&state.db_path, &config) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let config_value = match serde_json::to_value(&config) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let pretty = serde_json::to_string_pretty(&config_value).unwrap_or_default();
+    let keyring_saved = match vault::set_secret("app_config_json", &pretty) {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::warn!("factory_reset_config: failed to persist keyring config: {}", err);
+            false
+        }
+    };
+
+    let mut message = if keyring_saved {
+        "Config reset to factory defaults".to_string()
+    } else {
+        "Config reset to factory defaults (keyring sync failed)".to_string()
+    };
+
+    match ButterflyBot::from_store_with_events(&state.db_path, Some(state.ui_event_tx.clone())).await {
+        Ok(agent) => {
+            let mut guard = state.agent.write().await;
+            *guard = Arc::new(agent);
+        }
+        Err(err) => {
+            tracing::warn!("factory_reset_config: agent reload failed: {}", err);
+            message.push_str("; reload failed, restart daemon to apply runtime state");
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(FactoryResetConfigResponse {
+            status: "ok".to_string(),
+            message,
+            config: config_value,
+        }),
+    )
+        .into_response()
+}
+
 async fn ui_events(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1222,37 +1314,6 @@ pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()
     run_with_shutdown(host, port, db_path, token, futures::future::pending::<()>()).await
 }
 
-fn default_config(db_path: &str) -> Config {
-    let base_url = "http://localhost:11434/v1".to_string();
-    let model = "ministral-3:14b".to_string();
-    let memory = Some(MemoryConfig {
-        enabled: Some(true),
-        sqlite_path: Some(db_path.to_string()),
-        lancedb_path: Some("./data/lancedb".to_string()),
-        summary_model: Some(model.clone()),
-        embedding_model: Some("embeddinggemma:latest".to_string()),
-        rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
-        openai: None,
-        skill_embed_enabled: Some(false),
-        summary_threshold: None,
-        retention_days: None,
-    });
-
-    Config {
-        openai: Some(OpenAiConfig {
-            api_key: None,
-            model: Some(model),
-            base_url: Some(base_url),
-        }),
-        skill_file: Some("./skill.md".to_string()),
-        heartbeat_file: Some("./heartbeat.md".to_string()),
-        prompt_file: None,
-        memory,
-        tools: None,
-        brains: None,
-    }
-}
-
 pub async fn run_with_shutdown<F>(
     host: &str,
     port: u16,
@@ -1265,18 +1326,18 @@ where
 {
     if Config::from_store(db_path).is_err() {
         tracing::warn!("No config in store; writing default config for {}", db_path);
-        let default_config = default_config(db_path);
+        let default_config = Config::convention_defaults(db_path);
         config_store::save_config(db_path, &default_config)?;
     }
 
     let config = Config::from_store(db_path).ok();
 
-    // ── Log which skill_file and heartbeat_file the daemon sees ──
+    // ── Log which context/heartbeat source the daemon sees ──
     if let Some(cfg) = &config {
         tracing::info!(
-            "Daemon config: skill_file={:?}, heartbeat_file={:?}",
-            cfg.skill_file,
-            cfg.heartbeat_file
+            "Daemon config: prompt_source={:?}, heartbeat_source={:?}",
+            cfg.prompt_source,
+            cfg.heartbeat_source
         );
     } else {
         tracing::error!("Daemon could not load any config from store!");
@@ -1337,7 +1398,10 @@ where
         interval: Duration::from_secs(wakeup_poll_seconds.max(1)),
         ui_event_tx: ui_event_tx.clone(),
         audit_log_path: wakeup_audit_log_path(config.as_ref()),
-        heartbeat_source: config.as_ref().and_then(|cfg| cfg.heartbeat_file.clone()),
+        heartbeat_source: config
+            .as_ref()
+            .map(|cfg| cfg.heartbeat_source.clone())
+            .unwrap_or_else(crate::config::MarkdownSource::default_heartbeat),
         db_path: db_path.to_string(),
     }));
     let tasks_poll_seconds = config

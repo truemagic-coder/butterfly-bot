@@ -7,7 +7,7 @@ This is a practical, high-level comparison based on publicly visible repository 
 ## Positioning Snapshot
 
 - **Butterfly Bot (this repo):** Practical personal-agent workflows with daemon + UI + planning/todo/tasks/reminders/wakeup + memory.
-- **OpenClaw (main competitor):** Full personal-assistant platform with broad channels, strong onboarding, mature security guidance/audit tooling, and plugin ecosystem.
+- **OpenClaw (main competitor):** Full personal-assistant platform with broad channels, mature security guidance/audit tooling, and plugin ecosystem.
 - **ZeroClaw:** Lean, pluggable Rust agent framework with strong onboarding story and broad provider/channel coverage.
 - **IronClaw:** Platform-style architecture emphasizing sandboxed extensibility (WASM), orchestration, routines, and gateway capabilities.
 
@@ -24,14 +24,14 @@ Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
 | Provider abstraction | ✅ | ✅ | ✅ | ✅ |
 | Broad multi-provider catalog | 🟨 | ✅ | ✅ | 🟨 (focused provider path + adapters) |
 | Tool/plugin architecture | ✅ | ✅ (plugins/extensions) | ✅ | ✅ |
-| Secure tool sandbox model (explicit) | 🟨 | ✅ (sandbox + policy/audit flows) | ✅ | ✅ |
+| Secure tool sandbox model (explicit) | ✅ | ✅ (sandbox + policy/audit flows) | ✅ | ✅ |
 | Memory subsystem | ✅ (SQLite + LanceDB paths/config) | ✅ (core memory + LanceDB plugin path) | ✅ (SQLite/Markdown + hybrid search) | ✅ (workspace memory + hybrid search) |
 | Planning + todo/task orchestration | ✅ (native modules) | 🟨 | 🟨 | ✅ |
 | Scheduled reminders/heartbeat style automation | ✅ | ✅ | ✅ | ✅ (routines/heartbeat) |
 | Dynamic tool building | ❌ | 🟨 (plugin/extensibility strong, not builder-centric) | ❌ | ✅ (WASM-oriented builder flow) |
-| Onboarding wizard / setup UX | 🟨 | ✅ | ✅ | ✅ |
+| Zero-step onboarding (no wizard required) | 🟨 | ✅ | ✅ | ✅ |
 | Documentation breadth for contributors | 🟨 | ✅ | ✅ | ✅ |
-| Explicit security hardening docs/checklists | 🟨 | ✅ | ✅ | ✅ |
+| Explicit security hardening docs/checklists | ✅ | ✅ | ✅ | ✅ |
 | Test breadth/visibility | 🟨 | ✅ | ✅ | 🟨 |
 
 ## Weighted Scorecard (Personal Ops Agent Lens)
@@ -59,19 +59,25 @@ Scoring model:
 | Criterion | Weight | Butterfly Bot | OpenClaw | ZeroClaw | IronClaw |
 |---|---:|---:|---:|---:|---:|
 | Workflow completeness | 20 | 5 | 4 | 3 | 4 |
-| Reliability and recovery | 20 | 3 | 4 | 4 | 3 |
+| Reliability and recovery | 20 | 4 | 4 | 4 | 3 |
 | UX and visibility | 15 | 4 | 5 | 3 | 4 |
-| Security posture | 15 | 4 | 5 | 5 | 4 |
+| Security posture | 15 | 5 | 5 | 5 | 4 |
 | Setup/onboarding | 10 | 3 | 5 | 5 | 4 |
 | Extensibility/integrations | 10 | 3 | 5 | 5 | 5 |
-| Docs/contributor DX | 10 | 3 | 5 | 5 | 4 |
-| **Total Weighted (/500)** | **100** | **375** | **455** | **415** | **390** |
+| Docs/contributor DX | 10 | 4 | 5 | 5 | 4 |
+| **Total Weighted (/500)** | **100** | **415** | **455** | **415** | **390** |
 
 ### Readout
 
-- **Butterfly Bot strength:** strongest "personal ops loop" fit.
-- **Primary competitive gap vs OpenClaw:** onboarding polish, ecosystem breadth, and security/audit surface maturity.
-- **Best leverage:** improve onboarding speed, integrations, and operational security UX without changing product identity.
+- **Butterfly Bot strength:** strongest "personal ops loop" fit with materially improved sandboxing and operator diagnostics.
+- **Primary competitive gap vs OpenClaw:** onboarding polish and ecosystem breadth.
+- **Best leverage:** improve zero-step first-run and integrations without changing product identity.
+
+## Status Update: Issues #3, #4, #5
+
+- **#3 Sandbox architecture:** shipped (closed). Convention-first WASM defaults, runtime routing, and related tests/docs are in place.
+- **#4 Doctor diagnostics:** shipped (closed) via daemon diagnostics endpoint + UI diagnostics panel and integration coverage.
+- **#5 Security audit:** partially shipped (open issue) via daemon security-audit endpoint + UI posture checks + ranked findings docs; safe auto-fix path remains follow-up work.
 
 ## Butterfly Bot Priority Scoreboard (Next 6 Weeks)
 
@@ -80,9 +86,9 @@ Scoring formula: `Impact (1-5) × Urgency (1-5) ÷ Effort (1-5)`
 | Initiative | Impact | Urgency | Effort | Priority Score | Priority |
 |---|---:|---:|---:|---:|---|
 | Secret hygiene + key rotation + CI secret scan | 5 | 3 | 2 | 7.5 | P1 |
-| Add doctor command (config/db/provider checks) | 4 | 4 | 2 | 8.0 | P1 |
+| Diagnostics hardening (daemon + UI) | 4 | 3 | 2 | 6.0 | P2 |
 | Golden-path eval suite for planning/task/reminder | 5 | 4 | 3 | 6.7 | P1 |
-| First-run setup wizard | 4 | 3 | 3 | 4.0 | P2 |
+| Zero-step first run autopilot | 4 | 3 | 3 | 4.0 | P2 |
 | Public benchmark and capability dashboard | 4 | 3 | 3 | 4.0 | P2 |
 | Expanded integration/plugin packs | 3 | 2 | 4 | 1.5 | P3 |
 
@@ -116,23 +122,23 @@ There is no universal "better". It depends on your target user and product promi
 3. **Security trust baseline**
    - Enforce secret hygiene (env/vault only, no plaintext tokens in config examples).
 4. **Onboarding speed**
-   - One command to first useful workflow in <5 minutes.
+   - One launch to first useful workflow in <5 minutes.
 5. **Operator visibility**
    - Clear status/audit UX: what the bot is doing, why, and what changed.
 
 ## Gap Backlog (High Impact)
 
-- Add a **formal security checklist** and threat model doc.
-- Add a **"doctor" command** for environment/config/DB/provider health checks.
+- Add a **formal threat model** document that complements existing security audit docs.
+- Expand diagnostics coverage in daemon/UI flows with machine-readable response output.
 - Add **golden-path evaluation suite** for planning/task/reminder workflows.
-- Add a **quickstart wizard** for first-run setup.
+- Keep **no-wizard** onboarding and improve zero-step first-run defaults.
 - Publish a **benchmark + capability page** with reproducible scripts.
 
 ## 30-Day Execution Plan (MVP)
 
 ### Week 1 — Trust + Setup
 - Secret hygiene pass (remove plaintext examples, rotate compromised keys, add scanning in CI).
-- Improve first-run setup and config validation messaging.
+- Improve zero-step first-run and inline missing-secret messaging.
 
 ### Week 2 — Reliability
 - Add workflow regression tests for:
@@ -158,9 +164,9 @@ Goal: close the highest-value competitive gaps while preserving Butterfly Bot’
 
 | # | Initiative | Mapped Modules | Success Metric |
 |---:|---|---|---|
-| 1 | **Add `doctor` diagnostics command** for config, vault, DB, provider, and daemon health | `src/main.rs`, `src/config.rs`, `src/config_store.rs`, `src/db.rs`, `src/vault.rs`, `src/daemon.rs` | `butterfly-bot doctor` returns actionable pass/fail checks in <5s |
-| 2 | **First-run setup wizard** (guided local defaults + keychain flow) | `src/main.rs`, `src/config.rs`, `src/config_store.rs`, `src/vault.rs` | New user reaches first successful message in <5 minutes |
-| 3 | **Security audit command** with safe auto-fixes for common foot-guns | `src/guardrails/`, `src/interfaces/guardrails.rs`, `src/main.rs`, `src/config.rs` | `security audit` catches exposed-risk configs and offers fix suggestions |
+| 1 | **Diagnostics hardening** for config, vault, DB, provider, and daemon health (UI + daemon) | `src/config.rs`, `src/config_store.rs`, `src/db.rs`, `src/vault.rs`, `src/daemon.rs`, `src/ui.rs` | Diagnostics return actionable pass/warn/fail checks in <5s |
+| 2 | **Zero-step first run autopilot** (built-in defaults + inline keychain flow, no wizard) | `src/main.rs`, `src/config.rs`, `src/config_store.rs`, `src/vault.rs` | New user reaches first successful message in <5 minutes |
+| 3 | **Security audit safe auto-fix follow-up** | `src/guardrails/`, `src/interfaces/guardrails.rs`, `src/config.rs`, `src/daemon.rs`, `src/ui.rs` | Security audit catches exposed-risk configs and offers fix suggestions |
 | 4 | **Policy-enforced filesystem/network permissions** per tool profile | `src/tools/mod.rs`, `src/tools/http_call.rs`, `src/guardrails/mod.rs`, `src/interfaces/plugins.rs` | Restricted profile blocks disallowed file/network actions 100% in tests |
 | 5 | **Golden-path reliability eval suite** for planning→tasks→reminders | `tests/brain_scheduler.rs`, `tests/query_service.rs`, `tests/agent_service.rs`, `tests/daemon.rs`, `src/planning/`, `src/tasks/`, `src/reminders/` | Stable CI pass rate for core workflows over 30 consecutive runs |
 | 6 | **Execution timeline in UI** (what happened, when, and outcome) | `src/ui.rs`, `src/daemon.rs`, `src/tools/`, `src/scheduler/` | User can inspect end-to-end action trace for each run in one screen |

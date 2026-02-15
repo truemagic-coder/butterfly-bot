@@ -4,7 +4,7 @@ use httpmock::MockServer;
 use serde_json::json;
 
 use butterfly_bot::client::ButterflyBot;
-use butterfly_bot::config::{Config, OpenAiConfig};
+use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
 use butterfly_bot::error::ButterflyBotError;
 use butterfly_bot::interfaces::providers::{ImageData, ImageInput, LlmProvider};
 use butterfly_bot::providers::openai::OpenAiProvider;
@@ -651,9 +651,8 @@ async fn openai_provider_variants_and_agent_process() {
             model: Some("gpt-4o-mini".to_string()),
             base_url: Some(agent_server.base_url()),
         }),
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,

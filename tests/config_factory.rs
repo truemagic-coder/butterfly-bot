@@ -2,7 +2,7 @@ mod common;
 
 use serde_json::json;
 
-use butterfly_bot::config::{Config, OpenAiConfig};
+use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
 use butterfly_bot::error::ButterflyBotError;
 use butterfly_bot::factories::agent_factory::ButterflyBotFactory;
 
@@ -13,8 +13,8 @@ async fn config_from_file_and_factory_errors() {
         tmp.path(),
         json!({
             "openai": {"api_key":"key","model":null,"base_url":null},
-            "skill_file": null,
-            "heartbeat_file": null
+            "heartbeat_source": {"type": "database", "markdown": ""},
+            "prompt_source": {"type": "database", "markdown": ""}
         })
         .to_string(),
     )
@@ -30,9 +30,8 @@ async fn config_from_file_and_factory_errors() {
             model: None,
             base_url: Some("http://localhost:11434/v1".to_string()),
         }),
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,
@@ -47,9 +46,8 @@ async fn config_from_file_and_factory_errors() {
             model: None,
             base_url: None,
         }),
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,
@@ -70,9 +68,8 @@ async fn config_from_file_and_factory_errors() {
 
     let missing = Config {
         openai: None,
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,

@@ -3,18 +3,23 @@
 ## Goals
 - Local‑first, Ollama‑primary assistant with strong privacy defaults.
 - Robust local memory and search with Diesel + SQLite.
-- JSON‑configurable tools and guarded execution.
-- Polished CLI UX with onboarding and safe defaults.
+- Convention‑first tools with optional config overrides and guarded execution.
+- Polished desktop UI UX with zero‑step onboarding and safe defaults.
 
 ## Non‑Goals (for now)
 - Cloud‑hosted multi‑tenant services.
 - Public‑facing gateways or web UIs.
 - Full multi‑channel messaging network parity with Moltbot.
 
+## Recent Completions (2026-02-14)
+- [x] Sandbox architecture shipped with convention-first WASM defaults and runtime routing (Issue #3).
+- [x] Diagnostics shipped via daemon endpoint + UI diagnostics flow (Issue #4).
+- [ ] Follow-up: security audit safe auto-fix path remains (Issue #5).
+
 ## Phase 0 — Foundations (now)
 - [x] Ollama OpenAI‑compat config support.
 - [ ] Local‑first model defaults (Ollama + GPT‑OSS:20b preset).
-- [x] Streaming CLI with GFM rendering.
+- [x] Streaming desktop UI chat rendering.
 - [x] Tool scaffolding + JSON config hooks.
 - [ ] Doc: Local‑first architecture + threat model summary.
 - [ ] Replace config.json with DB + OS keyring.
@@ -43,22 +48,23 @@
    - `memory.retention_days` (u32)
    - `memory.summary_model` (string)
 
-## Phase 2 — Local Daemon + CLI Client
-**Objective:** A local background service with a thin CLI client.
+## Phase 2 — Local Daemon + Desktop Client
+**Objective:** A local background service with a thin desktop UI client.
 
 1. Daemon
    - Run on loopback only by default.
    - Unix socket or local TCP port with token auth.
    - Process model requests and tool calls.
 
-2. CLI Client
-   - `butterfly-bot send` (one‑shot)
-   - `butterfly-bot chat` (interactive)
-   - `butterfly-bot status` (health/model)
+2. Desktop UI Client
+   - Chat view for interactive conversations.
+   - Config view for settings and provider management.
+   - Diagnostics/security views for health and posture checks.
 
-3. Onboarding (no config.json)
-   - `butterfly-bot init` wizard writes **non‑secret** config into SQLite.
-   - `butterfly-bot login` / `butterfly-bot secrets set` stores secrets in OS keyring (macOS Keychain / libsecret).
+3. First‑run autopilot (no wizard, no required config.json)
+   - App launch starts with built‑in defaults for provider/model/storage/tooling.
+   - Required secrets are requested only when execution is blocked, then stored in OS keyring (macOS Keychain / libsecret).
+   - Optional customization can be done later via Config UI.
    - Safe defaults: loopback‑only, no remote exposure.
    - Never write secrets to disk or logs.
 
@@ -66,23 +72,23 @@
    - **SQLite** stores all non‑secret config (models, tools, routing, memory).
    - **Keyring** stores all secrets (API keys, private keys, tokens).
    - Config loading path: DB first, then environment overrides (non‑secret only).
-   - Provide `butterfly-bot config show` (redacts secrets).
+   - Provide redacted config visibility in the UI.
 
 ## Phase 3 — Tools Platform (Local‑First)
 **Objective:** Powerful but safe tools with shareable, secret‑free configs.
 
 1. Config model (DB‑first, shareable JSON)
-   - Add `config export` (redacted secrets) and `config import` (already exists).
-   - Optional `--config path.json` to override DB for a single run.
+   - Add config export/import in desktop UI (redacted secrets).
+   - Optional per-session config profile override in desktop UI.
    - JSON may reference vault keys by name (no secrets in files).
 
 2. Simple tool spec + permissions
-   - Tool definition lives in config: name, description, command/endpoint, permissions.
-   - Permissions: fs_read/fs_write allowlists, network domains, shell_exec.
+   - Tool definition lives in config: name, description, endpoint, permissions.
+   - Permissions: fs_read/fs_write allowlists and network domains.
    - Default deny for dangerous capabilities.
 
 3. Minimal tool management
-   - CLI: `tools list`, `tools enable/disable`, `tools info`.
+   - UI: tools list, enable/disable, and details.
    - Per‑agent allowlists in config/DB.
 
 4. Internal‑only tools (until traction)
@@ -117,9 +123,9 @@
    - Memory cleanup / retention enforcement.
    - Optional health checks and model availability checks.
 
-4. CLI control
-   - `scheduler list/start/stop/run`.
-   - `plugins list/enable/disable/reload`.
+4. UI control
+   - Scheduler list/start/stop/run in desktop controls.
+   - Plugin list/enable/disable/reload in desktop controls.
 
 5. Safety
    - Per‑plugin permissions + explicit approval.
@@ -130,13 +136,13 @@
 
 - Strict allowlists for execution tools.
 - Redaction of secrets in logs.
-- Environment isolation for shell tools.
+- Environment isolation for execution tools.
 - Clear warnings for risky config.
 
 ## Phase 6 — UX Polishing
 **Objective:** Improve adoption and day‑to‑day use.
 
-- Themed CLI + rich GFM output (done).
+- Themed desktop UI + rich rendered output (done).
 - Usage footer toggle.
 - Session export/import.
 - Auto‑patching for upgrades (Patchify): https://github.com/danwilliams/patchify
@@ -147,11 +153,11 @@
 - Node actions (camera/screen) with local consent.
 
 ## Phase 7 — Marketplace + Payments (x402 + $AGENT)
-**Objective:** Enable a skill marketplace with on‑chain purchase and local installs.
+**Objective:** Enable a prompt-context marketplace with on‑chain purchase and local installs.
 
-- x402 payment flow for skill purchases.
+- x402 payment flow for prompt-context purchases.
 - $AGENT token support for marketplace pricing.
-- Signed skill bundles + local verification.
+- Signed prompt-context bundles + local verification.
 - Clear refund/rollback path for failed installs.
 
 ## Storage Implementation Notes
@@ -173,4 +179,4 @@
 - [ ] Search + retrieval
 - [ ] Daemon + client
 - [ ] Tool safety model
-- [ ] Onboarding wizard
+- [ ] Zero‑step onboarding autopilot

@@ -39,7 +39,10 @@ async fn main() -> Result<()> {
         tracing::info!("Importing config from {} into store", config_path);
         let config = Config::from_file(config_path)?;
         config_store::save_config(&cli.db, &config)?;
-        tracing::info!("Config imported successfully (skill_file={:?})", config.skill_file);
+        tracing::info!(
+            "Config imported successfully (prompt_source={:?})",
+            config.prompt_source
+        );
     }
 
     daemon::run(&cli.host, cli.port, &cli.db, &cli.token).await

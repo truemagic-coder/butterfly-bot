@@ -11,7 +11,7 @@ use tokio::sync::{broadcast, RwLock};
 use tower::ServiceExt;
 
 use butterfly_bot::client::ButterflyBot;
-use butterfly_bot::config::{Config, OpenAiConfig};
+use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
 use butterfly_bot::daemon::{build_router, AppState};
 use butterfly_bot::reminders::ReminderStore;
 
@@ -22,9 +22,8 @@ async fn make_agent(server: &MockServer) -> ButterflyBot {
             model: Some("gpt-4o-mini".to_string()),
             base_url: Some(server.base_url()),
         }),
-        skill_file: None,
-        heartbeat_file: None,
-        prompt_file: None,
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
         memory: None,
         tools: None,
         brains: None,
@@ -290,5 +289,75 @@ async fn daemon_security_audit_requires_auth_and_returns_findings() {
     assert!(
         has_token_finding,
         "expected daemon_auth_token finding in security audit output"
+    );
+}
+
+#[tokio::test]
+async fn daemon_factory_reset_requires_auth_and_returns_default_config() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let reminder_db = NamedTempFile::new().unwrap();
+    let reminder_store = ReminderStore::new(reminder_db.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let db_path = reminder_db.path().to_str().unwrap().to_string();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/factory_reset_config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/factory_reset_config")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value.get("status").and_then(|v| v.as_str()), Some("ok"));
+    assert!(value.get("config").is_some());
+
+    let openai_base_url = value
+        .get("config")
+        .and_then(|cfg| cfg.get("openai"))
+        .and_then(|openai| openai.get("base_url"))
+        .and_then(|base_url| base_url.as_str());
+    assert_eq!(openai_base_url, Some("http://localhost:11434/v1"));
+
+    let prompt_source_type = value
+        .get("config")
+        .and_then(|cfg| cfg.get("prompt_source"))
+        .and_then(|source| source.get("type"))
+        .and_then(|kind| kind.as_str());
+    assert_eq!(
+        prompt_source_type,
+        Some("database"),
+        "expected prompt_source to default to database"
     );
 }
