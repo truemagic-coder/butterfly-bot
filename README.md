@@ -234,57 +234,33 @@ This is optional and intended for advanced customization.
 
 ```json
 {
-    "openai": {
-        "api_key": null,
-        "model": "ministral-3:14b",
-        "base_url": "http://localhost:11434/v1"
-    },
-    "prompt_source": {"type": "url", "url": "https://example.com/prompt.md"},
-    "heartbeat_source": {"type": "url", "url": "https://example.com/heartbeat.md"},
-    "memory": {
-        "enabled": true,
-        "sqlite_path": "./data/butterfly-bot.db",
-        "lancedb_path": "./data/lancedb",
-        "summary_model": "ministral-3:14b",
-        "embedding_model": "embeddinggemma:latest",
-        "rerank_model": "qllama/bge-reranker-v2-m3",
-        "openai": {
-            "api_key": null,
-            "model": "ministral-3:14b",
-            "base_url": "http://localhost:11434/v1"
-        },
-        "summary_threshold": null,
-        "retention_days": null
-    },
-    "tools": {
-        "settings": {
-            "audit_log_path": "./data/tool_audit.log"
-        },
-        "reminders": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        },
-        "wakeup": {
-            "poll_seconds": 60,
-            "sqlite_path": "./data/butterfly-bot.db",
-            "audit_log_path": "./data/wakeup_audit.log"
-        },
-        "todo": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        },
-        "planning": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        },
-        "tasks": {
-            "poll_seconds": 60,
-            "audit_log_path": "./data/tasks_audit.log",
-            "sqlite_path": "./data/butterfly-bot.db"
-        }
-    },
-    "brains": {
-        "settings": {
-            "tick_seconds": 60
-        }
-    }
+  "openai": {
+    "api_key": null,
+    "model": "ministral-3:14b",
+    "base_url": "http://localhost:11434/v1"
+  },
+  "heartbeat_source": {
+    "type": "database",
+    "markdown": "# Heartbeat\n\nStay proactive, grounded, and transparent. Prefer clear next steps and avoid over-claiming."
+  },
+  "prompt_source": {
+    "type": "database",
+    "markdown": "# Prompt\n\nAnswer directly, include concrete actions, and keep responses practical."
+  },
+  "memory": {
+    "enabled": true,
+    "sqlite_path": "./data/butterfly-bot.db",
+    "lancedb_path": "./data/lancedb",
+    "summary_model": "ministral-3:14b",
+    "embedding_model": "embeddinggemma:latest",
+    "rerank_model": "qllama/bge-reranker-v2-m3",
+    "openai": null,
+    "context_embed_enabled": false,
+    "summary_threshold": null,
+    "retention_days": null
+  },
+  "tools": null,
+  "brains": null
 }
 ```
 
