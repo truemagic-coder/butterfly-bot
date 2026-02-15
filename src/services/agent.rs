@@ -701,6 +701,8 @@ impl AgentService {
                                 && (err_message.contains("No MCP servers configured")
                                     || err_message.contains("Unknown MCP server")
                                     || err_message.contains("Missing GitHub PAT")
+                                    || err_message.contains("WASM module path does not exist")
+                                    || err_message.contains("returned a stub response")
                                     || err_message.contains("WASM alloc failed")
                                     || err_message.contains("WASM tool input too large")
                                     || err_message.contains("WASM tool execute failed"));

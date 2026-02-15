@@ -164,6 +164,18 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 cargo build --release
 ```
 
+## Test
+
+```bash
+cargo test
+```
+
+If your environment prompts for keychain/keyring access during tests, disable keyring usage for that run:
+
+```bash
+BUTTERFLY_BOT_DISABLE_KEYRING=1 cargo test
+```
+
 ## Run
 
 ```bash

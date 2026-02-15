@@ -7,22 +7,14 @@ use futures::StreamExt;
 #[cfg(not(test))]
 use notify_rust::Notification;
 #[cfg(not(test))]
-use pulldown_cmark::{Options, Parser as MarkdownParser};
-#[cfg(not(test))]
-use pulldown_cmark_mdcat::{
-    resources::NoopResourceHandler, Environment, Settings, TerminalProgram, TerminalSize, Theme,
-};
-#[cfg(not(test))]
 use reqwest::header::AUTHORIZATION;
 #[cfg(not(test))]
 #[cfg(not(test))]
 use std::collections::HashMap;
 #[cfg(not(test))]
-use std::io::{self as std_io, BufWriter, Write};
+use std::io::{self as std_io, Write};
 #[cfg(not(test))]
 use std::process::Command;
-#[cfg(not(test))]
-use syntect::parsing::SyntaxSet;
 #[cfg(not(test))]
 use tokio::io::{self, AsyncBufReadExt};
 
@@ -262,38 +254,7 @@ fn render_markdown(markdown: &str) {
     if markdown.trim().is_empty() {
         return;
     }
-    let options =
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let parser = MarkdownParser::new_ext(markdown, options);
-    let env = match std::env::current_dir()
-        .ok()
-        .and_then(|dir| Environment::for_local_directory(&dir).ok())
-    {
-        Some(env) => env,
-        None => {
-            print!("{markdown}");
-            return;
-        }
-    };
-    let term = Term::stdout();
-    let columns = term.size().1;
-    let terminal_size = TerminalSize::detect()
-        .unwrap_or_default()
-        .with_max_columns(columns.max(40));
-    let settings = Settings {
-        terminal_capabilities: TerminalProgram::detect().capabilities(),
-        terminal_size,
-        syntax_set: &SyntaxSet::load_defaults_newlines(),
-        theme: Theme::default(),
-    };
-    let mut out = std_io::stdout();
-    let mut sink = BufWriter::new(&mut out);
-    if pulldown_cmark_mdcat::push_tty(&settings, &env, &NoopResourceHandler, &mut sink, parser)
-        .and_then(|_| sink.flush())
-        .is_err()
-    {
-        print!("{markdown}");
-    }
+    print!("{markdown}");
 }
 
 #[cfg(not(test))]

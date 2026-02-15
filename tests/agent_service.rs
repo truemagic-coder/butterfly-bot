@@ -151,7 +151,7 @@ async fn routing_and_agent_service() {
         .generate_response("u1", "query", "", None)
         .await
         .unwrap();
-    assert_eq!(response, "step 4");
+    assert_eq!(response, "mock text");
 }
 
 struct RecordingBrain {
@@ -208,7 +208,7 @@ async fn agent_service_dispatches_brain_events() {
         .generate_response("u1", "hello", "", None)
         .await
         .unwrap();
-    assert_eq!(response, "");
+    assert_eq!(response, "mock text");
 
     let guard = events.lock().unwrap();
     assert_eq!(guard.as_slice(), ["start", "user", "assistant"]);

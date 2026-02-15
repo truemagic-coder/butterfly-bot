@@ -12,7 +12,7 @@ use butterfly_bot::plugins::registry::ToolRegistry;
 use common::{
     ConditionalTool, ConfigurablePlugin, DefaultConfigureTool, DummyPlugin, DummyTool, FailingTool,
 };
-use tempfile::tempdir;
+use tempfile::{tempdir, NamedTempFile};
 
 #[tokio::test]
 async fn tool_registry_and_plugin_manager() {
@@ -36,8 +36,27 @@ async fn tool_registry_and_plugin_manager() {
     let all = registry.list_all_tools().await;
     assert_eq!(all, vec!["tool".to_string()]);
 
+    let wasm_file = NamedTempFile::new().unwrap();
+    std::fs::write(wasm_file.path(), [0x00, 0x61, 0x73, 0x6D]).unwrap();
+    let wasm_path = wasm_file.path().to_string_lossy().to_string();
+
     registry
-        .configure_all_tools(json!({"value": 1}))
+        .configure_all_tools(json!({
+            "value": 1,
+            "tools": {
+                "settings": {
+                    "sandbox": {
+                        "tools": {
+                            "tool": {
+                                "wasm": {
+                                    "module": wasm_path
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }))
         .await
         .unwrap();
 

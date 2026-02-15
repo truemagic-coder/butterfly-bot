@@ -167,7 +167,7 @@ async fn daemon_process_text_and_memory_search() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(value.get("text").and_then(|v| v.as_str()), Some("hello"));
-    chat_mock.assert_hits(1);
+    chat_mock.assert_calls(1);
 
     let response = app
         .clone()

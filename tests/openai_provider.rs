@@ -44,7 +44,7 @@ async fn openai_provider_via_httpmock() {
     let last = stream.next().await.unwrap().unwrap();
     assert_eq!(last.event_type, "message_end");
 
-    chat_mock.assert_hits(2);
+    chat_mock.assert_calls(2);
 }
 
 #[tokio::test]
@@ -94,7 +94,7 @@ async fn openai_provider_tools_images_structured_audio() {
     assert_eq!(response.tool_calls.len(), 1);
     assert_eq!(response.tool_calls[0].name, "tool1");
 
-    tool_mock.assert_hits(1);
+    tool_mock.assert_calls(1);
 
     let structured_server = MockServer::start_async().await;
     let structured_mock = structured_server
@@ -123,7 +123,7 @@ async fn openai_provider_tools_images_structured_audio() {
         .await
         .unwrap();
     assert_eq!(structured, json!({"ok": true}));
-    structured_mock.assert_hits(1);
+    structured_mock.assert_calls(1);
 
     let image_server = MockServer::start_async().await;
     let image_mock = image_server
@@ -160,7 +160,7 @@ async fn openai_provider_tools_images_structured_audio() {
         .await
         .unwrap();
     assert_eq!(image_text, "image");
-    image_mock.assert_hits(1);
+    image_mock.assert_calls(1);
 
     let speech_server = MockServer::start_async().await;
     let speech_mock = speech_server
@@ -176,7 +176,7 @@ async fn openai_provider_tools_images_structured_audio() {
     );
     let audio = speech_provider.tts("hello", "alloy", "mp3").await.unwrap();
     assert_eq!(audio, b"AUDIO".to_vec());
-    speech_mock.assert_hits(1);
+    speech_mock.assert_calls(1);
 
     let transcribe_server = MockServer::start_async().await;
     let transcribe_mock = transcribe_server
@@ -205,7 +205,7 @@ async fn openai_provider_tools_images_structured_audio() {
         .await
         .unwrap();
     assert_eq!(transcript, "transcribed");
-    transcribe_mock.assert_hits(1);
+    transcribe_mock.assert_calls(1);
 }
 
 #[tokio::test]
@@ -243,7 +243,7 @@ async fn openai_provider_additional_branches() {
         .await
         .unwrap();
     assert_eq!(text, "with tools");
-    tools_mock.assert_hits(1);
+    tools_mock.assert_calls(1);
 
     let empty_server = MockServer::start_async().await;
     let empty_mock = empty_server
@@ -273,7 +273,7 @@ async fn openai_provider_additional_branches() {
         .unwrap();
     assert!(response.text.is_empty());
     assert!(response.tool_calls.is_empty());
-    empty_mock.assert_hits(1);
+    empty_mock.assert_calls(1);
 
     let structured_server = MockServer::start_async().await;
     let structured_mock = structured_server
@@ -309,7 +309,7 @@ async fn openai_provider_additional_branches() {
         .await
         .unwrap();
     assert_eq!(structured, json!({"ok": true}));
-    structured_mock.assert_hits(1);
+    structured_mock.assert_calls(1);
 
     let image_server = MockServer::start_async().await;
     let image_mock = image_server
@@ -348,7 +348,7 @@ async fn openai_provider_additional_branches() {
         .await
         .unwrap();
     assert_eq!(image_text, "image tools");
-    image_mock.assert_hits(1);
+    image_mock.assert_calls(1);
 }
 
 #[tokio::test]
@@ -381,7 +381,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await
         .unwrap();
     assert_eq!(text, "text");
-    chat_mock.assert_hits(1);
+    chat_mock.assert_calls(1);
 
     let skip_server = MockServer::start_async().await;
     let skip_mock = skip_server
@@ -417,7 +417,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await
         .unwrap();
     assert_eq!(text, "skip");
-    skip_mock.assert_hits(1);
+    skip_mock.assert_calls(1);
 
     let nested_server = MockServer::start_async().await;
     let nested_mock = nested_server
@@ -460,7 +460,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await
         .unwrap();
     assert_eq!(response.tool_calls[0].name, "tool_nested");
-    nested_mock.assert_hits(1);
+    nested_mock.assert_calls(1);
 
     let custom_server = MockServer::start_async().await;
     let custom_mock = custom_server
@@ -503,7 +503,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await
         .unwrap();
     assert_eq!(response.tool_calls[0].name, "custom_tool");
-    custom_mock.assert_hits(1);
+    custom_mock.assert_calls(1);
 
     let fallback_server = MockServer::start_async().await;
     let fallback_mock = fallback_server
@@ -540,7 +540,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await
         .unwrap();
     assert_eq!(response.tool_calls[0].name, "legacy");
-    fallback_mock.assert_hits(1);
+    fallback_mock.assert_calls(1);
 
     let image_server = MockServer::start_async().await;
     let image_mock = image_server
@@ -600,7 +600,7 @@ async fn openai_provider_variants_and_agent_process() {
         )
         .await
         .unwrap();
-    image_mock.assert_hits(3);
+    image_mock.assert_calls(3);
 
     let speech_server = MockServer::start_async().await;
     let speech_mock = speech_server
@@ -625,7 +625,7 @@ async fn openai_provider_variants_and_agent_process() {
     for format in formats {
         let _ = speech_provider.tts("hi", "alloy", format).await.unwrap();
     }
-    speech_mock.assert_hits(voices.len() + formats.len());
+    speech_mock.assert_calls(voices.len() + formats.len());
 
     let agent_server = MockServer::start_async().await;
     let agent_mock = agent_server
@@ -679,7 +679,7 @@ async fn openai_provider_variants_and_agent_process() {
     let mut stream = agent.process_text_stream("user", "hi", None);
     let chunk = stream.next().await.unwrap().unwrap();
     assert_eq!(chunk, "agent response");
-    agent_mock.assert_hits(2);
+    agent_mock.assert_calls(2);
 }
 
 #[tokio::test]
@@ -705,7 +705,7 @@ async fn openai_provider_error_paths() {
     );
     let err = provider.generate_text("hi", "", None).await.unwrap_err();
     assert!(matches!(err, ButterflyBotError::Runtime(_)));
-    empty_mock.assert_hits(1);
+    empty_mock.assert_calls(1);
 
     let bad_server = MockServer::start_async().await;
     let bad_mock = bad_server
@@ -735,5 +735,5 @@ async fn openai_provider_error_paths() {
         .await
         .unwrap_err();
     assert!(matches!(err, ButterflyBotError::Serialization(_)));
-    bad_mock.assert_hits(1);
+    bad_mock.assert_calls(1);
 }

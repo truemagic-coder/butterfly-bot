@@ -114,22 +114,57 @@ impl OpenAiProvider {
     }
 
     fn extract_tool_calls_from_value(response: &Value) -> Vec<ToolCall> {
-        let Some(calls) = response
+        let message = response
             .get("choices")
             .and_then(|v| v.get(0))
             .and_then(|choice| choice.get("message"))
-            .and_then(|message| message.get("tool_calls"))
+            .cloned()
+            .unwrap_or(Value::Null);
+
+        let Some(calls) = message
+            .get("tool_calls")
             .and_then(|calls| calls.as_array())
         else {
+            #[allow(deprecated)]
+            if let Some(function_call) = message.get("function_call") {
+                if let Some(name) = function_call.get("name").and_then(|value| value.as_str()) {
+                    let arguments = function_call.get("arguments");
+                    let arguments = match arguments {
+                        Some(Value::String(text)) => {
+                            serde_json::from_str(text).unwrap_or(Value::String(text.clone()))
+                        }
+                        Some(value) => value.clone(),
+                        None => Value::Null,
+                    };
+                    return vec![ToolCall {
+                        name: name.to_string(),
+                        arguments,
+                    }];
+                }
+            }
             return Vec::new();
         };
 
         calls
             .iter()
             .filter_map(|call| {
-                let function = call.get("function")?;
-                let name = function.get("name")?.as_str()?.to_string();
-                let arguments = function.get("arguments");
+                let function = call.get("function");
+                let custom_tool = call.get("custom_tool");
+
+                let (name, arguments) = if let Some(function) = function {
+                    (
+                        function.get("name")?.as_str()?.to_string(),
+                        function.get("arguments"),
+                    )
+                } else if let Some(custom_tool) = custom_tool {
+                    (
+                        custom_tool.get("name")?.as_str()?.to_string(),
+                        custom_tool.get("input"),
+                    )
+                } else {
+                    return None;
+                };
+
                 let arguments = match arguments {
                     Some(Value::String(text)) => {
                         serde_json::from_str(text).unwrap_or(Value::String(text.clone()))

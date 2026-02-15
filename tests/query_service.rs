@@ -339,7 +339,7 @@ async fn query_service_and_client() {
     let mut stream = agent.process_text_stream("user", "hello", None);
     let chunk = stream.next().await.unwrap().unwrap();
     assert_eq!(chunk, "mock text");
-    chat_mock.assert_hits(1);
+    chat_mock.assert_calls(1);
 
     agent.delete_user_history("user").await.unwrap();
     let _ = agent.get_user_history("user", 5).await.unwrap();
