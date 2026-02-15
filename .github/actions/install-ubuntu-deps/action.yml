@@ -15,6 +15,7 @@ runs:
           cmake \
           clang \
           protobuf-compiler \
+          libprotobuf-dev \
           libclang-dev \
           libssl-dev \
           libgtk-3-dev \
@@ -28,4 +29,17 @@ runs:
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev
         else
           sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+        fi
+
+    - name: Export protoc env
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+
+        if [ -d /usr/include/google/protobuf ]; then
+          echo "PROTOC_INCLUDE=/usr/include" >> "$GITHUB_ENV"
+        elif [ -d /usr/local/include/google/protobuf ]; then
+          echo "PROTOC_INCLUDE=/usr/local/include" >> "$GITHUB_ENV"
         fi
