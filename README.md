@@ -1,7 +1,7 @@
 ## Butterfly Bot
 
 [![CI](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/truemagic-coder/butterfly-bot/graph/badge.svg)](https://codecov.io/gh/truemagic-coder/butterfly-bot)
+[![codecov](https://img.shields.io/codecov/c/github/truemagic-coder/butterfly-bot/main.svg)](https://codecov.io/gh/truemagic-coder/butterfly-bot)
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust)](https://www.rust-lang.org/tools/install)
 [![fmt](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml)
 [![clippy](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml)
