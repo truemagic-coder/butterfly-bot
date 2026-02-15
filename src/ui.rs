@@ -158,6 +158,7 @@ enum MessageRole {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum UiTab {
     Chat,
+    Activity,
     Config,
     Context,
     Heartbeat,
@@ -223,17 +224,40 @@ fn markdown_to_html(input: &str) -> String {
     output
 }
 
+fn is_empty_list_result(payload: &Value) -> bool {
+    let action = payload
+        .get("args")
+        .and_then(|args| args.get("action"))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if action != "list" {
+        return false;
+    }
+
+    let result = payload.get("result").unwrap_or(&Value::Null);
+    ["reminders", "items", "tasks", "plans", "todos", "results"]
+        .iter()
+        .any(|key| {
+            result
+                .get(*key)
+                .and_then(|value| value.as_array())
+                .map(|items| items.is_empty())
+                .unwrap_or(false)
+        })
+}
+
 async fn scroll_chat_to_bottom() {
-    let _ = eval(
-        "const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }",
-    )
-    .await;
+    let _ = eval("const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
 }
 
 async fn scroll_chat_after_render() {
     scroll_chat_to_bottom().await;
     sleep(Duration::from_millis(16)).await;
     scroll_chat_to_bottom().await;
+}
+
+async fn scroll_activity_to_bottom() {
+    let _ = eval("const el = document.getElementById('activity-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
 }
 
 fn highlight_json_html(input: &str) -> String {
@@ -406,6 +430,7 @@ fn app_view() -> Element {
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
     let messages = use_signal(Vec::<ChatMessage>::new);
+    let activity_messages = use_signal(Vec::<ChatMessage>::new);
     let daemon_running = use_signal(|| false);
     let daemon_autostart_attempted = use_signal(|| false);
     let daemon_status = use_signal(String::new);
@@ -852,8 +877,10 @@ fn app_view() -> Element {
                 loop {
                 if !*daemon_running.read() {
                     reminders_listening.set(false);
-                    break;
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
+                reminders_listening.set(true);
                 let url = format!(
                     "{}/reminder_stream?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -937,7 +964,7 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
-        let messages = messages.clone();
+        let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
         let daemon_running = daemon_running.clone();
         let mut boot_ready = boot_ready.clone();
@@ -957,7 +984,7 @@ fn app_view() -> Element {
                 let daemon_url = daemon_url;
                 let token = token;
                 let user_id = user_id;
-                let mut messages = messages;
+                let mut activity_messages = activity_messages;
                 let mut next_id = next_id;
 
                 ui_events_listening.set(true);
@@ -965,8 +992,10 @@ fn app_view() -> Element {
                 loop {
                 if !*daemon_running.read() {
                     ui_events_listening.set(false);
-                    break;
+                    sleep(Duration::from_secs(1)).await;
+                    continue;
                 }
+                ui_events_listening.set(true);
                 let url = format!(
                     "{}/ui_events?user_id={}",
                     daemon_url().trim_end_matches('/'),
@@ -1016,6 +1045,10 @@ fn app_view() -> Element {
                                         .get("status")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("ok");
+                                    let event_user = value
+                                        .get("user_id")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or_default();
 
                                     // Always update boot readiness for boot/prompt/heartbeat events
                                     if (event_type == "boot" || tool == "prompt") && status == "ok" {
@@ -1031,18 +1064,24 @@ fn app_view() -> Element {
 
                                     let show_success =
                                         std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS").is_ok();
-                                    if event_type != "boot"
-                                        && event_type != "autonomy"
-                                        && event_type != "tool"
-                                        && !show_success
-                                        && (status == "success" || status == "ok")
-                                    {
-                                        if let Some(payload) = value.get("payload") {
-                                            if payload.get("error").is_none() {
+                                    if !show_success && (status == "success" || status == "ok") {
+                                        if event_type == "tool" {
+                                            if event_user == "system" {
                                                 continue;
                                             }
-                                        } else {
-                                            continue;
+                                            if let Some(payload) = value.get("payload") {
+                                                if payload.get("error").is_none() && is_empty_list_result(payload) {
+                                                    continue;
+                                                }
+                                            }
+                                        } else if event_type != "boot" && event_type != "autonomy" {
+                                            if let Some(payload) = value.get("payload") {
+                                                if payload.get("error").is_none() {
+                                                    continue;
+                                                }
+                                            } else {
+                                                continue;
+                                            }
                                         }
                                     }
 
@@ -1081,12 +1120,12 @@ fn app_view() -> Element {
                                     }
                                     let id = next_id();
                                     next_id.set(id + 1);
-                                    messages.write().push(ChatMessage {
+                                    activity_messages.write().push(ChatMessage {
                                         id,
                                         role: MessageRole::Bot,
                                         text,
                                     });
-                                    scroll_chat_to_bottom().await;
+                                    scroll_activity_to_bottom().await;
                                 }
                             }
                         }
@@ -2106,6 +2145,7 @@ fn app_view() -> Element {
     };
 
     let active_tab_chat = active_tab.clone();
+    let active_tab_activity = active_tab.clone();
     let active_tab_config = active_tab.clone();
     let active_tab_context = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
@@ -2331,6 +2371,14 @@ fn app_view() -> Element {
                         "Chat"
                     }
                     button {
+                        class: if *active_tab.read() == UiTab::Activity { "active" } else { "" },
+                        onclick: move |_| {
+                            let mut active_tab_activity = active_tab_activity.clone();
+                            active_tab_activity.set(UiTab::Activity);
+                        },
+                        "Activity"
+                    }
+                    button {
                         class: if *active_tab.read() == UiTab::Config { "active" } else { "" },
                         onclick: move |_| {
                             let mut active_tab_config = active_tab_config.clone();
@@ -2554,6 +2602,29 @@ fn app_view() -> Element {
                         }
                         if !security_audit_status.read().is_empty() {
                             div { class: "status", "{security_audit_status}" }
+                        }
+                    }
+                }
+            }
+            if *active_tab.read() == UiTab::Activity {
+                div { class: "settings",
+                    div { class: "settings-card",
+                        label { "Activity" }
+                        p { class: "hint", "Background reminders, tool events, and autonomy updates appear here." }
+                    }
+                    div { class: "chat", id: "activity-scroll",
+                        for message in activity_messages
+                            .read()
+                            .iter()
+                            .filter(|msg| !msg.text.is_empty())
+                        {
+                            div {
+                                class: "bubble bot",
+                                dangerous_inner_html: markdown_to_html(&message.text),
+                            }
+                        }
+                        if activity_messages.read().is_empty() {
+                            div { class: "hint", "No activity yet." }
                         }
                     }
                 }

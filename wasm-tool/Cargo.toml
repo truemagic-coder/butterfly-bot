@@ -1,0 +1,23 @@
+[package]
+name = "butterfly-bot-wasm-tool"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = []
+tool_coding = []
+tool_mcp = []
+tool_http_call = []
+tool_github = []
+tool_planning = []
+tool_reminders = []
+tool_search_internet = []
+tool_tasks = []
+tool_todo = []
+tool_wakeup = []
+
+[dependencies]
+serde_json = "1.0"

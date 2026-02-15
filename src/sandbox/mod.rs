@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -116,6 +118,9 @@ impl SandboxSettings {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use serde_json::json;
+
     use super::{SandboxMode, SandboxSettings, ToolRuntime, ToolSandboxConfig, WasmRuntime};
 
     #[test]
@@ -201,6 +206,109 @@ mod tests {
             "./wasm/coding_tool.wasm"
         );
     }
+
+    #[test]
+    fn wasm_module_path_prefers_per_tool_when_generic_configured() {
+        let generic = "./wasm/testdata/butterfly_bot_wasm_tool.wasm";
+        let tool_name = "__test_reminders";
+        let default = "./wasm/__test_reminders_tool.wasm";
+        let _ = fs::create_dir_all("./wasm/testdata");
+        let _ = fs::write(generic, b"generic");
+        let _ = fs::write(default, b"default");
+
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.wasm.module = Some(generic.to_string());
+
+        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+
+        let _ = fs::remove_file(generic);
+        let _ = fs::remove_file(default);
+    }
+
+    #[test]
+    fn wasm_module_path_falls_back_to_default_when_configured_missing() {
+        let tool_name = "__test_todo";
+        let default = "./wasm/__test_todo_tool.wasm";
+        let _ = fs::create_dir_all("./wasm");
+        let _ = fs::write(default, b"default");
+
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.wasm.module = Some("./wasm/does_not_exist.wasm".to_string());
+
+        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+
+        let _ = fs::remove_file(default);
+    }
+
+    #[test]
+    fn wasm_module_validation_rejects_non_wasm_bytes() {
+        let path = "./wasm/__test_invalid_tool.wasm";
+        let _ = fs::create_dir_all("./wasm");
+        let _ = fs::write(path, b"default");
+
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.wasm.module = Some(path.to_string());
+
+        let err = WasmRuntime::validate_module_binary("__test_invalid", &cfg)
+            .expect_err("expected invalid wasm header to fail");
+        assert!(
+            err.to_string().contains("missing wasm magic header"),
+            "unexpected error: {err}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn wasm_zero_fuel_is_treated_as_unset() {
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.wasm.fuel = Some(0);
+        assert_eq!(WasmRuntime::resolve_fuel_limit(&cfg), None);
+
+        cfg.wasm.fuel = Some(1);
+        assert_eq!(WasmRuntime::resolve_fuel_limit(&cfg), Some(1));
+    }
+
+    #[test]
+    fn wasm_module_validation_rejects_stub_marker() {
+        let path = "./wasm/__test_stub_tool.wasm";
+        let _ = fs::create_dir_all("./wasm");
+        let mut bytes = vec![0x00, 0x61, 0x73, 0x6D];
+        bytes.extend_from_slice(b"...stub responses...");
+        let _ = fs::write(path, bytes);
+
+        let mut cfg = ToolSandboxConfig::default();
+        cfg.wasm.module = Some(path.to_string());
+
+        let err = WasmRuntime::validate_module_binary("__test_stub", &cfg)
+            .expect_err("expected stub module to fail");
+        assert!(
+            err.to_string().contains("placeholder stub"),
+            "unexpected error: {err}"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn reminders_wasm_execute_does_not_alloc_trap() {
+        let cfg = ToolSandboxConfig::default();
+        let params = json!({
+            "action": "list",
+            "status": "open",
+            "user_id": "cli_user",
+            "limit": 10
+        });
+
+        let result = WasmRuntime::execute_sync("reminders", &cfg, params);
+        if let Err(err) = result {
+            let msg = err.to_string();
+            assert!(
+                !msg.contains("WASM alloc failed"),
+                "unexpected alloc trap from reminders wasm: {msg}"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -224,19 +332,41 @@ impl Drop for TimeoutCompletion {
 }
 
 impl WasmRuntime {
+    const MAX_INPUT_BYTES: usize = 256 * 1024;
+    const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+
     fn default_module_path(tool_name: &str) -> String {
         format!("./wasm/{tool_name}_tool.wasm")
     }
 
     fn resolve_module_path(tool_name: &str, config: &ToolSandboxConfig) -> String {
+        let default_path = Self::default_module_path(tool_name);
         config
             .wasm
             .module
             .as_deref()
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| Self::default_module_path(tool_name))
+            .map(|configured| {
+                let configured_path = configured.to_string();
+                let configured_file = Path::new(configured)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+
+                if configured_file == "butterfly_bot_wasm_tool.wasm" {
+                    return default_path.clone();
+                }
+
+                if Path::new(&configured_path).exists() {
+                    configured_path
+                } else if Path::new(&default_path).exists() {
+                    default_path.clone()
+                } else {
+                    configured_path
+                }
+            })
+            .unwrap_or(default_path)
     }
 
     fn resolve_entrypoint(config: &ToolSandboxConfig) -> String {
@@ -248,6 +378,56 @@ impl WasmRuntime {
             .filter(|v| !v.is_empty())
             .unwrap_or("execute")
             .to_string()
+    }
+
+    fn resolve_fuel_limit(config: &ToolSandboxConfig) -> Option<u64> {
+        config.wasm.fuel.filter(|limit| *limit > 0)
+    }
+
+    pub fn validate_module_binary(tool_name: &str, config: &ToolSandboxConfig) -> Result<()> {
+        let module_path = Self::resolve_module_path(tool_name, config);
+        let path = Path::new(&module_path);
+
+        if !path.exists() {
+            return Err(ButterflyBotError::Runtime(format!(
+                "WASM module path does not exist for tool '{tool_name}': {module_path}"
+            )));
+        }
+
+        let mut file = File::open(path)
+            .map_err(|e| ButterflyBotError::Runtime(format!("Failed to open wasm module: {e}")))?;
+        let mut header = [0u8; 4];
+        file.read_exact(&mut header).map_err(|e| {
+            ButterflyBotError::Runtime(format!(
+                "Failed to read wasm module header for tool '{tool_name}' ({module_path}): {e}"
+            ))
+        })?;
+
+        if header != Self::WASM_MAGIC {
+            return Err(ButterflyBotError::Runtime(format!(
+                "Invalid wasm module for tool '{tool_name}' at {module_path}: missing wasm magic header"
+            )));
+        }
+
+        let mut tail = Vec::new();
+        file.read_to_end(&mut tail).map_err(|e| {
+            ButterflyBotError::Runtime(format!(
+                "Failed to inspect wasm module body for tool '{tool_name}' ({module_path}): {e}"
+            ))
+        })?;
+        if tail
+            .windows("stub responses".len())
+            .any(|w| w == b"stub responses")
+            || tail
+                .windows("\"stub\":true".len())
+                .any(|w| w == b"\"stub\":true")
+        {
+            return Err(ButterflyBotError::Runtime(format!(
+                "WASM module for tool '{tool_name}' at {module_path} is a placeholder stub. Build/install a real WASM implementation before starting the daemon."
+            )));
+        }
+
+        Ok(())
     }
 
     fn split_ptr_len(packed: i64) -> Result<(i32, i32)> {
@@ -282,6 +462,7 @@ impl WasmRuntime {
 
     fn execute_sync(tool_name: &str, config: &ToolSandboxConfig, params: Value) -> Result<Value> {
         let module_path = Self::resolve_module_path(tool_name, config);
+        tracing::info!(tool = %tool_name, module_path = %module_path, "Executing tool in WASM runtime");
 
         if !Path::new(&module_path).exists() {
             return Err(ButterflyBotError::Runtime(format!(
@@ -291,10 +472,12 @@ impl WasmRuntime {
 
         let entrypoint = Self::resolve_entrypoint(config);
         let timeout_ms = config.wasm.timeout_ms.unwrap_or(0);
-        let fuel_limit = config.wasm.fuel;
+        let fuel_limit = Self::resolve_fuel_limit(config);
 
         let mut wasm_config = wasmtime::Config::new();
-        wasm_config.epoch_interruption(true);
+        if timeout_ms > 0 {
+            wasm_config.epoch_interruption(true);
+        }
         if fuel_limit.is_some() {
             wasm_config.consume_fuel(true);
         }
@@ -362,6 +545,14 @@ impl WasmRuntime {
 
         let input = serde_json::to_vec(&params)
             .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+        if input.len() > Self::MAX_INPUT_BYTES {
+            return Err(ButterflyBotError::Runtime(format!(
+                "WASM tool input too large: {} bytes (max {})",
+                input.len(),
+                Self::MAX_INPUT_BYTES
+            )));
+        }
+
         let input_len = i32::try_from(input.len()).map_err(|_| {
             ButterflyBotError::Runtime("WASM input too large to pass as i32 length".to_string())
         })?;

@@ -39,6 +39,22 @@ Output bytes must be UTF-8 JSON.
 - Input: JSON object containing tool params.
 - Output: JSON value (object preferred) consumed as tool result.
 
+### Host-call delegation (current built-in modules)
+
+Built-in tool modules may return:
+
+```json
+{
+  "status": "host_call",
+  "host_call": {
+    "tool": "reminders",
+    "args": {"action": "list", "user_id": "cli_user"}
+  }
+}
+```
+
+When this shape is returned, the host runtime validates `host_call.tool` matches the executing tool name and executes the registered backend using `host_call.args`.
+
 ## Configuration Example (minimal)
 
 ```json
@@ -72,6 +88,14 @@ Output bytes must be UTF-8 JSON.
 - `timeout_ms` interrupts long-running WASM execution by epoch deadline.
 - `fuel` sets a deterministic instruction budget for guest execution.
 - Sandbox decisions are audit-logged through `ToolRegistry`.
+
+## Important: Placeholder module caveat
+
+The repository contains a helper crate at `wasm-tool/` that emits a **placeholder** WASM module for ABI smoke testing.
+
+- It returns stub JSON (`"stub": true`) and does not execute real tool logic.
+- It must **not** be copied to `./wasm/*_tool.wasm` for production/dev usage.
+- Real per-tool modules are required for functional reminders/todo/tasks/planning behavior.
 
 ## Zero-Config Convention
 

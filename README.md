@@ -259,10 +259,30 @@ This is optional and intended for advanced customization.
 ### Convention Mode (WASM-only tools)
 
 - Tool execution is WASM-only for all built-in tools.
+- Startup now validates WASM module integrity (magic header) for registered tools and fails fast on invalid/corrupted binaries.
 - `tools.settings.sandbox.mode` remains accepted as config but does not bypass WASM-only execution.
 - Per-tool `runtime` config is ignored; tool execution is WASM-only.
 - Per-tool `wasm.module` is optional and defaults to `./wasm/<tool>_tool.wasm`.
 - Zero-config path: place modules at `./wasm/<tool>_tool.wasm` for each tool you run.
+
+Build all default tool modules:
+
+```bash
+./scripts/build_wasm_tools.sh
+```
+
+This generates:
+
+- `./wasm/coding_tool.wasm`
+- `./wasm/mcp_tool.wasm`
+- `./wasm/http_call_tool.wasm`
+- `./wasm/github_tool.wasm`
+- `./wasm/planning_tool.wasm`
+- `./wasm/reminders_tool.wasm`
+- `./wasm/search_internet_tool.wasm`
+- `./wasm/tasks_tool.wasm`
+- `./wasm/todo_tool.wasm`
+- `./wasm/wakeup_tool.wasm`
 
 ```
 tool call

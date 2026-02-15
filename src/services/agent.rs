@@ -588,15 +588,11 @@ impl AgentService {
         prompt.push_str(&format!(
             "\n\nAVAILABLE TOOLS (use ONLY these exact names): {tool_list}\n"
         ));
-        prompt.push_str(
-            "Use a ReAct loop: Reason → Action → Observation → Respond.\n",
-        );
+        prompt.push_str("Use tools as needed, then provide a clean final user-facing response.\n");
         prompt.push_str(
             "If you need a tool not listed, respond with 'no-op' and explain what is missing.\n",
         );
-        prompt.push_str(
-            "Before any tool call, write an explicit Action line and a brief reason (e.g., 'Action: call http_call to fetch /agents/status because ...').\n",
-        );
+        prompt.push_str("Do NOT include Reason/Action/Observation sections in the final response.\n");
         prompt.push_str(
             "When using tools, call ONLY ONE tool per step. If no tool is needed, respond with the final answer.\n",
         );
@@ -627,33 +623,14 @@ impl AgentService {
                 .llm_provider
                 .generate_with_tools(&prompt, system_prompt, tool_specs.clone())
                 .await?;
-            if !response.text.is_empty() {
+            if response.tool_calls.is_empty() && !response.text.is_empty() {
                 last_text = response.text.clone();
             }
             if response.tool_calls.is_empty() {
                 return Ok(last_text);
             }
 
-            let has_action_line = response
-                .text
-                .lines()
-                .any(|line| line.trim_start().starts_with("Action:"));
-
             let first_call = response.tool_calls.first().cloned().into_iter().collect::<Vec<_>>();
-            if !has_action_line {
-                if let Some(call) = first_call.first() {
-                    let action_line = format_tool_action_line(call);
-                    last_text = action_line.clone();
-                    prompt.push_str("\n\nASSISTANT ACTION:\n");
-                    prompt.push_str(&action_line);
-                    prompt.push_str("\n");
-                } else {
-                    prompt.push_str(
-                        "\n\nYou must write an explicit Action line and brief reason BEFORE any tool call. Try again and do not call tools until you do.\n",
-                    );
-                    continue;
-                }
-            }
 
             let results = self.execute_tool_calls(&first_call, &tools, user_id).await?;
             let serialized = serde_json::to_string_pretty(&results)
@@ -723,7 +700,10 @@ impl AgentService {
                             let should_skip = matches!(err, ButterflyBotError::Runtime(_))
                                 && (err_message.contains("No MCP servers configured")
                                     || err_message.contains("Unknown MCP server")
-                                    || err_message.contains("Missing GitHub PAT"));
+                                    || err_message.contains("Missing GitHub PAT")
+                                    || err_message.contains("WASM alloc failed")
+                                    || err_message.contains("WASM tool input too large")
+                                    || err_message.contains("WASM tool execute failed"));
                             if should_skip {
                                 let _ = self
                                     .tool_registry
@@ -813,22 +793,6 @@ fn redact_string(input: &str) -> String {
         .replace_all(&out, "$1[REDACTED]")
         .to_string();
     truncate_string(&out, 2000)
-}
-
-fn format_tool_action_line(call: &ToolCall) -> String {
-    let mut reason = "perform a required step".to_string();
-    if call.name == "http_call" {
-        if let serde_json::Value::Object(map) = &call.arguments {
-            if let Some(url) = map.get("url").and_then(|v| v.as_str()) {
-                reason = format!("fetch {}", url);
-            } else if let Some(endpoint) = map.get("endpoint").and_then(|v| v.as_str()) {
-                reason = format!("fetch {}", endpoint);
-            }
-        }
-    }
-    let redacted_args = redact_value(&call.arguments);
-    let args_str = serde_json::to_string(&redacted_args).unwrap_or_default();
-    format!("Action: call {} with {} because we need to {}.", call.name, args_str, reason)
 }
 
 fn redact_value(value: &serde_json::Value) -> serde_json::Value {

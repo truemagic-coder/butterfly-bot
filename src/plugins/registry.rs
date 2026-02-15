@@ -116,8 +116,11 @@ impl ToolRegistry {
             }
         }
 
+        let sandbox = self.sandbox.read().await.clone();
         let tools = self.tools.read().await;
-        for tool in tools.values() {
+        for (tool_name, tool) in tools.iter() {
+            let plan = sandbox.execution_plan(tool_name);
+            WasmRuntime::validate_module_binary(tool_name, &plan.tool_config)?;
             tool.configure(&config)
                 .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         }
@@ -125,13 +128,13 @@ impl ToolRegistry {
     }
 
     pub async fn execute_tool(&self, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        let tool_exists = {
+        let tool = {
             let tools = self.tools.read().await;
-            tools.contains_key(tool_name)
+            tools.get(tool_name).cloned()
         };
-        if !tool_exists {
+        let Some(tool) = tool else {
             return Err(ButterflyBotError::Runtime(format!("Tool not found: {tool_name}")));
-        }
+        };
 
         let plan = {
             let sandbox = self.sandbox.read().await;
@@ -142,7 +145,56 @@ impl ToolRegistry {
             .audit_sandbox_decision(tool_name, plan.runtime.as_str(), &plan.reason)
             .await;
 
-        self.wasm_runtime.execute(tool_name, &plan.tool_config, params).await
+        let wasm_result = self
+            .wasm_runtime
+            .execute(tool_name, &plan.tool_config, params)
+            .await?;
+
+        let is_stub = wasm_result
+            .get("stub")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+
+        if !is_stub {
+            if wasm_result
+                .get("status")
+                .and_then(|value| value.as_str())
+                == Some("host_call")
+            {
+                let call_tool = wasm_result
+                    .get("host_call")
+                    .and_then(|value| value.get("tool"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(tool_name);
+                if call_tool != tool_name {
+                    return Err(ButterflyBotError::Runtime(format!(
+                        "WASM host_call tool mismatch: expected '{tool_name}', got '{call_tool}'"
+                    )));
+                }
+
+                let args = wasm_result
+                    .get("host_call")
+                    .and_then(|value| value.get("args"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+
+                let _ = self
+                    .audit_sandbox_decision(
+                        tool_name,
+                        "wasm_host_call",
+                        "delegated_via_wasm_host_call",
+                    )
+                    .await;
+
+                return tool.execute(args).await;
+            }
+
+            return Ok(wasm_result);
+        }
+
+        Err(ButterflyBotError::Runtime(format!(
+            "WASM tool '{tool_name}' returned a stub response. Install a real WASM implementation for this tool (current module is a placeholder)."
+        )))
     }
 
     pub async fn resolved_runtime_for_tool(&self, tool_name: &str) -> ToolRuntime {
