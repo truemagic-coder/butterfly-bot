@@ -301,6 +301,8 @@ enum UiTab {
 struct UiMcpServer {
     name: String,
     url: String,
+    header_key: String,
+    header_value: String,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -1640,10 +1642,26 @@ fn app_view() -> Element {
                                     .unwrap_or_default()
                                     .trim()
                                     .to_string();
+                                let (header_key, header_value) = entry
+                                    .get("headers")
+                                    .and_then(|v| v.as_object())
+                                    .and_then(|map| {
+                                        map.iter().find_map(|(k, v)| {
+                                            v.as_str().map(|value| {
+                                                (k.trim().to_string(), value.trim().to_string())
+                                            })
+                                        })
+                                    })
+                                    .unwrap_or_else(|| (String::new(), String::new()));
                                 if name.is_empty() && url.is_empty() {
                                     None
                                 } else {
-                                    Some(UiMcpServer { name, url })
+                                    Some(UiMcpServer {
+                                        name,
+                                        url,
+                                        header_key,
+                                        header_value,
+                                    })
                                 }
                             })
                             .collect::<Vec<_>>();
@@ -1885,6 +1903,8 @@ fn app_view() -> Element {
                 for entry in mcp_servers_form().iter() {
                     let name = entry.name.trim();
                     let url = entry.url.trim();
+                    let header_key = entry.header_key.trim();
+                    let header_value = entry.header_value.trim();
                     if name.is_empty() && url.is_empty() {
                         continue;
                     }
@@ -1899,7 +1919,19 @@ fn app_view() -> Element {
                         ));
                         return;
                     }
-                    mcp_servers.push((name.to_string(), url.to_string()));
+                    if (header_key.is_empty() && !header_value.is_empty())
+                        || (!header_key.is_empty() && header_value.is_empty())
+                    {
+                        settings_error
+                            .set("MCP header key and value must both be set or both be empty.".to_string());
+                        return;
+                    }
+                    mcp_servers.push((
+                        name.to_string(),
+                        url.to_string(),
+                        header_key.to_string(),
+                        header_value.to_string(),
+                    ));
                 }
 
                 let network_allow = network_allow_form()
@@ -1962,10 +1994,15 @@ fn app_view() -> Element {
                         Value::Array(
                             mcp_servers
                                 .into_iter()
-                                .map(|(name, url)| {
+                                .map(|(name, url, header_key, header_value)| {
                                     let mut server = serde_json::Map::new();
                                     server.insert("name".to_string(), Value::String(name));
                                     server.insert("url".to_string(), Value::String(url));
+                                    if !header_key.is_empty() {
+                                        let mut headers = serde_json::Map::new();
+                                        headers.insert(header_key, Value::String(header_value));
+                                        server.insert("headers".to_string(), Value::Object(headers));
+                                    }
                                     Value::Object(server)
                                 })
                                 .collect(),
@@ -2667,6 +2704,12 @@ fn app_view() -> Element {
             .simple-row .mcp-url {{
                 flex: 1;
             }}
+            .simple-row .mcp-header-key {{
+                flex: 0 0 180px;
+            }}
+            .simple-row .mcp-header-value {{
+                flex: 0 0 220px;
+            }}
             .simple-row .host-input {{
                 flex: 1;
             }}
@@ -2683,6 +2726,8 @@ fn app_view() -> Element {
                 .simple-row {{ flex-direction: column; align-items: stretch; }}
                 .simple-row .mcp-name {{ flex: 1 1 auto; }}
                 .simple-row .mcp-url {{ flex: 1 1 auto; }}
+                .simple-row .mcp-header-key {{ flex: 1 1 auto; }}
+                .simple-row .mcp-header-value {{ flex: 1 1 auto; }}
                 .simple-row button {{ width: 100%; }}
             }}
         "# }
@@ -2958,6 +3003,32 @@ fn app_view() -> Element {
                                                         let mut list = mcp_servers_form();
                                                         if let Some(item) = list.get_mut(index) {
                                                             item.url = evt.value();
+                                                        }
+                                                        mcp_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-key",
+                                                    value: "{server.header_key}",
+                                                    placeholder: "Header key (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut mcp_servers_form = mcp_servers_form.clone();
+                                                        let mut list = mcp_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_key = evt.value();
+                                                        }
+                                                        mcp_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-value",
+                                                    value: "{server.header_value}",
+                                                    placeholder: "Header value (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut mcp_servers_form = mcp_servers_form.clone();
+                                                        let mut list = mcp_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_value = evt.value();
                                                         }
                                                         mcp_servers_form.set(list);
                                                     },
