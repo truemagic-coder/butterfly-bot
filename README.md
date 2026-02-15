@@ -592,24 +592,91 @@ Config fields:
 }
 ```
 
-## Library Usage (Minimal)
+## Competitive Feature Matrix (Butterfly Bot vs OpenClaw, ZeroClaw, IronClaw)
 
-If you still want to embed Butterfly Bot, the Rust API is available:
+This is a practical, high-level comparison based on publicly visible repository documentation and code structure. It is meant to guide roadmap decisions, not declare an absolute winner.
 
-```rust
-use futures::StreamExt;
-use butterfly_bot::client::ButterflyBot;
+## Positioning Snapshot
 
-#[tokio::main]
-async fn main() -> butterfly_bot::Result<()> {
-    let agent = ButterflyBot::from_config_path("config.json").await?;
-    let mut stream = agent.process_text_stream("user123", "Hello!", None);
-    while let Some(chunk) = stream.next().await {
-        print!("{}", chunk?);
-    }
-    Ok(())
-}
-```
+- **Butterfly Bot (this repo):** Practical personal-agent workflows with daemon + UI + planning/todo/tasks/reminders/wakeup + memory.
+- **OpenClaw (main competitor):** Full personal-assistant platform with broad channels and plugin ecosystem, but currently high operational security risk for typical deployments.
+- **ZeroClaw:** Lean, pluggable Rust agent framework with strong onboarding story and broad provider/channel coverage.
+- **IronClaw:** Platform-style architecture emphasizing sandboxed extensibility (WASM), orchestration, routines, and gateway capabilities.
+
+## Feature Matrix
+
+Legend: **✅ strong**, **🟨 partial/limited**, **❌ not evident**
+
+| Area | Butterfly Bot | OpenClaw | ZeroClaw | IronClaw |
+|---|---:|---:|---:|---:|
+| Rust core implementation | ✅ | ❌ (TypeScript-first) | ✅ | ✅ |
+| Interactive UI included | ✅ (Dioxus UI) | ✅ (Control UI + WebChat) | 🟨 (CLI-first) | ✅ (TUI/Web gateway) |
+| Local daemon/service model | ✅ | ✅ | ✅ | ✅ |
+| Config persistence + reload path | ✅ | ✅ | ✅ | ✅ |
+| Provider abstraction | ✅ | ✅ | ✅ | ✅ |
+| Broad multi-provider catalog | ✅ (relies on Zapier) | ✅ | ✅ | 🟨 (focused provider path + adapters) |
+| Agent extension architecture | ✅ (Rust-native modules + MCP integrations; maintainer-curated) | ✅ (plugins/extensions) | ✅ | ✅ |
+| Secure tool sandbox model (explicit) | ✅ | 🟨 (sandbox/policy flows exist, but high-risk defaults and misconfiguration exposure remain common) | ✅ | ✅ |
+| Memory subsystem | ✅ (SQLite + LanceDB paths/config) | ✅ (core memory + LanceDB plugin path) | ✅ (SQLite/Markdown + hybrid search) | ✅ (workspace memory + hybrid search) |
+| Planning + todo/task orchestration | ✅ (native modules) | 🟨 | 🟨 | ✅ |
+| Scheduled reminders/heartbeat style automation | ✅ | ✅ | ✅ | ✅ (routines/heartbeat) |
+| End-user dynamic plugin building | ❌ (intentional: convention-over-configuration) | 🟨 (plugin/extensibility strong, not builder-centric) | ❌ | ✅ (WASM-oriented builder flow) |
+| Zero-step onboarding (no wizard required) | ✅ | ✅ | ✅ | ✅ |
+| Documentation breadth for contributors | ✅ | ✅ | ✅ | ✅ |
+| Explicit security hardening docs/checklists | ✅ | ✅ | ✅ | ✅ |
+| Test breadth/visibility | ✅ | ✅ | ✅ | 🟨 |
+
+## Weighted Scorecard (Personal Ops Agent Lens)
+
+Scoring model:
+- Score each criterion from **1 to 5** (5 = strongest).
+- Weight reflects importance for a **personal operations assistant** product.
+- Weighted score per row = `score × weight`.
+- Total possible = **500** (if all criteria scored 5).
+
+### Criteria and Weights
+
+| Criterion | Weight (%) | Why it matters |
+|---|---:|---|
+| Workflow completeness (plan→task→reminder→done) | 20 | Core product value for daily execution. |
+| Reliability and failure recovery | 20 | Users trust consistency more than raw feature count. |
+| UX and operator visibility | 15 | Faster adoption and better day-2 usability. |
+| Security posture and secret hygiene | 15 | Critical for real-world deployment and trust. |
+| Setup/onboarding speed | 10 | Strong determinant of conversion and retention. |
+| Integration leverage and extensibility | 10 | Measures practical capability breadth, including MCP partner surfaces (e.g., Zapier) and native agent extension velocity. |
+| Documentation and contributor DX | 10 | Impacts community velocity and maintainability. |
+
+### Current Scoring (Post-Ship Estimate)
+
+Scoring reflects current shipped state for Butterfly Bot after landing local golden-path reliability checks, execution-trace sanity coverage, and trace redaction hardening. It should still be revised as competitors evolve.
+
+| Criterion | Weight | Butterfly Bot | OpenClaw | ZeroClaw | IronClaw |
+|---|---:|---:|---:|---:|---:|
+| Workflow completeness | 20 | 5 | 4 | 3 | 4 |
+| Reliability and recovery | 20 | 5 | 3 | 4 | 3 |
+| UX and visibility | 15 | 5 | 4 | 3 | 4 |
+| Security posture | 15 | 5 | 1 | 5 | 4 |
+| Setup/onboarding | 10 | 5 | 4 | 5 | 4 |
+| Integration leverage/extensibility | 10 | 4 | 5 | 5 | 5 |
+| Docs/contributor DX | 10 | 5 | 4 | 5 | 4 |
+| **Total Weighted (/500)** | **100** | **490** | **345** | **415** | **390** |
+
+### Path to 500 (Integration Leverage 4→5)
+
+To reach **500/500**, the remaining criterion is **Integration leverage/extensibility** (currently 4/5, weight 10).
+
+Definition of **5/5** for Integration leverage/extensibility:
+
+- Ship **at least 5** operator-ready integration playbooks (for example MCP/Zapier/provider workflows) with reproducible steps.
+- Each playbook includes: prerequisites, exact configuration, expected outputs, failure modes, and recovery/rollback steps.
+- Add a tested compatibility table (integration surface + version/provider assumptions + last validation date).
+- Add repeatable verification checks (local smoke tests or scripted validation) for every published playbook.
+- Publish reliability evidence for those integration paths (success rate + retry behavior over repeated runs).
+
+Exit rule for score update:
+
+- Keep Integration leverage/extensibility at **4/5** until all criteria above are met and documented.
+- Move Integration leverage/extensibility to **5/5** only after evidence is published; total then becomes **500/500**.
 
 ## License
 
