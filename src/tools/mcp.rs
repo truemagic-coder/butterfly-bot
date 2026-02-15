@@ -155,9 +155,7 @@ impl McpTool {
             .cancel()
             .await
             .map_err(|err| ButterflyBotError::Runtime(err.to_string()));
-        if let Err(err) = shutdown {
-            return Err(err);
-        }
+        shutdown?;
 
         result
     }

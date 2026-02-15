@@ -707,9 +707,18 @@ impl QueryService {
                 serde_json::json!({"query": query, "user_id": user_id}),
             )
             .await?;
-        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let effective_result = result
+            .get("capability_result")
+            .and_then(|value| value.get("result"))
+            .cloned()
+            .unwrap_or_else(|| result.clone());
+
+        let status = effective_result
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status == "success" {
-            let content = result
+            let content = effective_result
                 .get("result")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
@@ -722,15 +731,28 @@ impl QueryService {
             return Ok(Some(content));
         }
 
-        let message = result
+        let message = effective_result
             .get("message")
             .and_then(|v| v.as_str())
+            .or_else(|| effective_result.get("error").and_then(|v| v.as_str()))
+            .or_else(|| effective_result.get("code").and_then(|v| v.as_str()))
+            .or_else(|| result.get("message").and_then(|v| v.as_str()))
+            .or_else(|| result.get("error").and_then(|v| v.as_str()))
+            .or_else(|| result.get("code").and_then(|v| v.as_str()))
             .unwrap_or("Search tool error");
-        let details = result.get("details").and_then(|v| v.as_str()).unwrap_or("");
-        let response = if details.is_empty() {
+        let details = effective_result
+            .get("details")
+            .and_then(|v| v.as_str())
+            .or_else(|| effective_result.get("reason").and_then(|v| v.as_str()))
+            .or_else(|| result.get("details").and_then(|v| v.as_str()))
+            .or_else(|| result.get("reason").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let response = if !details.is_empty() {
+            format!("Search tool error: {} ({})", message, details)
+        } else if message != "Search tool error" {
             format!("Search tool error: {}", message)
         } else {
-            format!("Search tool error: {} ({})", message, details)
+            format!("Search tool error: {}", effective_result)
         };
         Ok(Some(response))
     }

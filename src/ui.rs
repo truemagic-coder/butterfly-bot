@@ -2481,6 +2481,28 @@ fn app_view() -> Element {
                 backdrop-filter: blur(12px) saturate(180%);
                 box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
             }}
+            input:focus, textarea:focus, select:focus {{
+                outline: none;
+                border-color: rgba(99,102,241,0.75);
+                background: rgba(15,23,42,0.9);
+                color: #e5e7eb;
+            }}
+            select {{
+                appearance: none;
+                -webkit-appearance: none;
+                -moz-appearance: none;
+                background: rgba(15,23,42,0.9);
+                color: #e5e7eb;
+                padding-right: 36px;
+                background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3E%3Cpath d='M6 8l4 4 4-4' stroke='%23e5e7eb' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+                background-repeat: no-repeat;
+                background-position: right 12px center;
+                background-size: 14px 14px;
+            }}
+            select option {{
+                background: #0f172a;
+                color: #e5e7eb;
+            }}
             .config-editor {{
                 font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
                 font-size: 13px;

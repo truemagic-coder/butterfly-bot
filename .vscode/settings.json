@@ -17,6 +17,7 @@
     "chat.tools.terminal.autoApprove": {
         "cargo check": true,
         "cargo coverage": true,
-        "cargo test": true
+        "cargo test": true,
+        "cargo clippy": true
     }
 }

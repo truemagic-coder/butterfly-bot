@@ -6,7 +6,10 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use deadpool_sqlite::{
-    rusqlite::{ffi::sqlite3_auto_extension, params, OptionalExtension},
+    rusqlite::{
+        ffi::{sqlite3, sqlite3_api_routines, sqlite3_auto_extension},
+        params, OptionalExtension,
+    },
     Config as DeadpoolSqliteConfig, Pool as DeadpoolSqlitePool, Runtime as DeadpoolRuntime,
 };
 use diesel::prelude::*;
@@ -264,7 +267,11 @@ fn format_timestamp(ts: i64) -> String {
 fn register_sqlite_vec_extension() {
     static REGISTER: Once = Once::new();
     REGISTER.call_once(|| unsafe {
-        sqlite3_auto_extension(Some(std::mem::transmute(sqlite3_vec_init as *const ())));
+        type SqliteVecInitFn =
+            unsafe extern "C" fn(*mut sqlite3, *mut *mut i8, *const sqlite3_api_routines) -> i32;
+        sqlite3_auto_extension(Some(std::mem::transmute::<*const (), SqliteVecInitFn>(
+            sqlite3_vec_init as *const (),
+        )));
     });
 }
 
