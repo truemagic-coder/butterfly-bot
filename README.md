@@ -12,6 +12,8 @@ Butterfly Bot is an opinionated personal-ops AI assistant built for people who w
 
 Open the app, provide the prompt, and watch your always-on agent do its job!
 
+<img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
+
 ### Install
 
 #### Mac
