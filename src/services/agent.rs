@@ -218,9 +218,7 @@ impl AgentService {
         // Do NOT re-fetch here – it swallows errors and causes silent failures.
 
         let context_guard = self.context_markdown.read().await;
-        let has_context = context_guard
-            .as_ref()
-            .is_some_and(|s| !s.trim().is_empty());
+        let has_context = context_guard.as_ref().is_some_and(|s| !s.trim().is_empty());
         let instructions = &self.agent.instructions;
 
         if has_context {
