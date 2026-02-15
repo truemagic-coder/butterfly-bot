@@ -1618,13 +1618,13 @@ async fn run_autonomy_tick(
     });
 
     let options = ProcessOptions {
-        prompt: Some("AUTONOMY MODE: Heartbeat tick. REQUIRED FORMAT (keep brief):\n\n\
-1. Thought (1 sentence): What needs doing.\n\
-2. Plan (short list): Main steps with tool names.\n\
-3. Actions: 'Action: call X' before each tool, 'Observation: Y' after.\n\
-4. Summary (2 sentences): What done, what's next.\n\n\
-Steps: List plans/todos/tasks → parse heartbeat → create missing items → execute urgent → mark complete.\n\n\
-If nothing needs doing, write 'Thought: Checked state, nothing new. Plan: No action. Summary: No-op.' DO NOT skip sections.".to_string()),
+        prompt: Some("AUTONOMY MODE: Heartbeat tick.\n\
+    Run autonomous checks/actions as needed using tools.\n\
+    Output requirements:\n\
+    - Return ONLY one short final status line (max 120 chars).\n\
+    - Do NOT include Thought, Plan, Action, Observation, Summary, or Reasoning sections.\n\
+    - Do NOT dump tool call details.\n\
+    - Good outputs: 'No-op', 'Processed 2 due tasks', 'Updated plans/todos; no urgent actions'.".to_string()),
         images: Vec::new(),
         output_format: OutputFormat::Text,
         image_detail: "auto".to_string(),

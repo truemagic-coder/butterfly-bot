@@ -1057,6 +1057,20 @@ fn app_view() -> Element {
                                             payload.get("error").and_then(|v| v.as_str())
                                         {
                                             text.push_str(&format!(" — {error}"));
+                                        } else if event_type == "autonomy" {
+                                            if status == "skipped" {
+                                                if let Some(reason) =
+                                                    payload.get("reason").and_then(|v| v.as_str())
+                                                {
+                                                    text.push_str(&format!(" — {reason}"));
+                                                }
+                                                if let Some(remaining) = payload
+                                                    .get("cooldown_remaining_seconds")
+                                                    .and_then(|v| v.as_i64())
+                                                {
+                                                    text.push_str(&format!(" ({}s)", remaining.max(0)));
+                                                }
+                                            }
                                         } else if let Some(output) = payload
                                             .get("output")
                                             .or_else(|| payload.get("response"))
