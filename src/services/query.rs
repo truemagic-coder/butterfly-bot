@@ -117,6 +117,7 @@ impl QueryService {
         prompt: Option<&str>,
     ) -> Result<String> {
         let processed_query = query.to_string();
+        let autonomy_tick = is_autonomy_tick(&processed_query);
 
         self.ensure_context_in_memory(user_id).await?;
 
@@ -170,6 +171,9 @@ impl QueryService {
             .await?;
 
         if let Some(provider) = &self.memory_provider {
+            if autonomy_tick {
+                return Ok(response);
+            }
             provider
                 .append_message(user_id, "user", &processed_query)
                 .await?;
@@ -198,6 +202,7 @@ impl QueryService {
                     .await?
             }
         };
+            let autonomy_tick = is_autonomy_tick(&text);
 
         self.ensure_context_in_memory(user_id).await?;
 
@@ -285,6 +290,9 @@ impl QueryService {
         };
 
         if let Some(provider) = &self.memory_provider {
+            if autonomy_tick {
+                return Ok(output);
+            }
             provider.append_message(user_id, "user", &text).await?;
             if let ProcessResult::Text(ref message) = output {
                 provider
@@ -304,6 +312,7 @@ impl QueryService {
     ) -> BoxStream<'a, Result<String>> {
         Box::pin(try_stream! {
             let processed_query = query.to_string();
+            let autonomy_tick = is_autonomy_tick(&processed_query);
 
             self.ensure_context_in_memory(user_id).await?;
 
@@ -360,6 +369,9 @@ impl QueryService {
             }
 
             if let Some(provider) = &self.memory_provider {
+                if autonomy_tick {
+                    return;
+                }
                 provider.append_message(user_id, "user", &processed_query).await?;
                 if !response_text.is_empty() {
                     provider.append_message(user_id, "assistant", &response_text).await?;
@@ -373,9 +385,7 @@ impl QueryService {
     }
 
     async fn context_for_autonomy(&self, user_id: &str, query: &str) -> Option<String> {
-        let lower = query.to_lowercase();
-        let is_autonomy_tick = lower.contains("autonomous") && lower.contains("heartbeat");
-        if user_id != "system" && !is_autonomy_tick {
+        if user_id != "system" && !is_autonomy_tick(query) {
             return None;
         }
         let context_markdown = self.agent_service.get_context_markdown().await?;
@@ -420,6 +430,11 @@ impl QueryService {
         }
         Ok(Vec::new())
     }
+}
+
+fn is_autonomy_tick(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    lower.contains("autonomous") && lower.contains("heartbeat")
 }
 
 fn build_memory_context(

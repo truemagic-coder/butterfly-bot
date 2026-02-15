@@ -103,9 +103,8 @@ async fn daemon_empty_token_fails_closed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/process_text")
-                .header("content-type", "application/json")
-                .body(Body::from(json!({"user_id":"u","text":"hi"}).to_string()))
+                .uri("/security_audit")
+                .body(Body::empty())
                 .unwrap(),
         )
         .await

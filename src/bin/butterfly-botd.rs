@@ -18,9 +18,6 @@ struct Cli {
     #[arg(long, default_value = "./data/butterfly-bot.db")]
     db: String,
 
-    #[arg(long, env = "BUTTERFLY_BOT_TOKEN", default_value = "")]
-    token: String,
-
     /// Path to a JSON config file to import into the store on startup.
     /// This ensures the daemon always uses the latest config.
     #[arg(long)]
@@ -33,6 +30,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info,lance=warn,lancedb=warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
+    let token = butterfly_bot::vault::ensure_daemon_auth_token()?;
 
     // If --config is given, import it into the store before starting.
     if let Some(config_path) = &cli.config {
@@ -45,5 +43,5 @@ async fn main() -> Result<()> {
         );
     }
 
-    daemon::run(&cli.host, cli.port, &cli.db, &cli.token).await
+    daemon::run(&cli.host, cli.port, &cli.db, &token).await
 }

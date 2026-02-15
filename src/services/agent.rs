@@ -257,10 +257,10 @@ impl AgentService {
         }
 
         system_prompt.push_str(
-            "\n\nCONTEXT GOVERNANCE:\n- The primary prompt context markdown defines your identity and behavior and is authoritative.\n- Be autonomous when the context asks for it. Use tools proactively to advance the user goal without asking for confirmation unless required by tool policy or missing information.\n- Use the chat as an execution log: state the next action, call tools, then summarize results.\n- ALWAYS organize work using the planning, todo, and tasks tools. Do not just execute actions in isolation — create plans for goals, todos for action items, and scheduled tasks for recurring work.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
+            "\n\nCONTEXT GOVERNANCE:\n- The primary prompt context markdown defines your identity and behavior and is authoritative.\n- Prioritize direct user conversation first: answer greetings, questions, and clarifications naturally and briefly.\n- Be autonomous when the context asks for it, but do not let autonomous checks interrupt or replace a direct reply to the latest user message.\n- Use tools proactively to advance user goals without asking for confirmation unless required by tool policy or missing information.\n- Use planning/todo/tasks to track work when there is an actual goal or actionable work item.\n- Before creating new plans or todos, always LIST existing ones first to avoid duplicates.\n",
         );
         system_prompt.push_str(
-            "\n\nREACT LOOP — MANDATORY FORMAT (BRIEF):\n- Your response MUST start with 'Thought:' (1 sentence) before any tools.\n- Then 'Plan:' (short numbered list with tool names).\n- Then for each tool: 'Action: call X' before, 'Observation: Y' after.\n- End with 'Summary:' (2 sentences max).\n- KEEP IT SHORT to avoid truncation. One sentence per section where possible.\n- Make ONE tool call at a time.\n",
+            "\n\nRESPONSE STYLE:\n- For normal user conversation, do NOT expose chain-of-thought or forced sections. Respond naturally.\n- Use explicit 'Thought/Plan/Action/Observation/Summary' formatting ONLY during explicit autonomy ticks or when a tool-run status report is requested.\n- Keep outputs concise and user-friendly.\n",
         );
 
         let mcp_available = self.tool_registry.has_mcp_servers().await;

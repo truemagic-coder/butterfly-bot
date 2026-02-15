@@ -317,7 +317,7 @@ fn start_local_daemon() -> Result<(), String> {
     let (host, port) = parse_daemon_address(&daemon_url);
     let db_path =
         env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
-    let token = env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default();
+    let token = env_auth_token();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
@@ -340,6 +340,10 @@ fn start_local_daemon() -> Result<(), String> {
     });
 
     Ok(())
+}
+
+fn env_auth_token() -> String {
+    crate::vault::ensure_daemon_auth_token().unwrap_or_default()
 }
 
 fn stop_local_daemon() -> Result<(), String> {
@@ -395,10 +399,9 @@ fn app_view() -> Element {
             env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
         normalize_daemon_url(&raw)
     });
-    let token = use_signal(|| env::var("BUTTERFLY_BOT_TOKEN").unwrap_or_default());
+    let token = use_signal(env_auth_token);
     let user_id =
         use_signal(|| env::var("BUTTERFLY_BOT_USER_ID").unwrap_or_else(|_| "cli_user".to_string()));
-    let prompt = use_signal(String::new);
     let input = use_signal(String::new);
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
@@ -459,7 +462,6 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
-        let prompt = prompt.clone();
         let input = input.clone();
         let busy = busy.clone();
         let error = error.clone();
@@ -470,7 +472,6 @@ fn app_view() -> Element {
             let daemon_url = daemon_url();
             let token = token();
             let user_id = user_id();
-            let prompt = prompt();
             let text = input();
             let busy = busy.clone();
             let error = error.clone();
@@ -527,11 +528,7 @@ fn app_view() -> Element {
                 let body = ProcessTextRequest {
                     user_id,
                     text,
-                    prompt: if prompt.trim().is_empty() {
-                        None
-                    } else {
-                        Some(prompt)
-                    },
+                    prompt: None,
                 };
 
                 let make_request = |client: &reqwest::Client,
@@ -2098,7 +2095,6 @@ fn app_view() -> Element {
     let active_tab_config = active_tab.clone();
     let active_tab_context = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
-    let prompt_input = prompt.clone();
     let message_input = input.clone();
 
     rsx! {
@@ -2109,8 +2105,10 @@ fn app_view() -> Element {
                             radial-gradient(1000px 700px at 110% 10%, rgba(56,189,248,0.25), transparent 60%),
                             #0b1020;
                 color: #e5e7eb;
+                margin: 0;
+                overflow: hidden;
             }}
-            .container {{ max-width: 980px; margin: 0 auto; padding: 0; height: 100vh; display: flex; flex-direction: column; }}
+            .container {{ max-width: 980px; margin: 0 auto; padding: 10px; height: 100dvh; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; gap: 10px; }}
             .header {{
                 padding: 16px 20px;
                 background: rgba(17,24,39,0.55);
@@ -2119,6 +2117,7 @@ fn app_view() -> Element {
                 border-bottom: 1px solid rgba(255,255,255,0.08);
                 backdrop-filter: blur(18px) saturate(180%);
                 box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+                border-radius: 14px;
             }}
             .nav {{ display: flex; gap: 8px; align-items: center; }}
             .nav button {{ background: rgba(255,255,255,0.08); }}
@@ -2139,7 +2138,7 @@ fn app_view() -> Element {
             }}
             .daemon-icon-btn:disabled {{ opacity: 0.45; }}
             .title {{ font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }}
-            .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: transparent; }}
+            .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: rgba(10,16,34,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }}
             .bubble {{
                 max-width: 72%;
                 padding: 12px 14px;
@@ -2163,6 +2162,7 @@ fn app_view() -> Element {
                 display: flex; flex-direction: column; gap: 12px;
                 position: sticky; bottom: 0;
                 backdrop-filter: blur(18px) saturate(180%);
+                border-radius: 16px;
             }}
             .composer-row {{ display: flex; flex-direction: column; gap: 8px; }}
             .composer-input {{ position: relative; display: flex; align-items: stretch; }}
@@ -2388,16 +2388,6 @@ fn app_view() -> Element {
                     }
                 }
                 div { class: "composer",
-                    div {
-                        label { "System Prompt (optional)" }
-                        input {
-                            value: "{prompt}",
-                            oninput: move |evt| {
-                                let mut prompt_input = prompt_input.clone();
-                                prompt_input.set(evt.value());
-                            },
-                        }
-                    }
                     div { class: "composer-row",
                         label { "Message" }
                         div { class: "composer-input",

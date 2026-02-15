@@ -88,9 +88,6 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:7878")]
     daemon: String,
 
-    #[arg(long, env = "BUTTERFLY_BOT_TOKEN")]
-    token: Option<String>,
-
     #[arg(long, default_value = "cli_user")]
     user_id: String,
 
@@ -184,7 +181,7 @@ fn print_user_prompt() -> io::Result<()> {
 
 #[cfg(not(test))]
 async fn start_reminder_listener(cli: &Cli) {
-    let token = cli.token.clone().unwrap_or_default();
+    let token = vault::ensure_daemon_auth_token().unwrap_or_default();
     let url = format!(
         "{}/reminder_stream?user_id={}",
         cli.daemon.trim_end_matches('/'),
@@ -351,7 +348,7 @@ async fn main() -> Result<()> {
     if !cli.cli_mode {
         std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
         std::env::set_var("BUTTERFLY_BOT_DAEMON", &cli.daemon);
-        if let Some(token) = cli.token.as_ref() {
+        if let Ok(token) = vault::ensure_daemon_auth_token() {
             std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
         }
         std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
@@ -370,7 +367,7 @@ async fn main() -> Result<()> {
         );
     let _daemon_shutdown = if uses_daemon {
         let (host, port) = parse_daemon_address(&cli.daemon);
-        let token = cli.token.clone().unwrap_or_default();
+        let token = vault::ensure_daemon_auth_token().unwrap_or_default();
         let db_path = cli.db.clone();
         let (tx, rx) = oneshot::channel::<()>();
         tokio::spawn(async move {
@@ -844,7 +841,7 @@ fn model_matches(required: &str, installed: &str) -> bool {
 async fn daemon_status(cli: &Cli) -> Result<String> {
     let client = reqwest::Client::new();
     let url = format!("{}/health", cli.daemon.trim_end_matches('/'));
-    let token = cli.token.as_deref().unwrap_or("").to_string();
+    let token = vault::ensure_daemon_auth_token().unwrap_or_default();
     let response = client
         .get(url)
         .header("x-api-key", token)
@@ -865,7 +862,7 @@ async fn daemon_process_text_stream(
     prompt: Option<&str>,
     print_stream: bool,
 ) -> Result<String> {
-    let token = cli.token.as_deref();
+    let token = vault::ensure_daemon_auth_token().unwrap_or_default();
     let client = reqwest::Client::new();
     let url = format!("{}/process_text_stream", cli.daemon.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -874,10 +871,8 @@ async fn daemon_process_text_stream(
         "prompt": prompt,
     });
     let mut request = client.post(url);
-    if let Some(token) = token {
-        if !token.trim().is_empty() {
-            request = request.header("authorization", format!("Bearer {token}"));
-        }
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
     }
     let response = request
         .json(&body)
@@ -919,7 +914,7 @@ async fn daemon_process_text_stream(
 
 #[cfg(not(test))]
 async fn daemon_memory_search(cli: &Cli, query: &str, limit: usize) -> Result<Vec<String>> {
-    let token = cli.token.as_deref();
+    let token = vault::ensure_daemon_auth_token().unwrap_or_default();
     let client = reqwest::Client::new();
     let url = format!("{}/memory_search", cli.daemon.trim_end_matches('/'));
     let body = serde_json::json!({
@@ -928,10 +923,8 @@ async fn daemon_memory_search(cli: &Cli, query: &str, limit: usize) -> Result<Ve
         "limit": limit,
     });
     let mut request = client.post(url);
-    if let Some(token) = token {
-        if !token.trim().is_empty() {
-            request = request.header("authorization", format!("Bearer {token}"));
-        }
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
     }
     let response = request
         .json(&body)

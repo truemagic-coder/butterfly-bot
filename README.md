@@ -170,14 +170,6 @@ cargo build --release
 cargo run --release --bin butterfly-bot
 ```
 
-Launches the desktop app.
-
-To protect daemon endpoints, set a shared token before launching:
-
-```bash
-export BUTTERFLY_BOT_TOKEN="change-me"
-```
-
 ## Config
 
 Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.
@@ -310,9 +302,7 @@ There are many high-quality MCP server providers like:
 
 * [Zapier](https://zapier.com/mcp) - 7,000+ app connections via MCP
 
-* [VAPI.AI](https://vapi.ai) - Voice Agent Telephony 
-
-* [GitHub](https://github.com) - Coding
+* [VAPI.AI](https://vapi.ai) - Voice Agent Telephony
 
 Config fields:
 - `tools.mcp.servers` (required to use MCP)

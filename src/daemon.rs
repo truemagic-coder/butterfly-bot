@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::io::Write;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -41,6 +42,33 @@ pub struct AppState {
     pub token: String,
     pub ui_event_tx: broadcast::Sender<UiEvent>,
     pub db_path: String,
+}
+
+static AUTONOMY_LAST_RUN_TS: AtomicI64 = AtomicI64::new(0);
+static AUTONOMY_COOLDOWN_SECS: AtomicI64 = AtomicI64::new(60);
+
+fn set_autonomy_cooldown_seconds(seconds: u64) {
+    AUTONOMY_COOLDOWN_SECS.store(seconds.max(1) as i64, Ordering::Relaxed);
+}
+
+fn try_begin_autonomy_tick(now_ts: i64) -> Option<i64> {
+    loop {
+        let cooldown = AUTONOMY_COOLDOWN_SECS.load(Ordering::Relaxed).max(1);
+        let last = AUTONOMY_LAST_RUN_TS.load(Ordering::Relaxed);
+        if last > 0 {
+            let elapsed = now_ts.saturating_sub(last);
+            if elapsed < cooldown {
+                return Some(cooldown - elapsed);
+            }
+        }
+
+        if AUTONOMY_LAST_RUN_TS
+            .compare_exchange(last, now_ts, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return None;
+        }
+    }
 }
 
 struct BrainTickJob {
@@ -1389,7 +1417,8 @@ fn authorize(
         .get("x-api-key")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    let bearer = header.strip_prefix("Bearer ").unwrap_or("");
+    let bearer = header.strip_prefix("Bearer ").unwrap_or("").trim();
+    let api_key = api_key.trim();
 
     if bearer == expected_token || api_key == expected_token {
         Ok(())
@@ -1485,6 +1514,23 @@ where
         .and_then(|wakeup| wakeup.get("poll_seconds"))
         .and_then(|value| value.as_u64())
         .unwrap_or(60);
+    let autonomy_cooldown_seconds = config
+        .as_ref()
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| {
+            tools
+                .get("settings")
+                .and_then(|settings| settings.get("autonomy_cooldown_seconds"))
+                .and_then(|value| value.as_u64())
+                .or_else(|| {
+                    tools
+                        .get("wakeup")
+                        .and_then(|wakeup| wakeup.get("autonomy_cooldown_seconds"))
+                        .and_then(|value| value.as_u64())
+                })
+        })
+        .unwrap_or(60);
+    set_autonomy_cooldown_seconds(autonomy_cooldown_seconds);
     scheduler.register_job(Arc::new(WakeupJob {
         agent: agent.clone(),
         store: wakeup_store.clone(),
@@ -1545,13 +1591,30 @@ async fn run_autonomy_tick(
     user_id: String,
     source: &str,
 ) {
+    let run_at = now_ts();
+    if let Some(remaining) = try_begin_autonomy_tick(run_at) {
+        let _ = ui_event_tx.send(UiEvent {
+            event_type: "autonomy".to_string(),
+            user_id,
+            tool: "heartbeat".to_string(),
+            status: "skipped".to_string(),
+            payload: json!({
+                "source": source,
+                "reason": "cooldown",
+                "cooldown_remaining_seconds": remaining,
+            }),
+            timestamp: run_at,
+        });
+        return;
+    }
+
     let _ = ui_event_tx.send(UiEvent {
         event_type: "autonomy".to_string(),
         user_id: user_id.clone(),
         tool: "heartbeat".to_string(),
         status: "started".to_string(),
         payload: json!({"source": source}),
-        timestamp: now_ts(),
+        timestamp: run_at,
     });
 
     let options = ProcessOptions {

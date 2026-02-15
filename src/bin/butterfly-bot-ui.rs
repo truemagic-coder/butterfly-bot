@@ -19,10 +19,6 @@ struct UiCli {
     #[arg(long, env = "BUTTERFLY_BOT_DAEMON")]
     daemon: Option<String>,
 
-    /// Shared auth token for daemon requests.
-    #[arg(long, env = "BUTTERFLY_BOT_TOKEN")]
-    token: Option<String>,
-
     /// User id for chat context.
     #[arg(long, env = "BUTTERFLY_BOT_USER_ID")]
     user_id: Option<String>,
@@ -45,7 +41,7 @@ fn main() -> butterfly_bot::Result<()> {
     if let Some(daemon) = cli.daemon.as_ref() {
         std::env::set_var("BUTTERFLY_BOT_DAEMON", daemon);
     }
-    if let Some(token) = cli.token.as_ref() {
+    if let Ok(token) = butterfly_bot::vault::ensure_daemon_auth_token() {
         std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
     }
     if let Some(user_id) = cli.user_id.as_ref() {
