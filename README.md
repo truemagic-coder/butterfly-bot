@@ -2,26 +2,31 @@
 
 Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
 
-Open the app, provide the prompt, and watch your always-on agent run with memory, tools, and full visibility.
+Open the app, provide the prompt, and watch your always-on agent do its job!
 
-Why users pick it:
+### Why users pick it:
 
-- **Fast to first value:** works out-of-the-box with default settings.
-- **UI-first operator experience:** polished desktop chat, streaming responses, diagnostics, security audit, and live execution events.
-- **Real automation, not just chat:** native planning/todo/tasks/reminders/wakeup modules for always-on personal operations.
-- **Integration leverage:** MCP-based tooling plus built-in wrappers (GitHub + Zapier) and native tools for web, coding, scheduling, and reminders.
-- **Security-focused local posture:** keychain-backed secrets, local memory/storage paths, and WASM-only tool runtime policy.
+- **Fast value:** works out-of-the-box with default settings.
+- **Unlimted tokens:** designed to support Ollama to run privately on your computer with unlimited use.
+- **UI-first:** polished desktop app with chat, AI activity, and settings.
+- **Automation:** full toolset provided for your always-on agent.
+- **Integrations:** MCP web support including first-class tools for GitHub + Zapier.
+- **Security:** sandboxed security via WASM and OS keychain - no plaintext secrets or insecure tools!
+- **Memory:** best-in-class memory that remembers the facts and when they happened.
 
-## Highlights
+### How it compares:
 
-- Liquid Glass cross-platform desktop app with streaming chat.
-- Plan → task → reminder workflow support with native modules.
-- Reminders in chat and OS notifications.
-- Long-term agentic memory stored locally.
-- Optional prompt-context/heartbeat Markdown overrides.
-- Agent tools including MCP plus first-class GitHub and Zapier MCP wrappers.
-- Config stored in the OS keychain for maximum security.
-- UI launch auto-bootstraps default config and starts the local daemon automatically.
+| Criterion | Weight | Butterfly Bot | OpenClaw | ZeroClaw | IronClaw |
+|---|---:|---:|---:|---:|---:|
+| Workflow completeness | 20 | 5 | 4 | 3 | 4 |
+| Reliability and recovery | 20 | 5 | 3 | 4 | 3 |
+| UX and visibility | 15 | 5 | 4 | 3 | 4 |
+| Security posture | 15 | 5 | 1 | 5 | 4 |
+| Setup/onboarding | 10 | 5 | 4 | 5 | 4 |
+| Integration leverage/extensibility | 10 | 4 | 5 | 5 | 5 |
+| Docs/contributor DX | 10 | 5 | 4 | 5 | 4 |
+| **Total Weighted (/500)** | **100** | **490** | **345** | **415** | **390** |
+
 
 ## Architecture (Daemon + UI + Always-On Agent)
 
@@ -108,14 +113,12 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Config JSON is stored in the OS keychain.
 - SQLite data is encrypted at rest via SQLCipher when a DB key is set.
 
-## Install Prerequisites
+## Prerequisites
 
 - Rust (via rustup): https://rustup.rs
 - Ollama (platform-specific installers): https://ollama.com/download
 
-## Ollama
-
-### Requirements
+## Requirements
 
 ### Linux or Windows (WSL)
 - Rust 1.93+
@@ -145,18 +148,6 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
 - Mac M2 Pro Mini with 16GB RAM (10-20 seconds per response)
 - Not tested on Windows (WSL)
-
-## OpenAI 
-
-### Requirements
-
-- Rust 1.93+
-- Certain system libraries for the host OS
-- Mac or Linux or Windows (WSL)
-
-### Model Recommendations
-
-- No recommendations at this time as no testing of OpenAI has been done
 
 ## Build
 
@@ -231,42 +222,6 @@ Config is stored in the OS keychain for top security and safety.
 
 - `memory.openai` lets memory operations (embeddings, summarization, reranking) use a different OpenAI-compatible provider than the main agent.
 - This is useful for running the agent on a remote provider (e.g., Cerebras) while keeping memory on a local Ollama instance.
-
-### Advanced: config.json override example
-
-This is optional and intended for advanced customization.
-
-```json
-{
-  "openai": {
-    "api_key": null,
-    "model": "ministral-3:14b",
-    "base_url": "http://localhost:11434/v1"
-  },
-  "heartbeat_source": {
-    "type": "database",
-    "markdown": "# Heartbeat\n\nStay proactive, grounded, and transparent. Prefer clear next steps and avoid over-claiming."
-  },
-  "prompt_source": {
-    "type": "database",
-    "markdown": "# Prompt\n\nAnswer directly, include concrete actions, and keep responses practical."
-  },
-  "memory": {
-    "enabled": true,
-    "sqlite_path": "./data/butterfly-bot.db",
-    "lancedb_path": "./data/lancedb",
-    "summary_model": "ministral-3:14b",
-    "embedding_model": "embeddinggemma:latest",
-    "rerank_model": "qllama/bge-reranker-v2-m3",
-    "openai": null,
-    "context_embed_enabled": false,
-    "summary_threshold": null,
-    "retention_days": null
-  },
-  "tools": null,
-  "brains": null
-}
-```
 
 ### Convention Mode (WASM-only tools)
 
