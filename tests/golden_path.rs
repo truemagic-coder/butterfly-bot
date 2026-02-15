@@ -57,10 +57,7 @@ async fn golden_path_due_task_runs_and_completes() {
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();
     let user_id = "golden-user";
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = unix_now();
 
     let tasks = TaskStore::new(&db_path).await.unwrap();
     let task = tasks
@@ -74,13 +71,14 @@ async fn golden_path_due_task_runs_and_completes() {
         .await
         .unwrap();
 
-    let due = tasks.list_due(now, 10).await.unwrap();
+    let due_check = unix_now() + 2;
+    let due = tasks.list_due(due_check, 10).await.unwrap();
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].id, task.id);
 
     tasks.complete_one_shot(task.id).await.unwrap();
 
-    let due_after = tasks.list_due(now + 60, 10).await.unwrap();
+    let due_after = tasks.list_due(due_check + 60, 10).await.unwrap();
     assert!(due_after.is_empty());
 
     let all = tasks
@@ -126,10 +124,7 @@ async fn golden_path_persists_across_store_restart() {
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();
     let user_id = "golden-user";
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = unix_now();
 
     {
         let plans = PlanStore::new(&db_path).await.unwrap();
@@ -163,7 +158,7 @@ async fn golden_path_persists_across_store_restart() {
     let plan_items = plans_after.list_plans(user_id, 10).await.unwrap();
     assert_eq!(plan_items.len(), 1);
 
-    let due_tasks = tasks_after.list_due(now, 10).await.unwrap();
+    let due_tasks = tasks_after.list_due(unix_now() + 2, 10).await.unwrap();
     assert_eq!(due_tasks.len(), 1);
 
     let due_reminders = reminders_after
@@ -171,4 +166,11 @@ async fn golden_path_persists_across_store_restart() {
         .await
         .unwrap();
     assert_eq!(due_reminders.len(), 1);
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }

@@ -3,14 +3,29 @@
 [![CI](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/truemagic-coder/butterfly-bot/graph/badge.svg)](https://codecov.io/gh/truemagic-coder/butterfly-bot)
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust)](https://www.rust-lang.org/tools/install)
-[![fmt](https://img.shields.io/github/actions/workflow/status/truemagic-coder/butterfly-bot/ci.yml?branch=main&label=fmt)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml?query=branch%3Amain+job%3A%22Rust+Format%22)
-[![clippy](https://img.shields.io/github/actions/workflow/status/truemagic-coder/butterfly-bot/ci.yml?branch=main&label=clippy)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml?query=branch%3Amain+job%3A%22Rust+Clippy%22)
+[![fmt](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml)
+[![clippy](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml)
 [![snap](https://img.shields.io/badge/snap-ready-blue)](https://snapcraft.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
 
 Open the app, provide the prompt, and watch your always-on agent do its job!
+
+### Install
+
+#### Mac
+
+```bash
+brew tap truemagic-coder/butterfly-bot https://github.com/truemagic-coder/butterfly-bot
+brew install butterfly-bot
+```
+
+#### Linux
+
+```bash
+sudo snap install butterfly-bot
+```
 
 ### Why users pick it:
 
@@ -167,6 +182,14 @@ cargo build --release
 
 ```bash
 cargo test
+```
+
+Coverage (llvm-cov):
+
+```bash
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov
+cargo llvm-cov --workspace --tests --lcov --output-path lcov.info
 ```
 
 If your environment prompts for keychain/keyring access during tests, disable keyring usage for that run:

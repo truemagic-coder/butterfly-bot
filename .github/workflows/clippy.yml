@@ -1,0 +1,26 @@
+name: Rust Clippy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  clippy:
+    name: Rust Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Ubuntu build dependencies
+        uses: ./.github/actions/install-ubuntu-deps
+      - name: Set up Rust and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          components: clippy
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
