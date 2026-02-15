@@ -7,9 +7,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use deadpool_sqlite::{
     rusqlite::{ffi::sqlite3_auto_extension, params, OptionalExtension},
-    Config as DeadpoolSqliteConfig,
-    Pool as DeadpoolSqlitePool,
-    Runtime as DeadpoolRuntime,
+    Config as DeadpoolSqliteConfig, Pool as DeadpoolSqlitePool, Runtime as DeadpoolRuntime,
 };
 use diesel::prelude::*;
 use diesel::sql_types::{BigInt, Text};
@@ -1050,52 +1048,57 @@ impl SqliteMemoryProvider {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
         let rows = conn
-            .interact(move |conn| -> std::result::Result<Vec<(String, i64)>, String> {
-                conn.execute_batch("PRAGMA busy_timeout = 5000;")
-                    .map_err(|e| format!("search_vector step=pragma_busy_timeout failed: {e}"))?;
+            .interact(
+                move |conn| -> std::result::Result<Vec<(String, i64)>, String> {
+                    conn.execute_batch("PRAGMA busy_timeout = 5000;")
+                        .map_err(|e| {
+                            format!("search_vector step=pragma_busy_timeout failed: {e}")
+                        })?;
 
-                if let Some(key) = key {
-                    let escaped_key = key.replace('\'', "''");
-                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                        .map_err(|e| format!("search_vector step=pragma_key failed: {e}"))?;
-                }
+                    if let Some(key) = key {
+                        let escaped_key = key.replace('\'', "''");
+                        conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                            .map_err(|e| format!("search_vector step=pragma_key failed: {e}"))?;
+                    }
 
-                let mut stmt = match conn.prepare(
-                    "SELECT content, timestamp
+                    let mut stmt = match conn.prepare(
+                        "SELECT content, timestamp
                      FROM message_vectors
                      WHERE user_id = ?1
                        AND timestamp > ?2
                      ORDER BY vec_distance_cosine(embedding, vec_f32(?3)) ASC
                      LIMIT ?4",
-                ) {
-                    Ok(stmt) => stmt,
-                    Err(err) => {
-                        let message = err.to_string();
-                        if message.contains("no such table") {
-                            return Ok(Vec::new());
+                    ) {
+                        Ok(stmt) => stmt,
+                        Err(err) => {
+                            let message = err.to_string();
+                            if message.contains("no such table") {
+                                return Ok(Vec::new());
+                            }
+                            return Err(format!("search_vector step=prepare failed: {message}"));
                         }
-                        return Err(format!("search_vector step=prepare failed: {message}"));
+                    };
+
+                    let mapped = stmt
+                        .query_map(
+                            params![user_id, reset_ts, query_blob.as_slice(), limit as i64],
+                            |row| {
+                                let content: String = row.get(0)?;
+                                let timestamp: i64 = row.get(1)?;
+                                Ok((content, timestamp))
+                            },
+                        )
+                        .map_err(|e| format!("search_vector step=query_map failed: {e}"))?;
+
+                    let mut out = Vec::new();
+                    for item in mapped {
+                        let pair =
+                            item.map_err(|e| format!("search_vector step=row failed: {e}"))?;
+                        out.push(pair);
                     }
-                };
-
-                let mapped = stmt
-                    .query_map(
-                        params![user_id, reset_ts, query_blob.as_slice(), limit as i64],
-                        |row| {
-                            let content: String = row.get(0)?;
-                            let timestamp: i64 = row.get(1)?;
-                            Ok((content, timestamp))
-                        },
-                    )
-                    .map_err(|e| format!("search_vector step=query_map failed: {e}"))?;
-
-                let mut out = Vec::new();
-                for item in mapped {
-                    let pair = item.map_err(|e| format!("search_vector step=row failed: {e}"))?;
-                    out.push(pair);
-                }
-                Ok(out)
-            })
+                    Ok(out)
+                },
+            )
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             .map_err(ButterflyBotError::Runtime)?;

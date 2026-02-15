@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
+use reqwest_mcp::header::{HeaderMap, HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, PaginatedRequestParams};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::ServiceExt;
-use reqwest_mcp::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
 use tokio::sync::RwLock;
 
@@ -74,11 +74,7 @@ impl McpTool {
                         .collect::<HashMap<_, _>>()
                 })
                 .unwrap_or_default();
-            parsed.push(McpServerConfig {
-                name,
-                url,
-                headers,
-            });
+            parsed.push(McpServerConfig { name, url, headers });
         }
         Ok(parsed)
     }
@@ -134,11 +130,16 @@ impl McpTool {
         F: for<'a> FnOnce(
             &'a rmcp::service::Peer<rmcp::RoleClient>,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = std::result::Result<T, rmcp::ServiceError>> + Send + 'a>,
+            Box<
+                dyn std::future::Future<Output = std::result::Result<T, rmcp::ServiceError>>
+                    + Send
+                    + 'a,
+            >,
         >,
     {
         let client = Self::build_http_client(server)?;
-        let mut transport_config = StreamableHttpClientTransportConfig::with_uri(server.url.clone());
+        let mut transport_config =
+            StreamableHttpClientTransportConfig::with_uri(server.url.clone());
         transport_config.allow_stateless = true;
         let transport = StreamableHttpClientTransport::with_client(client, transport_config);
         let runtime = ()
@@ -196,8 +197,7 @@ impl McpTool {
                     .await
                 })
             })
-            .await
-            ?;
+            .await?;
         serde_json::to_value(&result).map_err(|e| ButterflyBotError::Serialization(e.to_string()))
     }
 }

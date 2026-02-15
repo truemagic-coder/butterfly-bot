@@ -610,6 +610,8 @@ fn app_view() -> Element {
     let wakeup_poll_seconds_input = use_signal(|| "60".to_string());
     let github_pat_input = use_signal(String::new);
     let zapier_token_input = use_signal(String::new);
+    let coding_api_key_input = use_signal(String::new);
+    let search_api_key_input = use_signal(String::new);
     let mcp_servers_form = use_signal(Vec::<UiMcpServer>::new);
     let network_allow_form = use_signal(Vec::<String>::new);
     let context_text = use_signal(String::new);
@@ -1083,7 +1085,7 @@ fn app_view() -> Element {
         let user_id = user_id.clone();
         let messages = messages.clone();
         let activity_messages = activity_messages.clone();
-            let activity_messages = activity_messages.clone();
+        let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
 
         use_effect(move || {
@@ -1485,6 +1487,8 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let coding_api_key_input = coding_api_key_input.clone();
+        let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let boot_status = boot_status.clone();
@@ -1527,6 +1531,8 @@ fn app_view() -> Element {
                 let mut wakeup_poll_seconds_input = wakeup_poll_seconds_input;
                 let mut github_pat_input = github_pat_input;
                 let mut zapier_token_input = zapier_token_input;
+                let mut coding_api_key_input = coding_api_key_input;
+                let mut search_api_key_input = search_api_key_input;
                 let mut mcp_servers_form = mcp_servers_form;
                 let mut network_allow_form = network_allow_form;
                 let mut search_provider = search_provider;
@@ -1647,7 +1653,11 @@ fn app_view() -> Element {
                     if let Some(search_cfg) = tools_value.get("search_internet") {
                         if let Some(provider) = search_cfg.get("provider").and_then(|v| v.as_str())
                         {
-                            search_provider.set(provider.to_string());
+                            let normalized = match provider {
+                                "openai" | "grok" | "perplexity" => provider,
+                                _ => "openai",
+                            };
+                            search_provider.set(normalized.to_string());
                         }
                         if let Some(model) = search_cfg.get("model").and_then(|v| v.as_str()) {
                             search_model.set(model.to_string());
@@ -1746,6 +1756,14 @@ fn app_view() -> Element {
                     Err(err) => settings_error.set(format!("Vault error: {err}")),
                 }
 
+                match crate::vault::get_secret("coding_openai_api_key") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        coding_api_key_input.set(secret);
+                    }
+                    Ok(_) => coding_api_key_input.set(String::new()),
+                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                }
+
                 let provider_name = search_provider();
                 let secret_name = match provider_name.as_str() {
                     "perplexity" => "search_internet_perplexity_api_key",
@@ -1754,9 +1772,19 @@ fn app_view() -> Element {
                 };
                 match crate::vault::get_secret(secret_name) {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        search_api_key_input.set(secret);
                         search_api_key_status.set("Stored in vault".to_string());
                     }
                     Ok(_) => {
+                        let fallback = config
+                            .tools
+                            .as_ref()
+                            .and_then(|tools| tools.get("search_internet"))
+                            .and_then(|search| search.get("api_key"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        search_api_key_input.set(fallback);
                         search_api_key_status.set("Not set".to_string());
                     }
                     Err(err) => {
@@ -1811,6 +1839,9 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let coding_api_key_input = coding_api_key_input.clone();
+        let search_provider = search_provider.clone();
+        let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let db_path = db_path.clone();
@@ -1824,6 +1855,9 @@ fn app_view() -> Element {
             let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
             let github_pat_input = github_pat_input.clone();
             let zapier_token_input = zapier_token_input.clone();
+            let coding_api_key_input = coding_api_key_input.clone();
+            let search_provider = search_provider.clone();
+            let search_api_key_input = search_api_key_input.clone();
             let mcp_servers_form = mcp_servers_form.clone();
             let network_allow_form = network_allow_form.clone();
             let db_path = db_path.clone();
@@ -1873,6 +1907,16 @@ fn app_view() -> Element {
                     .map(|value| value.trim().to_string())
                     .filter(|value| !value.is_empty())
                     .collect::<Vec<_>>();
+
+                let search_provider_value = match search_provider().trim() {
+                    "openai" | "grok" | "perplexity" => search_provider().trim().to_string(),
+                    _ => {
+                        settings_error.set(
+                            "Search provider must be openai, grok, or perplexity.".to_string(),
+                        );
+                        return;
+                    }
+                };
 
                 let mut config = match crate::config::Config::from_store(&db_path) {
                     Ok(value) => value,
@@ -1929,6 +1973,20 @@ fn app_view() -> Element {
                     );
                 }
 
+                let search_cfg = tools_obj
+                    .entry("search_internet")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !search_cfg.is_object() {
+                    *search_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(search_obj) = search_cfg.as_object_mut() {
+                    search_obj.insert(
+                        "provider".to_string(),
+                        Value::String(search_provider_value.clone()),
+                    );
+                    search_obj.remove("api_key");
+                }
+
                 let settings_cfg = tools_obj
                     .entry("settings")
                     .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -1964,6 +2022,24 @@ fn app_view() -> Element {
                 let zapier_token = zapier_token_input().trim().to_string();
                 if let Err(err) = crate::vault::set_secret("zapier_token", &zapier_token) {
                     settings_error.set(format!("Failed to store Zapier token: {err}"));
+                    return;
+                }
+
+                let coding_api_key = coding_api_key_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret("coding_openai_api_key", &coding_api_key)
+                {
+                    settings_error.set(format!("Failed to store coding API key: {err}"));
+                    return;
+                }
+
+                let search_secret_name = match search_provider_value.as_str() {
+                    "perplexity" => "search_internet_perplexity_api_key",
+                    "grok" => "search_internet_grok_api_key",
+                    _ => "search_internet_openai_api_key",
+                };
+                let search_api_key = search_api_key_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret(search_secret_name, &search_api_key) {
+                    settings_error.set(format!("Failed to store search API key: {err}"));
                     return;
                 }
 
@@ -2397,7 +2473,7 @@ fn app_view() -> Element {
                 word-break: break-word;
             }}
             label {{ display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: rgba(229,231,235,0.7); margin-bottom: 6px; }}
-            input, textarea {{
+            input, textarea, select {{
                 width: 100%; padding: 10px 12px; border-radius: 12px;
                 border: 1px solid rgba(255,255,255,0.12);
                 background: rgba(15,23,42,0.55);
@@ -2762,6 +2838,73 @@ fn app_view() -> Element {
                                                 zapier_token_input.set(evt.value());
                                             },
                                             placeholder: "Paste Zapier token",
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-top",
+                                    div {
+                                        label { "Coding OpenAI API Key" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{coding_api_key_input}",
+                                            oninput: move |evt| {
+                                                let mut coding_api_key_input = coding_api_key_input.clone();
+                                                coding_api_key_input.set(evt.value());
+                                            },
+                                            placeholder: "Paste coding API key",
+                                        }
+                                    }
+                                    div {
+                                        label { "Search Provider" }
+                                        select {
+                                            value: "{search_provider()}",
+                                            onchange: move |evt| {
+                                                let selected = evt.value();
+                                                let normalized = match selected.as_str() {
+                                                    "openai" | "grok" | "perplexity" => selected,
+                                                    _ => "openai".to_string(),
+                                                };
+                                                let mut search_provider = search_provider.clone();
+                                                search_provider.set(normalized.clone());
+
+                                                let secret_name = match normalized.as_str() {
+                                                    "perplexity" => "search_internet_perplexity_api_key",
+                                                    "grok" => "search_internet_grok_api_key",
+                                                    _ => "search_internet_openai_api_key",
+                                                };
+                                                let mut search_api_key_input = search_api_key_input.clone();
+                                                match crate::vault::get_secret(secret_name) {
+                                                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                                                        search_api_key_input.set(secret);
+                                                    }
+                                                    _ => search_api_key_input.set(String::new()),
+                                                }
+                                            },
+                                            option {
+                                                value: "openai",
+                                                "OpenAI"
+                                            }
+                                            option {
+                                                value: "grok",
+                                                "Grok"
+                                            }
+                                            option {
+                                                value: "perplexity",
+                                                "Perplexity"
+                                            }
+                                        }
+                                    }
+                                    div {
+                                        label { "Search API Key" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{search_api_key_input}",
+                                            oninput: move |evt| {
+                                                let mut search_api_key_input = search_api_key_input.clone();
+                                                search_api_key_input.set(evt.value());
+                                            },
+                                            placeholder: "Paste search API key",
                                         }
                                     }
                                 }

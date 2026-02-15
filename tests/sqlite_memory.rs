@@ -68,11 +68,12 @@ async fn sqlite_memory_clear_history_repairs_memories_fts_before_delete() {
 
     provider.clear_history("u3").await.unwrap();
 
-    let remaining: i64 = diesel::sql_query("SELECT COUNT(*) AS count FROM memories WHERE user_id = ?1")
-        .bind::<diesel::sql_types::Text, _>("u3")
-        .get_result::<CountRow>(&mut conn)
-        .unwrap()
-        .count;
+    let remaining: i64 =
+        diesel::sql_query("SELECT COUNT(*) AS count FROM memories WHERE user_id = ?1")
+            .bind::<diesel::sql_types::Text, _>("u3")
+            .get_result::<CountRow>(&mut conn)
+            .unwrap()
+            .count;
     assert_eq!(remaining, 0);
 }
 

@@ -52,8 +52,26 @@ sudo snap install butterfly-bot
 | Docs/contributor DX | 10 | 5 | 4 | 5 | 4 |
 | **Total Weighted (/500)** | **100** | **490** | **345** | **415** | **390** |
 
+### Tools
 
-## Architecture (Daemon + UI + Always-On Agent)
+Built-in tools included in Butterfly Bot:
+
+- `mcp` — Connects to external MCP servers over streamable HTTP.
+- `github` — GitHub MCP wrapper for GitHub workflows.
+- `zapier` — Zapier MCP wrapper for connected app automations.
+- `coding` — Dedicated coding tool/model for implementation tasks.
+- `search_internet` — Web search tool (OpenAI, Grok, or Perplexity providers).
+- `http_call` — Generic HTTP client for external API calls.
+- `planning` — Structured plans (goals + steps).
+- `todo` — Ordered checklist-style todos.
+- `tasks` — Scheduled one-off and recurring tasks.
+- `reminders` — Reminder creation and lifecycle operations.
+- `wakeup` — Interval-based wakeup/autonomy task loop.
+
+Tool configuration is convention-first and managed through app defaults plus minimal Config tab controls.
+
+
+### Architecture (Daemon + UI + Always-On Agent)
 
 ```
         ┌──────────────────────────────────────┐
@@ -83,7 +101,7 @@ sudo snap install butterfly-bot
     └────────────────┘  └───────────────┘  └──────────────────┘
 ```
 
-## Memory System (Diagram + Rationale)
+### Memory System (Diagram + Rationale)
 
 ```
                     ┌───────────────────────────────┐
@@ -130,7 +148,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Safer pruning. Summarization is used for compression, not replacement, so older context is condensed while retaining anchors for precise retrieval.
 - Faster, cheaper queries. Quick structured lookups handle facts and tasks; semantic search handles fuzzy recall, keeping prompts smaller and more relevant.
 
-## Privacy & Security & Always On
+### Privacy & Security & Always On
 
 - Run locally with Ollama to keep requests and model inference private on your machine.
 - Designed for always-on use with unlimited token use (local inference) and customized wakeup and task intervals.
@@ -138,49 +156,49 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Config JSON is stored in the OS keychain.
 - SQLite data is encrypted at rest via SQLCipher when a DB key is set.
 
-## Prerequisites
+### Prerequisites
 
 - Rust (via rustup): https://rustup.rs
 - Ollama (platform-specific installers): https://ollama.com/download
 
-## Requirements
+### Requirements
 
-### Linux or Windows (WSL)
+#### Linux or Windows (WSL)
 - Rust 1.93+
 - Ubuntu recommended
 - 16GB+ RAM with 8GB+ VRAM
 - Certain system libraries for Linux
 
-### Mac
+#### Mac
 - Rust 1.93+
 - Mac Tahoe
 - 16GB+ RAM
 - M2 Pro+
 
-### Models Used
+#### Models Used
 
 - ministral-3:14b (assistant + summaries)
 - embeddinggemma:latest (embedding)
 - qllama/bge-reranker-v2-m3 (reranking)
 
-### Model Notes
+#### Model Notes
 - When using a local Ollama base URL, `butterfly-bot` will automatically pull missing models on startup and let you know while they load.
 - Ollama models can be overriden and other models can be used rather than the default ones.
 
-### Test Systems
+#### Test Systems
 
 - AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant response)
 - MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
 - Mac M2 Pro Mini with 16GB RAM (10-20 seconds per response)
 - Not tested on Windows (WSL)
 
-## Build
+### Build
 
 ```bash
 cargo build --release
 ```
 
-## Test
+### Test
 
 ```bash
 cargo test
@@ -206,7 +224,7 @@ BUTTERFLY_BOT_DISABLE_KEYRING=1 cargo test
 cargo run --release --bin butterfly-bot
 ```
 
-## Snap package (includes WASM tools)
+### Snap package (includes WASM tools)
 
 Snap packaging is defined in `snapcraft.yaml` and bundles all default WASM tool modules into the snap.
 
@@ -250,7 +268,7 @@ Notes:
 - Bundled modules are mounted at `./wasm/<tool>_tool.wasm` inside the app runtime directory.
 - `BUTTERFLY_BOT_DISABLE_KEYRING=1` is enabled by default in the snap launcher (override if your snap environment provides a working keyring backend).
 
-## Config
+### Config
 
 Butterfly Bot uses convention-first defaults. You can run without editing config files, then override settings only when needed.
 
@@ -279,16 +297,6 @@ Config is stored in the OS keychain for top security and safety.
 - Primary threats covered: plaintext secret leakage, tool capability escalation, over-permissive network egress, and daemon auth misuse.
 - Baseline controls include OS keychain-backed secrets, WASM-only execution for built-in tools, daemon auth checks, and `default_deny` network posture guidance.
 - See [docs/threat-model.md](docs/threat-model.md) for full assumptions, residual risks, and hardening priorities.
-
-### Prompt Context & Heartbeat
-
-- `prompt_source` is optional Markdown (URL or inline database markdown) for custom assistant identity/style/rules.
-- `heartbeat_file` is optional Markdown (local path or URL) appended for periodic guidance.
-- `prompt_file` is optional Markdown (local path or URL) for extra instructions.
-- If these files are omitted, built-in defaults are used.
-- The heartbeat file is reloaded on every wakeup tick (using `tools.wakeup.poll_seconds`) so changes take effect without a restart.
-- Boot preload uses a **fast path**: context/prompt/heartbeat warmup is time-bounded and long operations continue in deferred background hydration.
-- This keeps startup responsive while preserving lazy/on-demand context import for first real work.
 
 ### Memory LLM Configuration
 
@@ -351,286 +359,6 @@ export BUTTERFLY_BOT_DB_KEY="your-strong-passphrase"
 ```
 
 If no key is set, storage falls back to plaintext SQLite.
-
-## Tools
-
-### MCP Tool
-
-The MCP tool supports custom headers and multiple servers at once.
-Transport behavior is streamable HTTP via `rmcp`.
-
-There are many high-quality MCP server providers like: 
-
-* [Zapier](https://zapier.com/mcp) - 7,000+ app connections via MCP
-
-* [VAPI.AI](https://vapi.ai) - Voice Agent Telephony
-
-Config fields:
-- `tools.mcp.servers` (required to use MCP)
-    - `name` (required)
-    - `url` (required)
-    - `headers` (optional)
-
-```json
-{
-    "tools": {
-        "mcp": {
-            "servers": [
-                {
-                    "name": "local",
-                    "url": "http://127.0.0.1:3001/sse",
-                    "headers": {
-                        "Authorization": "Bearer my-token"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-HTTP (streamable) example:
-
-```json
-{
-    "tools": {
-        "mcp": {
-            "servers": [
-                {
-                    "name": "github",
-                    "url": "https://api.githubcopilot.com/mcp/",
-                    "headers": {
-                        "Authorization": "Bearer YOUR_TOKEN"
-                    }
-                }
-            ]
-        }
-    }
-}
-```
-
-### GitHub Tool (MCP wrapper)
-
-Use the built-in GitHub tool to call GitHub MCP tools with a single PAT. This tool uses MCP under the hood, so you don't need to define MCP servers directly if you don't want to.
-
-Config fields:
-- `tools.github.pat` (optional; can also come from vault secret `github_pat`)
-- `tools.github.url` (optional; defaults to `https://api.githubcopilot.com/mcp/`)
-- `tools.github.headers` (optional; additional headers)
-
-```json
-{
-    "tools": {
-        "github": {
-            "pat": "YOUR_GITHUB_PAT"
-        }
-    }
-}
-```
-
-### Zapier Tool (MCP wrapper)
-
-Use the built-in Zapier tool to call Zapier MCP tools directly through Zapier's hosted MCP endpoint.
-
-Config fields:
-- `tools.zapier.url` (optional; defaults to `https://mcp.zapier.com/api/v1/connect?token=my_token`)
-- `tools.zapier.token` (optional; can also come from vault secret `zapier_token`; appended to URL when URL does not already include `token=`)
-- `tools.zapier.headers` (optional; additional headers)
-
-```json
-{
-    "tools": {
-        "zapier": {
-            "token": "YOUR_ZAPIER_TOKEN"
-        }
-    }
-}
-```
-
-### Coding Tool (Codex)
-
-Use a dedicated coding model for Solana backend and Solana smart contract work without changing the main runtime model.
-
-Config fields:
-- `tools.coding.api_key` (optional; can also come from vault secret `coding_openai_api_key`)
-- `tools.coding.model` (optional; defaults to `gpt-5.2-codex`)
-- `tools.coding.base_url` (optional; defaults to `https://api.openai.com/v1`)
-- `tools.coding.system_prompt` (optional; overrides default coding system prompt)
-
-```json
-{
-    "tools": {
-        "coding": {
-            "api_key": "YOUR_OPENAI_KEY",
-            "model": "gpt-5.2-codex",
-            "base_url": "https://api.openai.com/v1"
-        }
-    }
-}
-```
-
-### Internet Search Tool
-
-The Internet Search tool supports 3 different providers: `openai`, `grok`, and `perplexity`.
-
-Configure the internet search tool under `tools.search_internet`:
-
-Config fields:
-- `api_key` (optional; can also come from vault secrets or `openai.api_key`)
-- `provider` (optional; defaults to `openai`)
-- `model` (optional; defaults by provider)
-- `citations` (optional; defaults to `true`)
-- `grok_web_search` (optional; defaults to `true`)
-- `grok_x_search` (optional; defaults to `true`)
-- `grok_timeout` (optional; defaults to `90`)
-- `permissions.network_allow` (optional allowlist for outbound domains)
-- `permissions.default_deny` (optional; defaults to `true` from code-level convention defaults)
-- `tools.settings.permissions.*` (optional global defaults; tool-level `permissions` can override `network_allow`)
-
-```json
-{
-    "tools": {
-        "search_internet": {
-            "api_key": "YOUR_API_KEY",
-            "provider": "openai",
-            "model": "gpt-4o-mini-search-preview",
-            "citations": true,
-            "grok_web_search": true,
-            "grok_x_search": true,
-            "grok_timeout": 90,
-            "permissions": {
-                "network_allow": ["api.openai.com"],
-                "default_deny": true
-            }
-        }
-    }
-}
-```
-
-### Wakeup Tool
-
-The wakeup tool runs scheduled tasks on an interval.
-
-Wakeup runs are also streamed to the UI event feed as tool messages.
-
-Create recurring agent tasks with `tools.wakeup`, control polling, and log runs to an audit file:
-
-Config fields:
-- `poll_seconds` (optional; defaults to `60`)
-- `sqlite_path` (optional; defaults to `./data/butterfly-bot.db`)
-- `audit_log_path` (optional; defaults to `./data/wakeup_audit.log`)
-
-```json
-{
-    "tools": {
-        "wakeup": {
-            "poll_seconds": 60,
-            "audit_log_path": "./data/wakeup_audit.log"
-        }
-    }
-}
-```
-
-### HTTP Call Tool
-
-HTTP Call tool can call any public endpoint and private endpoint (if base url and authorization is provided).
-
-Endpoints can be discovered by the agent or provided in the system/user prompts.
-
-Call external APIs with arbitrary HTTP requests and custom headers. Configure defaults under `tools.http_call`:
-
-Config fields:
-- `base_url` (optional)
-- `default_headers` (optional)
-- `timeout_seconds` (optional; defaults to `60`)
-
-```json
-{
-    "tools": {
-        "http_call": {
-            "base_url": "https://api.example.com",
-            "default_headers": {
-                "Authorization": "Bearer YOUR_TOKEN"
-            },
-            "timeout_seconds": 60
-        }
-    }
-}
-```
-
-### Todo Tool
-
-Ordered todo list backed by SQLite for the agent to created todo lists:
-
-Config fields:
-- `sqlite_path` (optional; defaults to `./data/butterfly-bot.db`)
-
-```json
-{
-    "tools": {
-        "todo": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        }
-    }
-}
-```
-
-### Planning Tool
-
-Structured plans with goals and steps for the agent to create plans:
-
-Config fields:
-- `sqlite_path` (optional; defaults to `./data/butterfly-bot.db`)
-
-```json
-{
-    "tools": {
-        "planning": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        }
-    }
-}
-```
-
-### Tasks Tool
-
-Schedule one-off or recurring tasks with cancellation support for the agent to create tasks:
-
-Config fields:
-- `poll_seconds` (optional; defaults to `60`)
-- `audit_log_path` (optional; defaults to `./data/tasks_audit.log`)
-- `sqlite_path` (optional; defaults to `./data/butterfly-bot.db`)
-
-```json
-{
-    "tools": {
-        "tasks": {
-            "poll_seconds": 60,
-            "audit_log_path": "./data/tasks_audit.log",
-            "sqlite_path": "./data/butterfly-bot.db"
-        }
-    }
-}
-```
-
-### Reminders Tool
-
-The reminders tool is for users to create reminders for themselves or for the agent to create reminders for the user.
-
-Create, list, complete, delete, and snooze reminders. Configure storage under `tools.reminders` (falls back to `memory.sqlite_path` if omitted):
-
-Config fields:
-- `sqlite_path` (optional; defaults to `./data/butterfly-bot.db` and falls back to `memory.sqlite_path` when set)
-
-```json
-{
-    "tools": {
-        "reminders": {
-            "sqlite_path": "./data/butterfly-bot.db"
-        }
-    }
-}
-```
 
 ## Competitive Feature Matrix (Butterfly Bot vs OpenClaw, ZeroClaw, IronClaw)
 
@@ -716,6 +444,6 @@ Exit rule for score update:
 - Keep Integration leverage/extensibility at **4/5** until all criteria above are met and documented.
 - Move Integration leverage/extensibility to **5/5** only after evidence is published; total then becomes **500/500**.
 
-## License
+### License
 
 MIT
