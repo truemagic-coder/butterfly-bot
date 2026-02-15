@@ -36,7 +36,7 @@ sudo snap install butterfly-bot
 - **UI-first:** polished desktop app with chat, AI activity, and settings.
 - **Automation:** full toolset provided for your always-on agent.
 - **Integrations:** MCP web support including first-class tools for GitHub + Zapier.
-- **Security:** WASM-only execution for built-in tools plus OS keychain-backed secrets - no plaintext secrets or insecure tool runtime paths.
+- **Security:** WASM-only execution for tools plus OS keychain-backed secrets - no plaintext secrets or insecure tools.
 - **Memory:** best-in-class memory that remembers the facts and when they happened.
 
 ### How it compares:
