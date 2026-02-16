@@ -802,7 +802,7 @@ fn app_view() -> Element {
                                                 chunk_counter += 1;
                                             }
                                         }
-                                        if chunk_counter > 0 && chunk_counter % 8 == 0 {
+                                        if chunk_counter > 0 && chunk_counter.is_multiple_of(8) {
                                             scroll_chat_to_bottom().await;
                                         }
                                     }
