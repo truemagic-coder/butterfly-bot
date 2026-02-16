@@ -225,7 +225,26 @@ struct ChatMessage {
     id: u64,
     role: MessageRole,
     text: String,
+    html: String,
     timestamp: i64,
+}
+
+impl ChatMessage {
+    fn new(id: u64, role: MessageRole, text: String, timestamp: i64) -> Self {
+        let html = markdown_to_html(&text);
+        Self {
+            id,
+            role,
+            text,
+            html,
+            timestamp,
+        }
+    }
+
+    fn append_text(&mut self, chunk: &str) {
+        self.text.push_str(chunk);
+        self.html = markdown_to_html(&self.text);
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -236,6 +255,16 @@ enum MessageRole {
 
 const HISTORY_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]");
+const MAX_CHAT_MESSAGES: usize = 400;
+const MAX_ACTIVITY_MESSAGES: usize = 600;
+
+fn push_bounded_message(list: &mut Vec<ChatMessage>, message: ChatMessage, max_len: usize) {
+    list.push(message);
+    if list.len() > max_len {
+        let overflow = list.len() - max_len;
+        list.drain(0..overflow);
+    }
+}
 
 fn now_unix_ts() -> i64 {
     std::time::SystemTime::now()
@@ -690,18 +719,29 @@ fn app_view() -> Element {
                 };
                 let timestamp = now_unix_ts();
 
-                messages.write().push(ChatMessage {
-                    id: user_message_id,
-                    role: MessageRole::User,
-                    text: text.clone(),
-                    timestamp,
-                });
-                messages.write().push(ChatMessage {
-                    id: bot_message_id,
-                    role: MessageRole::Bot,
-                    text: String::new(),
-                    timestamp,
-                });
+                {
+                    let mut list = messages.write();
+                    push_bounded_message(
+                        &mut list,
+                        ChatMessage::new(
+                            user_message_id,
+                            MessageRole::User,
+                            text.clone(),
+                            timestamp,
+                        ),
+                        MAX_CHAT_MESSAGES,
+                    );
+                    push_bounded_message(
+                        &mut list,
+                        ChatMessage::new(
+                            bot_message_id,
+                            MessageRole::Bot,
+                            String::new(),
+                            timestamp,
+                        ),
+                        MAX_CHAT_MESSAGES,
+                    );
+                }
 
                 input.set(String::new());
                 scroll_chat_after_render().await;
@@ -731,6 +771,7 @@ fn app_view() -> Element {
                         let mut error = error.clone();
                         if response.status().is_success() {
                             let mut stream = response.bytes_stream();
+                            let mut chunk_counter = 0usize;
                             loop {
                                 let next_chunk =
                                     match timeout(stream_timeout_duration(), stream.next()).await {
@@ -756,17 +797,23 @@ fn app_view() -> Element {
                                                     .rev()
                                                     .find(|msg| msg.id == bot_message_id)
                                                 {
-                                                    last.text.push_str(text_chunk);
+                                                    last.append_text(text_chunk);
                                                 }
+                                                chunk_counter += 1;
                                             }
                                         }
-                                        scroll_chat_to_bottom().await;
+                                        if chunk_counter > 0 && chunk_counter % 8 == 0 {
+                                            scroll_chat_to_bottom().await;
+                                        }
                                     }
                                     Err(err) => {
                                         error.set(format!("Stream error: {err}"));
                                         break;
                                     }
                                 }
+                            }
+                            if chunk_counter > 0 {
+                                scroll_chat_after_render().await;
                             }
                         } else {
                             let status = response.status();
@@ -1130,18 +1177,17 @@ fn app_view() -> Element {
                 for (role, text, timestamp) in parsed {
                     let id = next_id();
                     next_id.set(id + 1);
-                    list.push(ChatMessage {
-                        id,
-                        role,
-                        text,
-                        timestamp: timestamp.unwrap_or_else(now_unix_ts),
-                    });
+                    push_bounded_message(
+                        &mut list,
+                        ChatMessage::new(id, role, text, timestamp.unwrap_or_else(now_unix_ts)),
+                        MAX_CHAT_MESSAGES,
+                    );
                 }
 
                 let mut activity = activity_messages.write();
                 if activity.is_empty() {
                     for entry in list.iter().cloned() {
-                        activity.push(entry);
+                        push_bounded_message(&mut activity, entry, MAX_ACTIVITY_MESSAGES);
                     }
                 }
 
@@ -1242,12 +1288,16 @@ fn app_view() -> Element {
                                             .get("due_at")
                                             .and_then(|v| v.as_i64())
                                             .unwrap_or_else(now_unix_ts);
-                                        messages.write().push(ChatMessage {
-                                            id,
-                                            role: MessageRole::Bot,
-                                            text: format!("⏰ {title}"),
-                                            timestamp,
-                                        });
+                                        push_bounded_message(
+                                            &mut messages.write(),
+                                            ChatMessage::new(
+                                                id,
+                                                MessageRole::Bot,
+                                                format!("⏰ {title}"),
+                                                timestamp,
+                                            ),
+                                            MAX_CHAT_MESSAGES,
+                                        );
                                         scroll_chat_to_bottom().await;
                                         if let Err(err) = Notification::new()
                                             .summary("Butterfly Bot")
@@ -1462,12 +1512,11 @@ fn app_view() -> Element {
                                             .get("timestamp")
                                             .and_then(|v| v.as_i64())
                                             .unwrap_or_else(now_unix_ts);
-                                        activity_messages.write().push(ChatMessage {
-                                            id,
-                                            role: MessageRole::Bot,
-                                            text,
-                                            timestamp,
-                                        });
+                                        push_bounded_message(
+                                            &mut activity_messages.write(),
+                                            ChatMessage::new(id, MessageRole::Bot, text, timestamp),
+                                            MAX_ACTIVITY_MESSAGES,
+                                        );
                                         scroll_activity_after_render().await;
                                     }
                                 }
@@ -2826,7 +2875,7 @@ fn app_view() -> Element {
                             },
                             div {
                                 class: "bubble-content",
-                                dangerous_inner_html: markdown_to_html(&message.text),
+                                dangerous_inner_html: message.html.clone(),
                             }
                             div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
                         }
@@ -3138,7 +3187,7 @@ fn app_view() -> Element {
                                 class: "bubble bot",
                                 div {
                                     class: "bubble-content",
-                                    dangerous_inner_html: markdown_to_html(&message.text),
+                                    dangerous_inner_html: message.html.clone(),
                                 }
                                 div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
                             }
