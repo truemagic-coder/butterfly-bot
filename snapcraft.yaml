@@ -86,7 +86,6 @@ parts:
     source: snap/local
     override-build: |
       set -eux
-      craftctl default
-      chmod +x "$CRAFT_PART_INSTALL"/snap/local/*
-    organize:
-      '*': snap/local/
+      mkdir -p "$CRAFT_PART_INSTALL/snap/local"
+      cp -r . "$CRAFT_PART_INSTALL/snap/local/"
+      chmod +x "$CRAFT_PART_INSTALL/snap/local/"*
