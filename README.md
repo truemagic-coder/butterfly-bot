@@ -14,7 +14,7 @@ Open the app, provide the prompt, and watch your always-on agent do its job!
 
 <img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
 
-### Install on Linux
+### Install on Ubuntu
 
 Download the deb file for Ubuntu for the GitHub Release
 
@@ -160,11 +160,10 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Requirements
 
-#### Linux
+#### Ubuntu
 - Rust 1.93+
-- Ubuntu recommended
 - 16GB+ RAM with 8GB+ VRAM
-- Certain system libraries for Linux (only if using `cargo` install)
+- Certain system libraries for Ubuntu (only if using `cargo` install)
 
 #### Models Used
 
