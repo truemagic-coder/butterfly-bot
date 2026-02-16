@@ -1,6 +1,8 @@
 ## Butterfly Bot
 
-<img width="350px" alt="Butterfly-Bot-NTT" src="https://github.com/user-attachments/assets/36eceb35-b517-498a-803f-1c3b5a655ddb" />
+<div style="margin-bottom: "20px">
+        <img width="300px" alt="Butterfly-Bot-NTT" src="https://github.com/user-attachments/assets/36eceb35-b517-498a-803f-1c3b5a655ddb" />
+</div>
 
 [![CI](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/ci.yml)
 [![codecov](https://img.shields.io/codecov/c/github/truemagic-coder/butterfly-bot/main.svg)](https://codecov.io/gh/truemagic-coder/butterfly-bot)
