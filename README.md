@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust)](https://www.rust-lang.org/tools/install)
 [![fmt](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml)
 [![clippy](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml)
-[![snap](https://img.shields.io/badge/snap-ready-blue)](https://snapcraft.io/)
+[![snap](https://img.shields.io/badge/snap-ready-blue)](https://snapcraft.io/butterfly-bot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
@@ -16,25 +16,15 @@ Open the app, provide the prompt, and watch your always-on agent do its job!
 
 ### Install on Linux
 
+Download the deb file for Ubuntu for the GitHub Release
+
+OR
+
 #### Cargo
 
 ```bash
 cargo install butterfly-bot
 ```
-
-#### OR
-
-
-#### Snap (coming soon...)
-
-```bash
-sudo snap install butterfly-bot
-```
-
-### Install on Mac
-
-Coming soon...
-
 
 ### Why users pick it:
 
@@ -174,7 +164,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Rust 1.93+
 - Ubuntu recommended
 - 16GB+ RAM with 8GB+ VRAM
-- Certain system libraries for Linux
+- Certain system libraries for Linux (only if using `cargo` install)
 
 #### Models Used
 
@@ -182,9 +172,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - embeddinggemma:latest (embedding)
 - qllama/bge-reranker-v2-m3 (reranking)
 
-#### Model Notes
-- When using a local Ollama base URL, `butterfly-bot` will automatically pull missing models on startup and let you know while they load.
-- Ollama models can be overriden and other models can be used rather than the default ones.
+Models will auto-download and install if not already installed (must have Ollama installed).
 
 #### Test Systems
 
@@ -223,26 +211,24 @@ BUTTERFLY_BOT_DISABLE_KEYRING=1 cargo test
 cargo run --release --bin butterfly-bot
 ```
 
-### Snap package (includes WASM tools)
+### Debian package via Dioxus (`.deb`)
 
-Snap packaging is defined in `snapcraft.yaml` and bundles all default WASM tool modules into the snap.
-
-Build the snap:
+If you want to avoid Snap for local testing, build a Debian package directly:
 
 ```bash
-snapcraft
+./scripts/build-deb.sh
 ```
 
-Install from Snap Store (after this snap is published):
+Install the generated package:
 
 ```bash
-sudo snap install butterfly-bot
+sudo dpkg -i /path/to/generated/butterfly-bot*.deb
 ```
 
-Install locally (sideload):
+If `dx` is missing:
 
 ```bash
-sudo snap install --dangerous ./butterfly-bot_0.1.0_amd64.snap
+cargo install dioxus-cli
 ```
 
 Run the packaged commands:

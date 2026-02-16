@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-
-. "$SNAP/snap/local/launch-common.sh"
-exec "$SNAP/usr/bin/butterfly-botd" --db "$BUTTERFLY_BOT_DB" "$@"

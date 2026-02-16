@@ -1,6 +1,8 @@
 #[cfg(not(test))]
 use clap::Parser;
 #[cfg(not(test))]
+use std::io::ErrorKind;
+#[cfg(not(test))]
 use std::process::Command;
 
 #[cfg(not(test))]
@@ -117,11 +119,19 @@ fn ensure_ollama_models(config: &Config) -> Result<()> {
         return Ok(());
     }
 
-    let installed = list_ollama_models()?;
+    let installed = match list_ollama_models() {
+        Ok(models) => models,
+        Err(err) => {
+            tracing::warn!("Skipping Ollama model ensure: {err}");
+            return Ok(());
+        }
+    };
     for model in required {
         if !installed.iter().any(|name| model_matches(&model, name)) {
             println!("Loading Ollama model '{model}'...");
-            pull_ollama_model(&model)?;
+            if let Err(err) = pull_ollama_model(&model) {
+                tracing::warn!("Could not load Ollama model '{model}': {err}");
+            }
         }
     }
 
@@ -135,10 +145,15 @@ fn is_ollama_local(base_url: &str) -> bool {
 
 #[cfg(not(test))]
 fn list_ollama_models() -> Result<Vec<String>> {
-    let output = Command::new("ollama")
-        .arg("list")
-        .output()
-        .map_err(|e| butterfly_bot::error::ButterflyBotError::Runtime(e.to_string()))?;
+    let output = Command::new("ollama").arg("list").output().map_err(|e| {
+        if e.kind() == ErrorKind::NotFound {
+            butterfly_bot::error::ButterflyBotError::Runtime(
+                "ollama binary not found in runtime environment".to_string(),
+            )
+        } else {
+            butterfly_bot::error::ButterflyBotError::Runtime(e.to_string())
+        }
+    })?;
     if !output.status.success() {
         return Err(butterfly_bot::error::ButterflyBotError::Runtime(
             String::from_utf8_lossy(&output.stderr).to_string(),
@@ -161,7 +176,15 @@ fn pull_ollama_model(model: &str) -> Result<()> {
         .arg("pull")
         .arg(model)
         .status()
-        .map_err(|e| butterfly_bot::error::ButterflyBotError::Runtime(e.to_string()))?;
+        .map_err(|e| {
+            if e.kind() == ErrorKind::NotFound {
+                butterfly_bot::error::ButterflyBotError::Runtime(
+                    "ollama binary not found in runtime environment".to_string(),
+                )
+            } else {
+                butterfly_bot::error::ButterflyBotError::Runtime(e.to_string())
+            }
+        })?;
     if status.success() {
         Ok(())
     } else {

@@ -1,0 +1,75 @@
+name: Release Debian Package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload-deb:
+    name: Build and upload .deb
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libssl-dev \
+            libclang-dev \
+            protobuf-compiler \
+            libprotobuf-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            libsecret-1-dev \
+            libnotify-dev \
+            libxdo-dev \
+            patchelf \
+            fakeroot \
+            dpkg-dev
+
+      - name: Cache cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-deb-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked
+
+      - name: Build Debian package
+        run: ./scripts/build-deb.sh
+
+      - name: Locate generated .deb
+        id: deb
+        run: |
+          set -euo pipefail
+          DEB_FILE="$(find "$GITHUB_WORKSPACE" -type f -name '*.deb' \
+            \( -path '*/dist/*' -o -path '*/target/dx/*' -o -path '*/target/release/bundle/*' -o -path '*/target/*' \) \
+            -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          if [[ -z "$DEB_FILE" ]]; then
+            echo "No .deb file found" >&2
+            exit 1
+          fi
+          echo "file=$DEB_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found .deb: $DEB_FILE"
+
+      - name: Upload .deb to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.deb.outputs.file }}
+          fail_on_unmatched_files: true
