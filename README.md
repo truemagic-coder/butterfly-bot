@@ -155,8 +155,8 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Prerequisites
 
-- Rust (via rustup): https://rustup.rs
-- Ollama (platform-specific installers): https://ollama.com/download
+- Rust (via rustup): https://rustup.rs (only if `cargo` installing)
+- Ollama is auto-installed on Linux at first run (via `curl -fsSL https://ollama.com/install.sh | sh`) when local Ollama is configured.
 
 ### Requirements
 
@@ -171,7 +171,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - embeddinggemma:latest (embedding)
 - qllama/bge-reranker-v2-m3 (reranking)
 
-Models will auto-download and install if not already installed (must have Ollama installed).
+Models auto-download and install if not already installed.
 
 #### Test Systems
 

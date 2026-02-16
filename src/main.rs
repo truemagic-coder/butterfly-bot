@@ -51,6 +51,7 @@ async fn main() -> Result<()> {
     }
 
     let config = ensure_default_config(&cli.db)?;
+    ensure_ollama_installed(&config)?;
     ensure_ollama_models(&config)?;
     ui::launch_ui();
     Ok(())
@@ -81,16 +82,72 @@ fn ensure_default_config(db_path: &str) -> Result<Config> {
 }
 
 #[cfg(not(test))]
+fn ensure_ollama_installed(config: &Config) -> Result<()> {
+    if !uses_local_ollama(config) {
+        return Ok(());
+    }
+    install_ollama_if_missing()
+}
+
+#[cfg(not(test))]
+#[cfg(target_os = "linux")]
+fn install_ollama_if_missing() -> Result<()> {
+    if ollama_available() {
+        return Ok(());
+    }
+
+    println!("Ollama not found. Installing Ollama...");
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg("curl -fsSL https://ollama.com/install.sh | sh")
+        .status()
+        .map_err(|e| butterfly_bot::error::ButterflyBotError::Runtime(e.to_string()))?;
+
+    if !status.success() {
+        return Err(butterfly_bot::error::ButterflyBotError::Runtime(
+            "Automatic Ollama installation failed".to_string(),
+        ));
+    }
+    if !ollama_available() {
+        return Err(butterfly_bot::error::ButterflyBotError::Runtime(
+            "Ollama installation finished but 'ollama' is still not available".to_string(),
+        ));
+    }
+
+    println!("Ollama installed successfully.");
+    Ok(())
+}
+
+#[cfg(not(test))]
+#[cfg(not(target_os = "linux"))]
+fn install_ollama_if_missing() -> Result<()> {
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn ollama_available() -> bool {
+    Command::new("ollama").arg("--version").status().is_ok()
+}
+
+#[cfg(not(test))]
+fn uses_local_ollama(config: &Config) -> bool {
+    let Some(openai) = &config.openai else {
+        return false;
+    };
+    let Some(base_url) = &openai.base_url else {
+        return false;
+    };
+    is_ollama_local(base_url)
+}
+
+#[cfg(not(test))]
 fn ensure_ollama_models(config: &Config) -> Result<()> {
+    if !uses_local_ollama(config) {
+        return Ok(());
+    }
     let Some(openai) = &config.openai else {
         return Ok(());
     };
-    let Some(base_url) = &openai.base_url else {
-        return Ok(());
-    };
-    if !is_ollama_local(base_url) {
-        return Ok(());
-    }
 
     let mut required = Vec::new();
     if let Some(model) = &openai.model {
