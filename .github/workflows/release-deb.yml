@@ -51,8 +51,23 @@ jobs:
       - name: Install Dioxus CLI
         run: cargo install dioxus-cli --locked
 
+      - name: Bundle preflight
+        run: |
+          set -euo pipefail
+          test -f Dioxus.toml
+          test -f assets/icon.png
+          echo "Dioxus config and icon found"
+
       - name: Build Debian package
-        run: ./scripts/build-deb.sh
+        run: |
+          set -euo pipefail
+          if ! ./scripts/build-deb.sh; then
+            echo "==== Debug: dist tree ===="
+            find dist -maxdepth 6 -print 2>/dev/null || true
+            echo "==== Debug: target/dx tree ===="
+            find target/dx -maxdepth 6 -print 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Locate generated .deb
         id: deb

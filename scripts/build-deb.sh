@@ -10,6 +10,16 @@ if ! command -v dx >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! -f "$ROOT_DIR/Dioxus.toml" ]]; then
+  echo "Dioxus.toml is missing. Create it before running dx bundle." >&2
+  exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/assets/icon.png" ]]; then
+  echo "assets/icon.png is missing. Dioxus bundler may fail without an icon." >&2
+  exit 1
+fi
+
 echo "==> Building WASM tool modules"
 ./scripts/build_wasm_tools.sh
 

@@ -1,0 +1,15 @@
+[application]
+name = "butterfly-bot"
+default_platform = "desktop"
+out_dir = "dist"
+
+[web.app]
+title = "Butterfly Bot"
+
+[bundle]
+identifier = "com.truemagic-coder.butterfly-bot"
+publisher = "True Magic Coder"
+icon = ["assets/icon.png"]
+short_description = "Always-on personal-ops AI assistant"
+long_description = "Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead."
+category = "Utility"
