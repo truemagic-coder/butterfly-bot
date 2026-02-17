@@ -25,14 +25,6 @@ Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and s
 
 Download the `deb` file for Ubuntu from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
 
-#### Mac
-
-Download the `.app.zip` artifact for macOS from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases), then unzip and move the `.app` to `/Applications`.
-
-If macOS reports the app is "damaged" after download, clear quarantine on the extracted app:
-
-`xattr -dr com.apple.quarantine /Applications/butterfly-bot.app`
-
 #### Other
 
 `cargo install butterfly-bot`
