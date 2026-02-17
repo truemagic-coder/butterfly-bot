@@ -487,12 +487,68 @@ impl WasmRuntime {
             .map(PathBuf::from)
     }
 
+    #[cfg(target_os = "macos")]
+    fn platform_wasm_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                roots.push(
+                    PathBuf::from(trimmed)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("butterfly-bot")
+                        .join("wasm"),
+                );
+            }
+        }
+
+        roots
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn platform_wasm_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Ok(value) = std::env::var("XDG_DATA_HOME") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                roots.push(PathBuf::from(trimmed).join("butterfly-bot").join("wasm"));
+            }
+        }
+
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                roots.push(
+                    PathBuf::from(trimmed)
+                        .join(".local")
+                        .join("share")
+                        .join("butterfly-bot")
+                        .join("wasm"),
+                );
+            }
+        }
+
+        roots
+    }
+
     fn candidate_wasm_roots() -> Vec<PathBuf> {
         let mut roots = Vec::new();
 
         if let Some(root) = Self::env_wasm_root() {
             roots.push(root);
         }
+
+        roots.extend(Self::platform_wasm_roots());
+
+        let app_root = crate::runtime_paths::app_root();
+        if !app_root.as_os_str().is_empty() {
+            roots.push(app_root.join("wasm"));
+        }
+
+        roots.push(std::env::temp_dir().join("butterfly-bot").join("wasm"));
 
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
@@ -669,7 +725,19 @@ impl WasmRuntime {
     }
 
     fn execute_sync(tool_name: &str, config: &ToolSandboxConfig, params: Value) -> Result<Value> {
-        let module_path = Self::resolve_module_path(tool_name, config);
+        let mut module_path = Self::resolve_module_path(tool_name, config);
+
+        if !Path::new(&module_path).exists()
+            && (module_path.starts_with("./wasm/") || module_path.starts_with("wasm/"))
+        {
+            if let Ok(wasm_dir) = crate::wasm_bundle::ensure_bundled_wasm_tools() {
+                let candidate = wasm_dir.join(Self::module_filename(tool_name));
+                if candidate.exists() {
+                    module_path = candidate.to_string_lossy().to_string();
+                }
+            }
+        }
+
         tracing::info!(tool = %tool_name, module_path = %module_path, "Executing tool in WASM runtime");
 
         if !Path::new(&module_path).exists() {
