@@ -1,6 +1,6 @@
 [package]
 name = "butterfly-bot"
-version = "0.2.5"
+version = "0.2.6"
 description = "Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead."
 repository = "https://github.com/truemagic-coder/butterfly-bot"
 homepage = "https://butterfly-bot.com"

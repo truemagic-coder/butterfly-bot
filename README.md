@@ -9,12 +9,13 @@
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust)](https://www.rust-lang.org/tools/install)
 [![fmt](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/fmt.yml)
 [![clippy](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml/badge.svg)](https://github.com/truemagic-coder/butterfly-bot/actions/workflows/clippy.yml)
-[![snap](https://img.shields.io/badge/snap-ready-blue)](https://snapcraft.io/butterfly-bot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead.
 
-Open the app, provide the prompt, and watch your always-on agent do its job!
+It is built to be **Zapier-first**: most real-world integrations run through Zapier MCP, so the fastest path is simply adding your Zapier MCP token in the Config screen.
+
+Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and setup your integrations there.
 
 <img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
 
@@ -36,9 +37,80 @@ cargo install butterfly-bot
 - **Unlimted tokens:** designed to support Ollama to run privately on your computer with unlimited use.
 - **UI-first:** polished desktop app with chat, AI activity, and settings.
 - **Automation:** full toolset provided for your always-on agent.
-- **Integrations:** MCP web support including first-class tools for GitHub + Zapier.
+- **Integrations:** Zapier-first MCP integration model for connecting your existing SaaS stack in minutes.
 - **Security:** WASM-only execution for tools plus OS keychain-backed secrets - no plaintext secrets or insecure tools.
 - **Memory:** best-in-class memory that remembers the facts and when they happened.
+
+### Zapier-first setup (60 seconds)
+
+If you only configure one thing, configure Zapier:
+
+1. Open the app and go to `Config`.
+2. Paste your **Zapier MCP token**.
+3. Save and start Heartbeat.
+
+That single token unlocks most production workflows because Butterfly Bot can route actions through Zapier's connected apps (email, calendar, tasks, CRM, docs, alerts, and more).
+
+Want a fast start? Use the ready-made templates in [examples/](examples/) and paste a `context.md` + `heartbeat.md` pair into the app.
+
+### Top 5 real-world use cases (Butterfly Bot + Zapier)
+
+These are the most commonly adopted autonomous-agent outcomes and how to implement them with Butterfly Bot.
+
+1. **Autonomous email / inbox management**
+    - Use Butterfly Bot planning + tasks + reminders to run recurring inbox cleanup cycles.
+    - Route actions through Zapier to Gmail/Outlook for labeling, drafting, replying, archiving, and escalation.
+    - Keep only high-risk decisions human-in-the-loop (for example: send approval for high-priority drafts).
+
+2. **Daily morning briefings and proactive digests**
+    - Schedule a wakeup/task that runs each morning before your workday.
+    - Pull weather, calendar, headlines, watchlists, or team metrics through Zapier app integrations.
+    - Deliver one consolidated digest in your preferred channel (email, Slack, Telegram, etc.) via Zapier.
+
+3. **Calendar, scheduling, and task management**
+    - Let Butterfly Bot parse intent from chat/notes and generate next actions.
+    - Use Zapier to sync Google Calendar/Outlook + Todoist/Linear/Jira/Asana from one workflow.
+    - Enforce conflict checks and reminder policies with Butterfly Bot reminders and recurring tasks.
+
+4. **Personal/family/executive assistance**
+    - Capture requests in natural language, then let Butterfly Bot break them into executable steps.
+    - Use Zapier actions for shopping lists, booking flows, subscription tracking, and travel coordination.
+    - Keep continuity with Butterfly memory so follow-ups reflect previous preferences and decisions.
+
+5. **Research, summarization, and monitoring**
+    - Run scheduled monitoring tasks for competitors, markets, topics, or project signals.
+    - Use Zapier integrations to collect source data and trigger downstream reports.
+    - Have Butterfly Bot summarize findings, create tasks, and notify only when thresholds are met.
+
+### Why this pairing works
+
+- **Butterfly Bot** provides autonomy, planning, memory, reminders, and always-on execution.
+- **Zapier MCP** provides broad app connectivity without custom per-app engineering.
+- Together, you get local-first agent orchestration plus cloud app automation from one simple setup path.
+
+### Examples (Context + Heartbeat templates)
+
+Use these templates by opening a pair, copying the markdown, and pasting into the app:
+
+1. Paste `context.md` into the `Context` tab.
+2. Paste `heartbeat.md` into the `Heartbeat` tab.
+3. Save and start Heartbeat.
+
+- **Autonomous inbox management**
+    - [examples/01-autonomous-inbox-management/context.md](examples/01-autonomous-inbox-management/context.md)
+    - [examples/01-autonomous-inbox-management/heartbeat.md](examples/01-autonomous-inbox-management/heartbeat.md)
+- **Morning briefings and digests**
+    - [examples/02-morning-briefings-digests/context.md](examples/02-morning-briefings-digests/context.md)
+    - [examples/02-morning-briefings-digests/heartbeat.md](examples/02-morning-briefings-digests/heartbeat.md)
+- **Calendar, scheduling, and tasks**
+    - [examples/03-calendar-scheduling-task-management/context.md](examples/03-calendar-scheduling-task-management/context.md)
+    - [examples/03-calendar-scheduling-task-management/heartbeat.md](examples/03-calendar-scheduling-task-management/heartbeat.md)
+- **Personal/family/executive assistance**
+    - [examples/04-personal-family-executive-assistance/context.md](examples/04-personal-family-executive-assistance/context.md)
+    - [examples/04-personal-family-executive-assistance/heartbeat.md](examples/04-personal-family-executive-assistance/heartbeat.md)
+- **Research, summarization, and monitoring**
+    - [examples/05-research-summarization-monitoring/context.md](examples/05-research-summarization-monitoring/context.md)
+    - [examples/05-research-summarization-monitoring/heartbeat.md](examples/05-research-summarization-monitoring/heartbeat.md)
 
 ### How it compares:
 
@@ -271,8 +343,8 @@ Use this quick sequence for best results with minimal setup:
 
 3. Use Config only when needed
     - Open `Config` to set required secrets and connectivity:
-      - GitHub token
-      - Zapier token
+    - Zapier token (primary; most integrations rely on this)
+    - GitHub token
       - Coding OpenAI API key
       - Search provider + search API key
       - MCP servers
