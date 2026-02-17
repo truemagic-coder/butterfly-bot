@@ -239,9 +239,9 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 ### Requirements
 
 #### System
-- Rust 1.93+
-- 16GB+ RAM with 8GB+ VRAM (for Ubuntu)
-- Certain system libraries for Ubuntu (only if using `cargo` install)
+- Rust 1.93+ (only if using `cargo install`)
+- 16GB+ RAM with 8GB+ VRAM (for Linux)
+- Certain system libraries for Linux (only if using `cargo install`)
 - 16GB+ RAM with M2 Pro (for Mac)
 
 #### Models Used
