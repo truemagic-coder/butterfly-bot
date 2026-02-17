@@ -90,7 +90,7 @@ fn ensure_ollama_installed(config: &Config) -> Result<()> {
 }
 
 #[cfg(not(test))]
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn install_ollama_if_missing() -> Result<()> {
     if ollama_available() {
         return Ok(());
@@ -119,7 +119,7 @@ fn install_ollama_if_missing() -> Result<()> {
 }
 
 #[cfg(not(test))]
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn install_ollama_if_missing() -> Result<()> {
     Ok(())
 }

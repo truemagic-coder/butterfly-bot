@@ -233,8 +233,8 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Prerequisites
 
-- Rust (via rustup): https://rustup.rs (only if `cargo` installing)
-- Ollama is auto-installed on Linux at first run (via `curl -fsSL https://ollama.com/install.sh | sh`) when local Ollama is configured.
+- Rust (via rustup): https://rustup.rs (only if `cargo install`)
+- Ollama is auto-installed on Linux and Mac at first run (via `curl -fsSL https://ollama.com/install.sh | sh`) when local Ollama is configured.
 
 ### Requirements
 
