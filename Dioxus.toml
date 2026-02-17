@@ -9,7 +9,27 @@ title = "Butterfly Bot"
 [bundle]
 identifier = "com.truemagic-coder.butterfly-bot"
 publisher = "True Magic Coder"
-icon = ["assets/icon.png"]
+icon = [
+	"assets/icon.png",
+	"assets/icons/hicolor/16x16/apps/butterfly-bot.png",
+	"assets/icons/hicolor/24x24/apps/butterfly-bot.png",
+	"assets/icons/hicolor/32x32/apps/butterfly-bot.png",
+	"assets/icons/hicolor/48x48/apps/butterfly-bot.png",
+	"assets/icons/hicolor/64x64/apps/butterfly-bot.png",
+	"assets/icons/hicolor/128x128/apps/butterfly-bot.png",
+	"assets/icons/hicolor/256x256/apps/butterfly-bot.png",
+	"assets/icons/hicolor/512x512/apps/butterfly-bot.png",
+]
 short_description = "Always-on personal-ops AI assistant"
 long_description = "Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead."
 category = "Utility"
+
+[bundle.deb.files]
+"/usr/share/icons/hicolor/16x16/apps/butterfly-bot.png" = "assets/icons/hicolor/16x16/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/24x24/apps/butterfly-bot.png" = "assets/icons/hicolor/24x24/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/32x32/apps/butterfly-bot.png" = "assets/icons/hicolor/32x32/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/48x48/apps/butterfly-bot.png" = "assets/icons/hicolor/48x48/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/64x64/apps/butterfly-bot.png" = "assets/icons/hicolor/64x64/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/128x128/apps/butterfly-bot.png" = "assets/icons/hicolor/128x128/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/256x256/apps/butterfly-bot.png" = "assets/icons/hicolor/256x256/apps/butterfly-bot.png"
+"/usr/share/icons/hicolor/512x512/apps/butterfly-bot.png" = "assets/icons/hicolor/512x512/apps/butterfly-bot.png"
