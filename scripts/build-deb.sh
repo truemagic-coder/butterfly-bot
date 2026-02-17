@@ -20,22 +20,37 @@ if [[ ! -f "$ROOT_DIR/assets/icon.png" ]]; then
   exit 1
 fi
 
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-  PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
-elif command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="python3"
-else
-  echo "Python 3 is required to generate Debian icon sizes." >&2
-  exit 1
-fi
+ICON_SIZES=(16 24 32 48 64 128 256 512)
+MISSING_ICONS=0
 
-echo "==> Generating Linux icon sizes with Pillow"
-if ! "$PYTHON_BIN" -c "import PIL" >/dev/null 2>&1; then
-  echo "Pillow is required in the selected Python environment ($PYTHON_BIN)." >&2
-  echo "Install with: $PYTHON_BIN -m pip install pillow" >&2
-  exit 1
+for size in "${ICON_SIZES[@]}"; do
+  icon_path="$ROOT_DIR/assets/icons/hicolor/${size}x${size}/apps/butterfly-bot.png"
+  if [[ ! -f "$icon_path" ]]; then
+    MISSING_ICONS=1
+    break
+  fi
+done
+
+if [[ "$MISSING_ICONS" -eq 0 ]]; then
+  echo "==> Using pre-generated Linux icon sizes from assets/icons/hicolor"
+else
+  if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  else
+    echo "Python 3 is required to generate Debian icon sizes." >&2
+    exit 1
+  fi
+
+  echo "==> Generating Linux icon sizes with Pillow"
+  if ! "$PYTHON_BIN" -c "import PIL" >/dev/null 2>&1; then
+    echo "Pillow is required in the selected Python environment ($PYTHON_BIN)." >&2
+    echo "Install with: $PYTHON_BIN -m pip install pillow" >&2
+    exit 1
+  fi
+  "$PYTHON_BIN" "$ROOT_DIR/scripts/generate_icons.py"
 fi
-"$PYTHON_BIN" "$ROOT_DIR/scripts/generate_icons.py"
 
 echo "==> Building WASM tool modules"
 ./scripts/build_wasm_tools.sh

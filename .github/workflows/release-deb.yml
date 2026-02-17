@@ -24,6 +24,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
+            python3 \
+            python3-pil \
             pkg-config \
             libssl-dev \
             libclang-dev \
