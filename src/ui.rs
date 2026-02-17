@@ -2785,7 +2785,7 @@ fn app_view() -> Element {
         "# }
         div { class: "container",
             div { class: "header",
-                div { class: "title", "ButterFly Bot" }
+                div { class: "title", "Butterfly Bot" }
                 div { class: "nav",
                     button {
                         class: if *active_tab.read() == UiTab::Chat { "active" } else { "" },
