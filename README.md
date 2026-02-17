@@ -23,11 +23,11 @@ Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and s
 
 #### Ubuntu
 
-Download the `deb` file for Ubuntu from the latest [GitHub Release](/releases)
+Download the `deb` file for Ubuntu from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
 
 #### Mac
 
-Download the `app` file for Mac from the latest [GitHub Release](/releases)
+Download the `app` file for Mac from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
 
 #### Other
 
