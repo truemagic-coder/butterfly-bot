@@ -24,6 +24,8 @@ use time::format_description::well_known::Rfc3339;
 use time::{macros::format_description, OffsetDateTime, UtcOffset};
 use tokio::time::{sleep, timeout, Duration};
 
+const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
+
 #[derive(Clone, Serialize)]
 struct ProcessTextRequest {
     user_id: String,
@@ -2518,7 +2520,8 @@ fn app_view() -> Element {
             .daemon-trash-btn:hover {{
                 background: rgba(239,68,68,0.50);
             }}
-            .title {{ font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }}
+            .title {{ display: flex; align-items: center; }}
+            .title-logo {{ width: 30px; height: 30px; display: block; }}
             .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: rgba(10,16,34,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }}
             .bubble {{
                 max-width: 72%;
@@ -2785,7 +2788,9 @@ fn app_view() -> Element {
         "# }
         div { class: "container",
             div { class: "header",
-                div { class: "title", "Butterfly Bot" }
+                div { class: "title",
+                    img { class: "title-logo", src: APP_LOGO, alt: "Butterfly Bot" }
+                }
                 div { class: "nav",
                     button {
                         class: if *active_tab.read() == UiTab::Chat { "active" } else { "" },
