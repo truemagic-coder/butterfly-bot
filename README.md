@@ -19,17 +19,20 @@ Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and s
 
 <img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
 
-### Install on Ubuntu
+### Install
 
-Download the deb file for Ubuntu for the GitHub Release
+#### Ubuntu
 
-OR
+Download the `deb` file for Ubuntu from the GitHub Releases
 
-#### Cargo
+#### Mac
 
-```bash
-cargo install butterfly-bot
-```
+Download the `app` file for Mac from the GitHub Releases
+
+#### Other
+
+`cargo install butterfly-bot`
+
 
 ### Why users pick it:
 
@@ -237,8 +240,9 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 #### Ubuntu
 - Rust 1.93+
-- 16GB+ RAM with 8GB+ VRAM
+- 16GB+ RAM with 8GB+ VRAM (for Ubuntu)
 - Certain system libraries for Ubuntu (only if using `cargo` install)
+- 16GB+ RAM with M2 Pro (for Mac)
 
 #### Models Used
 
@@ -252,6 +256,7 @@ Models auto-download and install if not already installed.
 
 - AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant response)
 - MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
+- M2 Pro Mac Mini with 16GB RAM (~10 second responses)
 
 ### Build
 
