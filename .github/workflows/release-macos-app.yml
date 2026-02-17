@@ -1,0 +1,55 @@
+name: Release macOS App
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload-macos-app:
+    name: Build and upload macOS app zip
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-macos-app-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Dioxus CLI
+        run: cargo install dioxus-cli --locked
+
+      - name: Build macOS app bundle
+        run: |
+          set -euo pipefail
+          ./scripts/build-macos-app.sh
+
+      - name: Locate generated .app.zip
+        id: appzip
+        run: |
+          set -euo pipefail
+          APP_ZIP="$(find "$GITHUB_WORKSPACE/dist" -type f -name '*.app.zip' -print0 | xargs -0 ls -t | head -n1 || true)"
+          if [[ -z "$APP_ZIP" ]]; then
+            echo "No .app.zip file found in dist" >&2
+            exit 1
+          fi
+          echo "file=$APP_ZIP" >> "$GITHUB_OUTPUT"
+          echo "Found .app.zip: $APP_ZIP"
+
+      - name: Upload .app.zip to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.appzip.outputs.file }}
+          fail_on_unmatched_files: true

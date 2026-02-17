@@ -262,7 +262,7 @@ pub fn resolve_task_db_path(config: &serde_json::Value) -> Option<String> {
 }
 
 pub fn default_task_db_path() -> String {
-    "./data/butterfly-bot.db".to_string()
+    crate::runtime_paths::default_db_path()
 }
 
 fn ensure_parent_dir(path: &str) -> Result<()> {

@@ -23,7 +23,7 @@ use tracing_subscriber::EnvFilter;
 #[command(name = "butterfly-bot")]
 #[command(about = "Butterfly Bot desktop launcher")]
 struct Cli {
-    #[arg(long, default_value = "./data/butterfly-bot.db")]
+    #[arg(long, default_value_t = butterfly_bot::runtime_paths::default_db_path())]
     db: String,
 
     #[arg(long, default_value = "http://127.0.0.1:7878")]

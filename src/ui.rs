@@ -517,7 +517,7 @@ fn start_local_daemon() -> Result<(), String> {
         env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
     let (host, port) = parse_daemon_address(&daemon_url);
     let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
+        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
     let token = env_auth_token();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -593,7 +593,7 @@ fn parse_daemon_address(daemon: &str) -> (String, u16) {
 
 fn app_view() -> Element {
     let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| "./data/butterfly-bot.db".to_string());
+        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
     let daemon_url = use_signal(|| {
         let raw = env::var("BUTTERFLY_BOT_DAEMON")
             .unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());

@@ -422,7 +422,7 @@ pub fn resolve_reminder_db_path(config: &serde_json::Value) -> Option<String> {
 }
 
 pub fn default_reminder_db_path() -> String {
-    "./data/butterfly-bot.db".to_string()
+    crate::runtime_paths::default_db_path()
 }
 
 #[cfg(test)]

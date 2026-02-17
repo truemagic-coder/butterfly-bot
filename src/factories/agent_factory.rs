@@ -438,7 +438,7 @@ impl ButterflyBotFactory {
                 if memory.enabled.unwrap_or(true) {
                     let sqlite_path = memory
                         .sqlite_path
-                        .unwrap_or_else(|| "./data/butterfly-bot.db".to_string());
+                        .unwrap_or_else(crate::runtime_paths::default_db_path);
                     let reranker = memory.rerank_model.as_ref().map(|rerank_model| {
                         Arc::new(OpenAiProvider::new(
                             memory_api_key.clone(),

@@ -327,6 +327,32 @@ Notes:
 - Bundled modules are mounted at `./wasm/<tool>_tool.wasm` inside the app runtime directory.
 - `BUTTERFLY_BOT_DISABLE_KEYRING=1` is enabled by default in the snap launcher (override if your snap environment provides a working keyring backend).
 
+### macOS app bundle via Dioxus (`.app`)
+
+Build the macOS app bundle and a zipped release artifact:
+
+```bash
+./scripts/build-macos-app.sh
+```
+
+Open the generated app:
+
+```bash
+open /path/to/generated/ButterflyBot.app
+```
+
+If `dx` is missing:
+
+```bash
+cargo install dioxus-cli
+```
+
+Release artifact output:
+
+- `dist/ButterflyBot.app`
+- `dist/ButterflyBot_<version>_<arch>.app.zip`
+
+
 
 ### How To (Context, Heartbeat, Config)
 

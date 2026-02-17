@@ -11,6 +11,7 @@ pub mod interfaces;
 pub mod planning;
 pub mod plugins;
 pub mod providers;
+pub mod runtime_paths;
 pub mod reminders;
 pub mod sandbox;
 pub mod scheduler;

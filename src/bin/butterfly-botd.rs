@@ -13,7 +13,7 @@ struct Cli {
     #[arg(long, default_value_t = 7878)]
     port: u16,
 
-    #[arg(long, default_value = "./data/butterfly-bot.db")]
+    #[arg(long, default_value_t = butterfly_bot::runtime_paths::default_db_path())]
     db: String,
 }
 

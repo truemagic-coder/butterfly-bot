@@ -5,6 +5,31 @@ use rand::TryRng;
 
 const SERVICE: &str = "butterfly-bot";
 
+fn keyring_backend_unavailable(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("dbus")
+        || message.contains("secret service")
+        || message.contains("keyring")
+        || message.contains("message recipient disconnected")
+        || message.contains("no such interface")
+        || message.contains("service unknown")
+        || message.contains("backend not available")
+        || message.contains("platform secure storage failure")
+        || message.contains("keychain")
+        || message.contains("user interaction is not allowed")
+}
+
+fn env_token() -> Option<String> {
+    std::env::var("BUTTERFLY_BOT_TOKEN").ok().and_then(|token| {
+        let trimmed = token.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 fn keyring_disabled() -> bool {
     std::env::var("BUTTERFLY_BOT_DISABLE_KEYRING")
         .ok()
@@ -23,9 +48,12 @@ pub fn set_secret(name: &str, value: &str) -> Result<()> {
     }
     let entry = keyring::Entry::new(SERVICE, name)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-    entry
-        .set_password(value)
-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    if let Err(err) = entry.set_password(value) {
+        if keyring_backend_unavailable(&err.to_string()) {
+            return Ok(());
+        }
+        return Err(ButterflyBotError::Runtime(err.to_string()));
+    }
     Ok(())
 }
 
@@ -39,16 +67,7 @@ pub fn get_secret(name: &str) -> Result<Option<String>> {
         Ok(value) => Ok(Some(value)),
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(err) => {
-            let message = err.to_string().to_ascii_lowercase();
-            let backend_unavailable = message.contains("dbus")
-                || message.contains("secret service")
-                || message.contains("keyring")
-                || message.contains("message recipient disconnected")
-                || message.contains("no such interface")
-                || message.contains("service unknown")
-                || message.contains("backend not available")
-                || message.contains("platform secure storage failure");
-            if backend_unavailable {
+            if keyring_backend_unavailable(&err.to_string()) {
                 return Ok(None);
             }
             Err(ButterflyBotError::Runtime(err.to_string()))
@@ -57,6 +76,10 @@ pub fn get_secret(name: &str) -> Result<Option<String>> {
 }
 
 pub fn ensure_daemon_auth_token() -> Result<String> {
+    if let Some(token) = env_token() {
+        return Ok(token);
+    }
+
     if let Some(token) = get_secret("daemon_auth_token")? {
         let trimmed = token.trim().to_string();
         if !trimmed.is_empty() {
@@ -70,7 +93,7 @@ pub fn ensure_daemon_auth_token() -> Result<String> {
     rng.try_fill_bytes(&mut bytes)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     let generated = URL_SAFE_NO_PAD.encode(bytes);
-    set_secret("daemon_auth_token", &generated)?;
+    let _ = set_secret("daemon_auth_token", &generated);
     std::env::set_var("BUTTERFLY_BOT_TOKEN", &generated);
     Ok(generated)
 }

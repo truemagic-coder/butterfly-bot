@@ -7,7 +7,7 @@ struct UiCli {
     #[arg(
         long,
         env = "BUTTERFLY_BOT_DB",
-        default_value = "./data/butterfly-bot.db"
+        default_value_t = butterfly_bot::runtime_paths::default_db_path()
     )]
     db: String,
 
