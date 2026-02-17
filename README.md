@@ -238,7 +238,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 
 ### Requirements
 
-#### Ubuntu
+#### System
 - Rust 1.93+
 - 16GB+ RAM with 8GB+ VRAM (for Ubuntu)
 - Certain system libraries for Ubuntu (only if using `cargo` install)
@@ -254,8 +254,8 @@ Models auto-download and install if not already installed.
 
 #### Test Systems
 
-- AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant response)
-- MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant response)
+- AMD Threadripper 2950X with 128GB DDR4 with AMD 7900XTX on Ubuntu 24.04.3 (instant responses)
+- MSI Raider GE68-HX-14V on Ubuntu 24.04.3 (instant responses)
 - M2 Pro Mac Mini with 16GB RAM (~10 second responses)
 
 ### Build
