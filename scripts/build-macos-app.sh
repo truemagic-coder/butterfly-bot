@@ -56,6 +56,18 @@ if [[ ! -f "$PLIST_PATH" ]]; then
   exit 1
 fi
 
+WASM_SOURCE_DIR="$ROOT_DIR/wasm"
+WASM_BUNDLE_DIR="$APP_BUNDLE/Contents/Resources/wasm"
+
+if [[ ! -d "$WASM_SOURCE_DIR" ]]; then
+  echo "WASM output directory not found at $WASM_SOURCE_DIR" >&2
+  exit 1
+fi
+
+echo "==> Embedding WASM modules into app bundle"
+mkdir -p "$WASM_BUNDLE_DIR"
+cp "$WASM_SOURCE_DIR"/*_tool.wasm "$WASM_BUNDLE_DIR/"
+
 if /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_PATH" >/dev/null 2>&1; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $CARGO_VERSION" "$PLIST_PATH"
 else
@@ -67,6 +79,17 @@ if /usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST_PATH" >/dev/null 
 else
   /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $CARGO_VERSION" "$PLIST_PATH"
 fi
+
+if [[ -n "${APPLE_SIGN_IDENTITY:-}" ]]; then
+  echo "==> Signing macOS bundle with identity: $APPLE_SIGN_IDENTITY"
+  codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" "$APP_BUNDLE"
+else
+  echo "==> Signing macOS bundle with ad-hoc identity"
+  codesign --force --deep --sign - "$APP_BUNDLE"
+fi
+
+echo "==> Verifying code signature"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -80,7 +103,7 @@ EXPECTED_APP="$ROOT_DIR/dist/${APP_NAME}.app"
 EXPECTED_ZIP="$ROOT_DIR/dist/${APP_NAME}_${CARGO_VERSION}_${ARCH_TAG}.app.zip"
 
 rm -rf "$EXPECTED_APP"
-cp -R "$APP_BUNDLE" "$EXPECTED_APP"
+ditto "$APP_BUNDLE" "$EXPECTED_APP"
 
 rm -f "$EXPECTED_ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$EXPECTED_APP" "$EXPECTED_ZIP"

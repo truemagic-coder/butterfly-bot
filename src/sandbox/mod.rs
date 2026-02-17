@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -475,8 +475,61 @@ impl WasmRuntime {
     const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
     pub const SUPPORTED_CAPABILITY_ABI_VERSION: u32 = 1;
 
+    fn module_filename(tool_name: &str) -> String {
+        format!("{tool_name}_tool.wasm")
+    }
+
+    fn env_wasm_root() -> Option<PathBuf> {
+        std::env::var("BUTTERFLY_BOT_WASM_DIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    fn candidate_wasm_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Some(root) = Self::env_wasm_root() {
+            roots.push(root);
+        }
+
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                roots.push(exe_dir.join("wasm"));
+
+                if let Some(parent) = exe_dir.parent() {
+                    roots.push(parent.join("Resources").join("wasm"));
+                    roots.push(parent.join("resources").join("wasm"));
+                    roots.push(parent.join("share").join("butterfly-bot").join("wasm"));
+                    roots.push(parent.join("lib").join("butterfly-bot").join("wasm"));
+                }
+            }
+        }
+
+        roots.push(PathBuf::from(".").join("wasm"));
+
+        let mut deduped = Vec::new();
+        for root in roots {
+            if !deduped.contains(&root) {
+                deduped.push(root);
+            }
+        }
+        deduped
+    }
+
     fn default_module_path(tool_name: &str) -> String {
-        format!("./wasm/{tool_name}_tool.wasm")
+        let file_name = Self::module_filename(tool_name);
+        let fallback = PathBuf::from(".").join("wasm").join(&file_name);
+
+        for root in Self::candidate_wasm_roots() {
+            let candidate = root.join(&file_name);
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+
+        fallback.to_string_lossy().to_string()
     }
 
     fn resolve_module_path(tool_name: &str, config: &ToolSandboxConfig) -> String {

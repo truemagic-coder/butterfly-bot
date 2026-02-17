@@ -27,7 +27,11 @@ Download the `deb` file for Ubuntu from the latest [GitHub Release](https://gith
 
 #### Mac
 
-Download the `app` file for Mac from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
+Download the `.app.zip` artifact for macOS from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases), then unzip and move the `.app` to `/Applications`.
+
+If macOS reports the app is "damaged" after download, clear quarantine on the extracted app:
+
+`xattr -dr com.apple.quarantine /Applications/butterfly-bot.app`
 
 #### Other
 
@@ -356,6 +360,28 @@ Release artifact output:
 
 - `dist/ButterflyBot.app`
 - `dist/ButterflyBot_<version>_<arch>.app.zip`
+
+#### macOS release signing + notarization (GitHub Actions)
+
+The release workflow `.github/workflows/release-macos-app.yml` is configured to sign and notarize macOS app artifacts before uploading to GitHub Releases.
+
+All signing/notarization secrets are optional. If they are not configured, CI still publishes a macOS `.app.zip` artifact (ad-hoc signed, non-notarized), and users may need to use `Open Anyway` or clear quarantine.
+
+Required repository secrets:
+
+- `APPLE_CERTIFICATE_BASE64` - Base64-encoded Developer ID Application certificate (`.p12`)
+- `APPLE_CERTIFICATE_PASSWORD` - Password used when exporting the `.p12` certificate
+- `APPLE_KEYCHAIN_PASSWORD` - Temporary CI keychain password
+- `APPLE_SIGN_IDENTITY` - Signing identity name (example: `Developer ID Application: Your Name (TEAMID)`)
+- `APPLE_ID` - Apple ID email used for notarization
+- `APPLE_TEAM_ID` - Apple Developer Team ID
+- `APPLE_APP_SPECIFIC_PASSWORD` - App-specific password for the Apple ID
+
+Create base64 certificate value locally:
+
+```bash
+base64 -i developer_id_application.p12 | pbcopy
+```
 
 
 
