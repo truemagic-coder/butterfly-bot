@@ -75,15 +75,35 @@ fn default_wasm_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".").join("wasm"))
 }
 
-fn write_module_if_missing(root: &Path, file_name: &str, content: &[u8]) -> Result<()> {
+fn write_module_if_needed(root: &Path, file_name: &str, content: &[u8]) -> Result<()> {
     let path = root.join(file_name);
+
     if path.exists() {
-        return Ok(());
+        let existing = std::fs::read(&path).map_err(|e| {
+            ButterflyBotError::Runtime(format!(
+                "Failed to read bundled WASM module {}: {}",
+                path.to_string_lossy(),
+                e
+            ))
+        })?;
+
+        if existing.as_slice() == content {
+            return Ok(());
+        }
     }
 
-    std::fs::write(&path, content).map_err(|e| {
+    let tmp_path = path.with_extension("wasm.tmp");
+    std::fs::write(&tmp_path, content).map_err(|e| {
         ButterflyBotError::Runtime(format!(
             "Failed to write bundled WASM module {}: {}",
+            tmp_path.to_string_lossy(),
+            e
+        ))
+    })?;
+
+    std::fs::rename(&tmp_path, &path).map_err(|e| {
+        ButterflyBotError::Runtime(format!(
+            "Failed to replace bundled WASM module {}: {}",
             path.to_string_lossy(),
             e
         ))
@@ -102,7 +122,7 @@ pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
     })?;
 
     for (file_name, content) in BUNDLED_WASM_MODULES {
-        write_module_if_missing(&wasm_dir, file_name, content)?;
+        write_module_if_needed(&wasm_dir, file_name, content)?;
     }
 
     std::env::set_var("BUTTERFLY_BOT_WASM_DIR", &wasm_dir);
