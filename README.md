@@ -18,7 +18,7 @@ It is built to be **Zapier-first**: most real-world integrations run through Zap
 
 Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and setup your integrations there.
 
-<img width="809" height="797" alt="Screenshot from 2026-02-15 09-31-23" src="https://github.com/user-attachments/assets/eee0cc6d-90f1-44c1-9c25-7866ef972960" />
+<img width="806" height="807" alt="Screenshot from 2026-02-17 10-38-19" src="https://github.com/user-attachments/assets/51766958-4287-4fc8-b2d0-0b6cf13de838" />
 
 ### Install
 
