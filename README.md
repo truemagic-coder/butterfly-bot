@@ -165,7 +165,7 @@ Tool configuration is convention-first and managed through app defaults plus min
          v                 v                 v
     ┌────────────────┐  ┌───────────────┐  ┌──────────────────┐
     │  Memory System │  │ Tooling Layer │  │  Model Provider  │
-    │ (SQLCipher +   │  │ (MCP, HTTP,   │  │ (Ollama/OpenAI)  │
+    │ (SQLCipher +   │  │ (MCP, HTTP,   │  │     (Ollama)     │
     │  sqlite-vec)   │  │ reminders,    │  │                  │
     │                │  │ tasks, etc.)  │  │                  │
     │                │  │ + WASM sandbox│  │                  │
