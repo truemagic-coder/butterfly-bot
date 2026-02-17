@@ -1570,10 +1570,7 @@ where
             );
         }
         Err(err) => {
-            tracing::warn!(
-                "Could not provision bundled WASM tool modules: {}",
-                err
-            );
+            tracing::warn!("Could not provision bundled WASM tool modules: {}", err);
         }
     }
 

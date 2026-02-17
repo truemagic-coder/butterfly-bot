@@ -3,14 +3,23 @@ use std::path::{Path, PathBuf};
 use crate::error::{ButterflyBotError, Result};
 
 const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
-    ("coding_tool.wasm", include_bytes!("../wasm/coding_tool.wasm")),
+    (
+        "coding_tool.wasm",
+        include_bytes!("../wasm/coding_tool.wasm"),
+    ),
     ("mcp_tool.wasm", include_bytes!("../wasm/mcp_tool.wasm")),
     (
         "http_call_tool.wasm",
         include_bytes!("../wasm/http_call_tool.wasm"),
     ),
-    ("github_tool.wasm", include_bytes!("../wasm/github_tool.wasm")),
-    ("zapier_tool.wasm", include_bytes!("../wasm/zapier_tool.wasm")),
+    (
+        "github_tool.wasm",
+        include_bytes!("../wasm/github_tool.wasm"),
+    ),
+    (
+        "zapier_tool.wasm",
+        include_bytes!("../wasm/zapier_tool.wasm"),
+    ),
     (
         "planning_tool.wasm",
         include_bytes!("../wasm/planning_tool.wasm"),
@@ -25,7 +34,10 @@ const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
     ),
     ("tasks_tool.wasm", include_bytes!("../wasm/tasks_tool.wasm")),
     ("todo_tool.wasm", include_bytes!("../wasm/todo_tool.wasm")),
-    ("wakeup_tool.wasm", include_bytes!("../wasm/wakeup_tool.wasm")),
+    (
+        "wakeup_tool.wasm",
+        include_bytes!("../wasm/wakeup_tool.wasm"),
+    ),
 ];
 
 fn env_wasm_dir() -> Option<PathBuf> {
