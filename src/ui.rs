@@ -336,6 +336,14 @@ struct UiMcpServer {
     header_value: String,
 }
 
+#[derive(Clone, Default)]
+struct UiHttpCallServer {
+    name: String,
+    url: String,
+    header_key: String,
+    header_value: String,
+}
+
 fn is_url_source(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.starts_with("http://") || trimmed.starts_with("https://")
@@ -646,6 +654,7 @@ fn app_view() -> Element {
     let coding_api_key_input = use_signal(String::new);
     let search_api_key_input = use_signal(String::new);
     let mcp_servers_form = use_signal(Vec::<UiMcpServer>::new);
+    let http_call_servers_form = use_signal(Vec::<UiHttpCallServer>::new);
     let network_allow_form = use_signal(Vec::<String>::new);
     let context_text = use_signal(String::new);
     let context_path = use_signal(|| "database".to_string());
@@ -1543,6 +1552,7 @@ fn app_view() -> Element {
         let coding_api_key_input = coding_api_key_input.clone();
         let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
+        let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let boot_status = boot_status.clone();
         let boot_ready = boot_ready.clone();
@@ -1587,6 +1597,7 @@ fn app_view() -> Element {
                 let mut coding_api_key_input = coding_api_key_input;
                 let mut search_api_key_input = search_api_key_input;
                 let mut mcp_servers_form = mcp_servers_form;
+                let mut http_call_servers_form = http_call_servers_form;
                 let mut network_allow_form = network_allow_form;
                 let mut search_provider = search_provider;
                 let mut search_model = search_model;
@@ -1717,6 +1728,125 @@ fn app_view() -> Element {
                             })
                             .collect::<Vec<_>>();
                         mcp_servers_form.set(parsed_servers);
+                    }
+
+                    if let Some(http_call_cfg) = tools_value.get("http_call") {
+                        let mut parsed_servers = http_call_cfg
+                            .get("servers")
+                            .and_then(|v| v.as_array())
+                            .map(|servers| {
+                                servers
+                                    .iter()
+                                    .filter_map(|entry| {
+                                        let name = entry
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        let url = entry
+                                            .get("url")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        let (header_key, header_value) = entry
+                                            .get("headers")
+                                            .and_then(|v| v.as_object())
+                                            .and_then(|map| {
+                                                map.iter().find_map(|(k, v)| {
+                                                    v.as_str().map(|value| {
+                                                        (
+                                                            k.trim().to_string(),
+                                                            value.trim().to_string(),
+                                                        )
+                                                    })
+                                                })
+                                            })
+                                            .unwrap_or_else(|| (String::new(), String::new()));
+
+                                        if name.is_empty() && url.is_empty() {
+                                            None
+                                        } else {
+                                            Some(UiHttpCallServer {
+                                                name,
+                                                url,
+                                                header_key,
+                                                header_value,
+                                            })
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        if parsed_servers.is_empty() {
+                            let (header_key, header_value) = http_call_cfg
+                                .get("custom_headers")
+                                .and_then(|v| v.as_object())
+                                .and_then(|map| {
+                                    map.iter().find_map(|(k, v)| {
+                                        v.as_str().map(|value| {
+                                            (k.trim().to_string(), value.trim().to_string())
+                                        })
+                                    })
+                                })
+                                .or_else(|| {
+                                    http_call_cfg
+                                        .get("default_headers")
+                                        .and_then(|v| v.as_object())
+                                        .and_then(|map| {
+                                            map.iter().find_map(|(k, v)| {
+                                                v.as_str().map(|value| {
+                                                    (k.trim().to_string(), value.trim().to_string())
+                                                })
+                                            })
+                                        })
+                                })
+                                .unwrap_or_else(|| (String::new(), String::new()));
+
+                            if let Some(base_urls) =
+                                http_call_cfg.get("base_urls").and_then(|v| v.as_array())
+                            {
+                                parsed_servers = base_urls
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(index, value)| {
+                                        let url =
+                                            value.as_str().unwrap_or_default().trim().to_string();
+                                        if url.is_empty() {
+                                            None
+                                        } else {
+                                            Some(UiHttpCallServer {
+                                                name: format!("server_{}", index + 1),
+                                                url,
+                                                header_key: header_key.clone(),
+                                                header_value: header_value.clone(),
+                                            })
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+                            }
+
+                            if parsed_servers.is_empty() {
+                                let base_url = http_call_cfg
+                                    .get("base_url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+                                if !base_url.is_empty() {
+                                    parsed_servers.push(UiHttpCallServer {
+                                        name: "default".to_string(),
+                                        url: base_url,
+                                        header_key,
+                                        header_value,
+                                    });
+                                }
+                            }
+                        }
+
+                        http_call_servers_form.set(parsed_servers);
                     }
 
                     if let Some(search_cfg) = tools_value.get("search_internet") {
@@ -1912,6 +2042,7 @@ fn app_view() -> Element {
         let search_provider = search_provider.clone();
         let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
+        let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let db_path = db_path.clone();
         let daemon_url = daemon_url.clone();
@@ -1928,6 +2059,7 @@ fn app_view() -> Element {
             let search_provider = search_provider.clone();
             let search_api_key_input = search_api_key_input.clone();
             let mcp_servers_form = mcp_servers_form.clone();
+            let http_call_servers_form = http_call_servers_form.clone();
             let network_allow_form = network_allow_form.clone();
             let db_path = db_path.clone();
             let daemon_url = daemon_url.clone();
@@ -1980,6 +2112,44 @@ fn app_view() -> Element {
                         return;
                     }
                     mcp_servers.push((
+                        name.to_string(),
+                        url.to_string(),
+                        header_key.to_string(),
+                        header_value.to_string(),
+                    ));
+                }
+
+                let mut http_call_servers = Vec::new();
+                for entry in http_call_servers_form().iter() {
+                    let name = entry.name.trim();
+                    let url = entry.url.trim();
+                    let header_key = entry.header_key.trim();
+                    let header_value = entry.header_value.trim();
+                    if name.is_empty() && url.is_empty() {
+                        continue;
+                    }
+                    if name.is_empty() || url.is_empty() {
+                        settings_error
+                            .set("Each HTTP call server needs both a name and URL.".to_string());
+                        return;
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        settings_error.set(format!(
+                            "HTTP call server URL must start with http:// or https:// ({url})."
+                        ));
+                        return;
+                    }
+                    if (header_key.is_empty() && !header_value.is_empty())
+                        || (!header_key.is_empty() && header_value.is_empty())
+                    {
+                        settings_error.set(
+                            "HTTP call header key and value must both be set or both be empty."
+                                .to_string(),
+                        );
+                        return;
+                    }
+
+                    http_call_servers.push((
                         name.to_string(),
                         url.to_string(),
                         header_key.to_string(),
@@ -2062,6 +2232,66 @@ fn app_view() -> Element {
                                 .collect(),
                         ),
                     );
+                }
+
+                let http_call_cfg = tools_obj
+                    .entry("http_call")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !http_call_cfg.is_object() {
+                    *http_call_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(http_call_obj) = http_call_cfg.as_object_mut() {
+                    let mut first_url: Option<String> = None;
+                    let mut first_header: Option<(String, String)> = None;
+
+                    let servers = http_call_servers
+                        .iter()
+                        .map(|(name, url, header_key, header_value)| {
+                            if first_url.is_none() {
+                                first_url = Some(url.clone());
+                            }
+                            let mut server = serde_json::Map::new();
+                            server.insert("name".to_string(), Value::String(name.clone()));
+                            server.insert("url".to_string(), Value::String(url.clone()));
+                            if !header_key.is_empty() {
+                                if first_header.is_none() {
+                                    first_header = Some((header_key.clone(), header_value.clone()));
+                                }
+                                let mut headers = serde_json::Map::new();
+                                headers.insert(
+                                    header_key.clone(),
+                                    Value::String(header_value.clone()),
+                                );
+                                server.insert("headers".to_string(), Value::Object(headers));
+                            }
+                            Value::Object(server)
+                        })
+                        .collect::<Vec<_>>();
+
+                    http_call_obj.insert("servers".to_string(), Value::Array(servers));
+
+                    let base_urls = http_call_servers
+                        .iter()
+                        .map(|(_, url, _, _)| Value::String(url.clone()))
+                        .collect::<Vec<_>>();
+                    http_call_obj.insert("base_urls".to_string(), Value::Array(base_urls));
+
+                    if let Some(url) = first_url {
+                        http_call_obj.insert("base_url".to_string(), Value::String(url));
+                    } else {
+                        http_call_obj.remove("base_url");
+                    }
+
+                    let mut legacy_headers = serde_json::Map::new();
+                    if let Some((header_key, header_value)) = first_header {
+                        legacy_headers.insert(header_key, Value::String(header_value));
+                    }
+                    http_call_obj.insert(
+                        "custom_headers".to_string(),
+                        Value::Object(legacy_headers.clone()),
+                    );
+                    http_call_obj
+                        .insert("default_headers".to_string(), Value::Object(legacy_headers));
                 }
 
                 let search_cfg = tools_obj
@@ -3113,6 +3343,90 @@ fn app_view() -> Element {
                                                 mcp_servers_form.set(list);
                                             },
                                             "+ Add MCP Server"
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-section",
+                                    label { "HTTP Call Servers" }
+                                    div { class: "simple-list",
+                                        for (index, server) in http_call_servers_form.read().iter().enumerate() {
+                                            div { class: "simple-row",
+                                                input {
+                                                    class: "mcp-name",
+                                                    value: "{server.name}",
+                                                    placeholder: "Server name",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.name = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-url",
+                                                    value: "{server.url}",
+                                                    placeholder: "https://api.example.com/v1",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.url = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-key",
+                                                    value: "{server.header_key}",
+                                                    placeholder: "Header key (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_key = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-value",
+                                                    value: "{server.header_value}",
+                                                    placeholder: "Header value (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_value = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                button {
+                                                    onclick: move |_| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if index < list.len() {
+                                                            list.remove(index);
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                    "Remove"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "simple-actions",
+                                        button {
+                                            onclick: move |_| {
+                                                let mut http_call_servers_form = http_call_servers_form.clone();
+                                                let mut list = http_call_servers_form();
+                                                list.push(UiHttpCallServer::default());
+                                                http_call_servers_form.set(list);
+                                            },
+                                            "+ Add HTTP Server"
                                         }
                                     }
                                 }

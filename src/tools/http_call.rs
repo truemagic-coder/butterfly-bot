@@ -11,9 +11,15 @@ use crate::error::{ButterflyBotError, Result};
 use crate::interfaces::plugins::Tool;
 
 #[derive(Clone, Debug, Default)]
+struct HttpCallServerConfig {
+    name: String,
+    url: String,
+    headers: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct HttpCallConfig {
-    base_url: Option<String>,
-    default_headers: HashMap<String, String>,
+    servers: Vec<HttpCallServerConfig>,
     timeout_seconds: Option<u64>,
 }
 
@@ -65,7 +71,7 @@ impl HttpCallTool {
     }
 
     fn build_url(
-        base_url: &Option<String>,
+        server: Option<&HttpCallServerConfig>,
         url: Option<&str>,
         endpoint: Option<&str>,
     ) -> Result<String> {
@@ -80,12 +86,14 @@ impl HttpCallTool {
                 "Missing url or endpoint".to_string(),
             ));
         }
-        let base = base_url
-            .as_ref()
+        let base = server
+            .map(|s| s.url.as_str())
             .map(|v| v.trim().trim_end_matches('/').to_string())
             .filter(|v| !v.is_empty())
             .ok_or_else(|| {
-                ButterflyBotError::Runtime("Missing base_url for endpoint".to_string())
+                ButterflyBotError::Runtime(
+                    "Missing server for endpoint; configure tools.http_call.servers".to_string(),
+                )
             })?;
         let endpoint = endpoint.trim_start_matches('/');
         Ok(format!("{base}/{endpoint}"))
@@ -122,6 +130,124 @@ impl HttpCallTool {
             })
             .collect()
     }
+
+    fn parse_headers(value: Option<&Value>) -> HashMap<String, String> {
+        value
+            .and_then(|v| v.as_object())
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| {
+                        v.as_str()
+                            .map(|value| (k.trim().to_string(), value.trim().to_string()))
+                    })
+                    .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+                    .collect::<HashMap<_, _>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn parse_servers(cfg: &Value) -> Result<Vec<HttpCallServerConfig>> {
+        let mut parsed = Vec::new();
+        if let Some(servers) = cfg.get("servers").and_then(|v| v.as_array()) {
+            for server in servers {
+                let name = server
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                let url = server
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if name.is_empty() || url.is_empty() {
+                    return Err(ButterflyBotError::Config(
+                        "HTTP call server entry requires name and url".to_string(),
+                    ));
+                }
+                parsed.push(HttpCallServerConfig {
+                    name,
+                    url,
+                    headers: Self::parse_headers(server.get("headers")),
+                });
+            }
+            return Ok(parsed);
+        }
+
+        let mut shared_headers = Self::parse_headers(cfg.get("custom_headers"));
+        let default_headers = Self::parse_headers(cfg.get("default_headers"));
+        for (key, value) in default_headers {
+            shared_headers.entry(key).or_insert(value);
+        }
+
+        if let Some(base_urls) = cfg.get("base_urls").and_then(|v| v.as_array()) {
+            for (index, value) in base_urls.iter().enumerate() {
+                let url = value.as_str().unwrap_or_default().trim().to_string();
+                if url.is_empty() {
+                    continue;
+                }
+                parsed.push(HttpCallServerConfig {
+                    name: format!("server_{}", index + 1),
+                    url,
+                    headers: shared_headers.clone(),
+                });
+            }
+            if !parsed.is_empty() {
+                return Ok(parsed);
+            }
+        }
+
+        if let Some(base_url) = cfg.get("base_url").and_then(|v| v.as_str()) {
+            let url = base_url.trim().to_string();
+            if !url.is_empty() {
+                parsed.push(HttpCallServerConfig {
+                    name: "default".to_string(),
+                    url,
+                    headers: shared_headers,
+                });
+            }
+        }
+
+        Ok(parsed)
+    }
+
+    fn find_server<'a>(
+        servers: &'a [HttpCallServerConfig],
+        name: Option<&str>,
+    ) -> Result<Option<&'a HttpCallServerConfig>> {
+        if servers.is_empty() {
+            if let Some(name) = name {
+                if !name.trim().is_empty() {
+                    return Err(ButterflyBotError::Runtime(
+                        "No HTTP call servers configured".to_string(),
+                    ));
+                }
+            }
+            return Ok(None);
+        }
+
+        if let Some(name) = name {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                if let Some(server) = servers.iter().find(|s| s.name == trimmed) {
+                    return Ok(Some(server));
+                }
+                return Err(ButterflyBotError::Runtime(format!(
+                    "Unknown HTTP call server '{trimmed}'"
+                )));
+            }
+        }
+
+        if servers.len() == 1 {
+            Ok(Some(&servers[0]))
+        } else {
+            Err(ButterflyBotError::Runtime(
+                "Multiple HTTP call servers configured; specify server name".to_string(),
+            ))
+        }
+    }
 }
 
 #[async_trait]
@@ -139,6 +265,7 @@ impl Tool for HttpCallTool {
             "type": "object",
             "properties": {
                 "method": { "type": "string" },
+                "server": { "type": "string", "description": "HTTP server name from config" },
                 "url": { "type": "string" },
                 "endpoint": { "type": "string" },
                 "headers": { "type": "object" },
@@ -155,18 +282,7 @@ impl Tool for HttpCallTool {
         let tool_cfg = config.get("tools").and_then(|v| v.get("http_call"));
         let mut next = HttpCallConfig::default();
         if let Some(cfg) = tool_cfg {
-            if let Some(base_url) = cfg.get("base_url").and_then(|v| v.as_str()) {
-                let trimmed = base_url.trim();
-                if !trimmed.is_empty() {
-                    next.base_url = Some(trimmed.to_string());
-                }
-            }
-            if let Some(headers) = cfg.get("default_headers").and_then(|v| v.as_object()) {
-                next.default_headers = headers
-                    .iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect();
-            }
+            next.servers = Self::parse_servers(cfg)?;
             if let Some(timeout) = cfg.get("timeout_seconds").and_then(|v| v.as_u64()) {
                 next.timeout_seconds = Some(timeout);
             }
@@ -190,6 +306,7 @@ impl Tool for HttpCallTool {
             return Err(ButterflyBotError::Runtime("Missing method".to_string()));
         }
 
+        let server_name = params.get("server").and_then(|v| v.as_str());
         let url = params.get("url").and_then(|v| v.as_str());
         let endpoint = params.get("endpoint").and_then(|v| v.as_str());
         let headers = params.get("headers");
@@ -202,8 +319,12 @@ impl Tool for HttpCallTool {
         let timeout_override = params.get("timeout_seconds").and_then(|v| v.as_u64());
 
         let cfg = self.config.read().await.clone();
-        let url = Self::build_url(&cfg.base_url, url, endpoint)?;
-        let mut headers = Self::build_headers(&cfg.default_headers, headers)?;
+        let selected_server = Self::find_server(&cfg.servers, server_name)?;
+        let url = Self::build_url(selected_server, url, endpoint)?;
+        let default_headers = selected_server
+            .map(|server| server.headers.clone())
+            .unwrap_or_default();
+        let mut headers = Self::build_headers(&default_headers, headers)?;
         let mut body = body;
         let mut inferred_json: Option<Value> = None;
         if json_body.is_none() {
@@ -276,6 +397,7 @@ impl Tool for HttpCallTool {
 
         Ok(json!({
             "status": "ok",
+            "server": selected_server.map(|server| server.name.clone()),
             "http_status": status,
             "headers": headers,
             "text": text,

@@ -40,8 +40,8 @@ async fn http_call_tool_uses_base_url_headers_query_and_parses_json() {
     tool.configure(&json!({
         "tools": {
             "http_call": {
-                "base_url": format!("{}/v1", server.base_url()),
-                "default_headers": {"x-default": "alpha"},
+                "base_urls": [format!("{}/v1", server.base_url())],
+                "custom_headers": {"x-default": "alpha"},
                 "timeout_seconds": 2
             }
         }
@@ -91,6 +91,79 @@ async fn http_call_tool_infers_json_from_string_body() {
 
     assert_eq!(result["status"], json!("ok"));
     assert_eq!(result["json"]["accepted"], json!(true));
+    request_mock.assert_calls(1);
+}
+
+#[tokio::test]
+async fn http_call_tool_requires_server_when_multiple_configured() {
+    let tool = HttpCallTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "http_call": {
+                "servers": [
+                    {"name": "a", "url": "http://localhost:3001"},
+                    {"name": "b", "url": "http://localhost:3002"}
+                ]
+            }
+        }
+    }))
+    .expect("configure http_call servers");
+
+    let err = tool
+        .execute(json!({
+            "method": "GET",
+            "endpoint": "ping"
+        }))
+        .await
+        .expect_err("multiple servers should require server name");
+
+    assert_runtime_err_contains(err, "Multiple HTTP call servers configured");
+}
+
+#[tokio::test]
+async fn http_call_tool_uses_named_server_config() {
+    let server = MockServer::start_async().await;
+    let request_mock = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/ping")
+                .header("x-default", "alpha")
+                .query_param("q", "rust");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"ok": true}));
+        })
+        .await;
+
+    let tool = HttpCallTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "http_call": {
+                "servers": [
+                    {
+                        "name": "primary",
+                        "url": format!("{}/v1", server.base_url()),
+                        "headers": {"x-default": "alpha"}
+                    }
+                ]
+            }
+        }
+    }))
+    .expect("configure http_call servers");
+
+    let result = tool
+        .execute(json!({
+            "method": "GET",
+            "server": "primary",
+            "endpoint": "ping",
+            "query": {"q": "rust"}
+        }))
+        .await
+        .expect("execute http_call with named server");
+
+    assert_eq!(result["status"], json!("ok"));
+    assert_eq!(result["server"], json!("primary"));
+    assert_eq!(result["http_status"], json!(200));
     request_mock.assert_calls(1);
 }
 

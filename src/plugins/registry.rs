@@ -686,6 +686,7 @@ impl ToolRegistry {
                     "http_call",
                     serde_json::json!({
                         "method": Self::require_str(&args, "method")?,
+                        "server": args.get("server").and_then(|v| v.as_str()),
                         "url": args.get("url").and_then(|v| v.as_str()),
                         "endpoint": args.get("endpoint").and_then(|v| v.as_str()),
                         "headers": args.get("headers").cloned(),
