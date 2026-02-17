@@ -37,6 +37,8 @@ If macOS reports the app is "damaged" after download, clear quarantine on the ex
 
 `cargo install butterfly-bot`
 
+`butterfly-botd` now auto-provisions bundled WASM tool modules on first run (to `$XDG_DATA_HOME/butterfly-bot/wasm` or `~/.local/share/butterfly-bot/wasm` on Linux, and `~/Library/Application Support/butterfly-bot/wasm` on macOS).
+
 
 ### Why users pick it:
 

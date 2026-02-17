@@ -21,6 +21,7 @@ pub mod todo;
 pub mod tools;
 pub mod ui;
 pub mod vault;
+pub mod wasm_bundle;
 pub mod wakeup;
 
 pub type Result<T> = std::result::Result<T, error::ButterflyBotError>;

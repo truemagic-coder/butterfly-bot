@@ -1562,6 +1562,21 @@ pub async fn run_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    match crate::wasm_bundle::ensure_bundled_wasm_tools() {
+        Ok(path) => {
+            tracing::info!(
+                wasm_dir = %path.to_string_lossy(),
+                "Ensured bundled WASM tool modules"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(
+                "Could not provision bundled WASM tool modules: {}",
+                err
+            );
+        }
+    }
+
     if Config::from_store(db_path).is_err() {
         tracing::warn!("No config in store; writing default config for {}", db_path);
         let default_config = Config::convention_defaults(db_path);
