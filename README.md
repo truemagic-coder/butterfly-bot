@@ -34,7 +34,7 @@ cargo install butterfly-bot
 ### Why users pick it:
 
 - **Fast value:** works out-of-the-box with default settings.
-- **Unlimted tokens:** designed to support Ollama to run privately on your computer with unlimited use.
+- **Unlimited tokens:** designed to support Ollama to run privately on your computer with unlimited use.
 - **UI-first:** polished desktop app with chat, AI activity, and settings.
 - **Automation:** full toolset provided for your always-on agent.
 - **Integrations:** Zapier-first MCP integration model for connecting your existing SaaS stack in minutes.
@@ -46,8 +46,7 @@ cargo install butterfly-bot
 If you only configure one thing, configure Zapier:
 
 1. Open the app and go to `Config`.
-2. Paste your **Zapier MCP token**.
-3. Save and start Heartbeat.
+2. Paste your **Zapier MCP token** and save the config.
 
 That single token unlocks most production workflows because Butterfly Bot can route actions through Zapier's connected apps (email, calendar, tasks, CRM, docs, alerts, and more).
 
