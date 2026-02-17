@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+#[cfg(target_os = "macos")]
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().and_then(|value| {
         let trimmed = value.trim();
@@ -12,14 +13,16 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn env_app_root() -> Option<PathBuf> {
-    std::env::var("BUTTERFLY_BOT_APP_ROOT").ok().and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(trimmed))
-        }
-    })
+    std::env::var("BUTTERFLY_BOT_APP_ROOT")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
 }
 
 #[cfg(target_os = "macos")]
