@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use reqwest_mcp::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, PaginatedRequestParams};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::StreamableHttpClientTransport;
@@ -106,7 +106,7 @@ impl McpTool {
         }
     }
 
-    fn build_http_client(server: &McpServerConfig) -> Result<reqwest_mcp::Client> {
+    fn build_http_client(server: &McpServerConfig) -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
         for (key, value) in &server.headers {
             let name = HeaderName::from_bytes(key.as_bytes()).map_err(|err| {
@@ -118,7 +118,7 @@ impl McpTool {
             headers.insert(name, value);
         }
 
-        reqwest_mcp::Client::builder()
+        reqwest::Client::builder()
             .default_headers(headers)
             .timeout(std::time::Duration::from_secs(60))
             .build()

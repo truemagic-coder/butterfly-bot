@@ -12,6 +12,7 @@ use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::env;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -334,6 +335,8 @@ struct UiMcpServer {
     url: String,
     header_key: String,
     header_value: String,
+    headers: HashMap<String, String>,
+    primary_header_key: String,
 }
 
 #[derive(Clone, Default)]
@@ -342,6 +345,8 @@ struct UiHttpCallServer {
     url: String,
     header_key: String,
     header_value: String,
+    headers: HashMap<String, String>,
+    primary_header_key: String,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -1704,25 +1709,36 @@ fn app_view() -> Element {
                                     .unwrap_or_default()
                                     .trim()
                                     .to_string();
-                                let (header_key, header_value) = entry
+                                let headers = entry
                                     .get("headers")
                                     .and_then(|v| v.as_object())
-                                    .and_then(|map| {
-                                        map.iter().find_map(|(k, v)| {
-                                            v.as_str().map(|value| {
-                                                (k.trim().to_string(), value.trim().to_string())
+                                    .map(|map| {
+                                        map.iter()
+                                            .filter_map(|(k, v)| {
+                                                v.as_str().map(|value| {
+                                                    (k.trim().to_string(), value.trim().to_string())
+                                                })
                                             })
-                                        })
+                                            .collect::<HashMap<_, _>>()
                                     })
+                                    .unwrap_or_default();
+                                let mut header_entries = headers.iter().collect::<Vec<_>>();
+                                header_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                                let (header_key, header_value) = header_entries
+                                    .first()
+                                    .map(|(key, value)| ((*key).clone(), (*value).clone()))
                                     .unwrap_or_else(|| (String::new(), String::new()));
                                 if name.is_empty() && url.is_empty() {
                                     None
                                 } else {
+                                    let primary_header_key = header_key.clone();
                                     Some(UiMcpServer {
                                         name,
                                         url,
                                         header_key,
                                         header_value,
+                                        headers,
+                                        primary_header_key,
                                     })
                                 }
                             })
@@ -1750,29 +1766,41 @@ fn app_view() -> Element {
                                             .unwrap_or_default()
                                             .trim()
                                             .to_string();
-                                        let (header_key, header_value) = entry
+                                        let headers = entry
                                             .get("headers")
                                             .and_then(|v| v.as_object())
-                                            .and_then(|map| {
-                                                map.iter().find_map(|(k, v)| {
-                                                    v.as_str().map(|value| {
-                                                        (
-                                                            k.trim().to_string(),
-                                                            value.trim().to_string(),
-                                                        )
+                                            .map(|map| {
+                                                map.iter()
+                                                    .filter_map(|(k, v)| {
+                                                        v.as_str().map(|value| {
+                                                            (
+                                                                k.trim().to_string(),
+                                                                value.trim().to_string(),
+                                                            )
+                                                        })
                                                     })
-                                                })
+                                                    .collect::<HashMap<_, _>>()
                                             })
+                                            .unwrap_or_default();
+                                        let mut header_entries = headers.iter().collect::<Vec<_>>();
+                                        header_entries
+                                            .sort_by(|(left, _), (right, _)| left.cmp(right));
+                                        let (header_key, header_value) = header_entries
+                                            .first()
+                                            .map(|(key, value)| ((*key).clone(), (*value).clone()))
                                             .unwrap_or_else(|| (String::new(), String::new()));
 
                                         if name.is_empty() && url.is_empty() {
                                             None
                                         } else {
+                                            let primary_header_key = header_key.clone();
                                             Some(UiHttpCallServer {
                                                 name,
                                                 url,
                                                 header_key,
                                                 header_value,
+                                                headers,
+                                                primary_header_key,
                                             })
                                         }
                                     })
@@ -1781,28 +1809,36 @@ fn app_view() -> Element {
                             .unwrap_or_default();
 
                         if parsed_servers.is_empty() {
-                            let (header_key, header_value) = http_call_cfg
+                            let mut shared_headers = http_call_cfg
                                 .get("custom_headers")
                                 .and_then(|v| v.as_object())
-                                .and_then(|map| {
-                                    map.iter().find_map(|(k, v)| {
-                                        v.as_str().map(|value| {
-                                            (k.trim().to_string(), value.trim().to_string())
-                                        })
-                                    })
-                                })
-                                .or_else(|| {
-                                    http_call_cfg
-                                        .get("default_headers")
-                                        .and_then(|v| v.as_object())
-                                        .and_then(|map| {
-                                            map.iter().find_map(|(k, v)| {
-                                                v.as_str().map(|value| {
-                                                    (k.trim().to_string(), value.trim().to_string())
-                                                })
+                                .map(|map| {
+                                    map.iter()
+                                        .filter_map(|(k, v)| {
+                                            v.as_str().map(|value| {
+                                                (k.trim().to_string(), value.trim().to_string())
                                             })
                                         })
+                                        .collect::<HashMap<_, _>>()
                                 })
+                                .unwrap_or_default();
+                            if let Some(default_headers) = http_call_cfg
+                                .get("default_headers")
+                                .and_then(|v| v.as_object())
+                            {
+                                for (key, value) in default_headers {
+                                    if let Some(value) = value.as_str() {
+                                        shared_headers
+                                            .entry(key.trim().to_string())
+                                            .or_insert(value.trim().to_string());
+                                    }
+                                }
+                            }
+                            let mut header_entries = shared_headers.iter().collect::<Vec<_>>();
+                            header_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                            let (header_key, header_value) = header_entries
+                                .first()
+                                .map(|(key, value)| ((*key).clone(), (*value).clone()))
                                 .unwrap_or_else(|| (String::new(), String::new()));
 
                             if let Some(base_urls) =
@@ -1817,11 +1853,14 @@ fn app_view() -> Element {
                                         if url.is_empty() {
                                             None
                                         } else {
+                                            let primary_header_key = header_key.clone();
                                             Some(UiHttpCallServer {
                                                 name: format!("server_{}", index + 1),
                                                 url,
                                                 header_key: header_key.clone(),
                                                 header_value: header_value.clone(),
+                                                headers: shared_headers.clone(),
+                                                primary_header_key,
                                             })
                                         }
                                     })
@@ -1836,11 +1875,14 @@ fn app_view() -> Element {
                                     .trim()
                                     .to_string();
                                 if !base_url.is_empty() {
+                                    let primary_header_key = header_key.clone();
                                     parsed_servers.push(UiHttpCallServer {
                                         name: "default".to_string(),
                                         url: base_url,
                                         header_key,
                                         header_value,
+                                        headers: shared_headers,
+                                        primary_header_key,
                                     });
                                 }
                             }
@@ -2088,6 +2130,7 @@ fn app_view() -> Element {
                     let url = entry.url.trim();
                     let header_key = entry.header_key.trim();
                     let header_value = entry.header_value.trim();
+                    let primary_header_key = entry.primary_header_key.trim();
                     if name.is_empty() && url.is_empty() {
                         continue;
                     }
@@ -2111,12 +2154,14 @@ fn app_view() -> Element {
                         );
                         return;
                     }
-                    mcp_servers.push((
-                        name.to_string(),
-                        url.to_string(),
-                        header_key.to_string(),
-                        header_value.to_string(),
-                    ));
+                    let mut headers = entry.headers.clone();
+                    if !primary_header_key.is_empty() && primary_header_key != header_key {
+                        headers.remove(primary_header_key);
+                    }
+                    if !header_key.is_empty() {
+                        headers.insert(header_key.to_string(), header_value.to_string());
+                    }
+                    mcp_servers.push((name.to_string(), url.to_string(), headers));
                 }
 
                 let mut http_call_servers = Vec::new();
@@ -2125,6 +2170,7 @@ fn app_view() -> Element {
                     let url = entry.url.trim();
                     let header_key = entry.header_key.trim();
                     let header_value = entry.header_value.trim();
+                    let primary_header_key = entry.primary_header_key.trim();
                     if name.is_empty() && url.is_empty() {
                         continue;
                     }
@@ -2149,12 +2195,15 @@ fn app_view() -> Element {
                         return;
                     }
 
-                    http_call_servers.push((
-                        name.to_string(),
-                        url.to_string(),
-                        header_key.to_string(),
-                        header_value.to_string(),
-                    ));
+                    let mut headers = entry.headers.clone();
+                    if !primary_header_key.is_empty() && primary_header_key != header_key {
+                        headers.remove(primary_header_key);
+                    }
+                    if !header_key.is_empty() {
+                        headers.insert(header_key.to_string(), header_value.to_string());
+                    }
+
+                    http_call_servers.push((name.to_string(), url.to_string(), headers));
                 }
 
                 let network_allow = network_allow_form()
@@ -2217,13 +2266,15 @@ fn app_view() -> Element {
                         Value::Array(
                             mcp_servers
                                 .into_iter()
-                                .map(|(name, url, header_key, header_value)| {
+                                .map(|(name, url, headers)| {
                                     let mut server = serde_json::Map::new();
                                     server.insert("name".to_string(), Value::String(name));
                                     server.insert("url".to_string(), Value::String(url));
-                                    if !header_key.is_empty() {
-                                        let mut headers = serde_json::Map::new();
-                                        headers.insert(header_key, Value::String(header_value));
+                                    if !headers.is_empty() {
+                                        let headers = headers
+                                            .into_iter()
+                                            .map(|(key, value)| (key, Value::String(value)))
+                                            .collect::<serde_json::Map<_, _>>();
                                         server
                                             .insert("headers".to_string(), Value::Object(headers));
                                     }
@@ -2242,26 +2293,25 @@ fn app_view() -> Element {
                 }
                 if let Some(http_call_obj) = http_call_cfg.as_object_mut() {
                     let mut first_url: Option<String> = None;
-                    let mut first_header: Option<(String, String)> = None;
+                    let mut first_headers: Option<HashMap<String, String>> = None;
 
                     let servers = http_call_servers
                         .iter()
-                        .map(|(name, url, header_key, header_value)| {
+                        .map(|(name, url, headers)| {
                             if first_url.is_none() {
                                 first_url = Some(url.clone());
+                            }
+                            if first_headers.is_none() {
+                                first_headers = Some(headers.clone());
                             }
                             let mut server = serde_json::Map::new();
                             server.insert("name".to_string(), Value::String(name.clone()));
                             server.insert("url".to_string(), Value::String(url.clone()));
-                            if !header_key.is_empty() {
-                                if first_header.is_none() {
-                                    first_header = Some((header_key.clone(), header_value.clone()));
-                                }
-                                let mut headers = serde_json::Map::new();
-                                headers.insert(
-                                    header_key.clone(),
-                                    Value::String(header_value.clone()),
-                                );
+                            if !headers.is_empty() {
+                                let headers = headers
+                                    .iter()
+                                    .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                                    .collect::<serde_json::Map<_, _>>();
                                 server.insert("headers".to_string(), Value::Object(headers));
                             }
                             Value::Object(server)
@@ -2272,7 +2322,7 @@ fn app_view() -> Element {
 
                     let base_urls = http_call_servers
                         .iter()
-                        .map(|(_, url, _, _)| Value::String(url.clone()))
+                        .map(|(_, url, _)| Value::String(url.clone()))
                         .collect::<Vec<_>>();
                     http_call_obj.insert("base_urls".to_string(), Value::Array(base_urls));
 
@@ -2282,10 +2332,11 @@ fn app_view() -> Element {
                         http_call_obj.remove("base_url");
                     }
 
-                    let mut legacy_headers = serde_json::Map::new();
-                    if let Some((header_key, header_value)) = first_header {
-                        legacy_headers.insert(header_key, Value::String(header_value));
-                    }
+                    let legacy_headers = first_headers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(key, value)| (key, Value::String(value)))
+                        .collect::<serde_json::Map<_, _>>();
                     http_call_obj.insert(
                         "custom_headers".to_string(),
                         Value::Object(legacy_headers.clone()),
@@ -2725,7 +2776,18 @@ fn app_view() -> Element {
                 box-shadow: 0 8px 30px rgba(0,0,0,0.25);
                 border-radius: 14px;
             }}
-            .nav {{ display: flex; gap: 8px; align-items: center; }}
+            .nav {{
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                justify-content: flex-end;
+                margin-left: auto;
+                flex-wrap: wrap;
+            }}
+            .nav > button {{
+                min-width: 0;
+                padding: 8px 14px;
+            }}
             .nav button {{ background: rgba(255,255,255,0.08); }}
             .nav button.active {{ background: rgba(99,102,241,0.6); }}
             .nav-controls {{ display: flex; gap: 6px; margin-left: 8px; }}
@@ -2983,20 +3045,47 @@ fn app_view() -> Element {
                 padding: 10px 12px;
                 border-radius: 12px;
             }}
+            .server-row {{
+                display: grid;
+                grid-template-columns: minmax(140px, 1fr) minmax(220px, 2fr) minmax(160px, 1fr) minmax(180px, 1fr) auto;
+                align-items: center;
+                gap: 10px;
+            }}
+            .server-row input,
+            .server-row button {{
+                width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+            }}
             .simple-row .mcp-name {{
-                flex: 0 0 190px;
+                flex: 1;
             }}
             .simple-row .mcp-url {{
                 flex: 1;
             }}
             .simple-row .mcp-header-key {{
-                flex: 0 0 180px;
+                flex: 1;
             }}
             .simple-row .mcp-header-value {{
-                flex: 0 0 220px;
+                flex: 1;
             }}
             .simple-row .host-input {{
                 flex: 1;
+            }}
+            .network-row {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: 10px;
+            }}
+            .network-row input,
+            .network-row button {{
+                width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+            }}
+            .network-row button {{
+                min-width: 108px;
             }}
             .simple-actions {{
                 display: flex;
@@ -3006,9 +3095,90 @@ fn app_view() -> Element {
             .add-host-actions {{
                 margin-top: 12px;
             }}
+            @media (max-width: 1280px) {{
+                .server-row {{
+                    grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+                }}
+                .server-row button {{
+                    grid-column: 1 / -1;
+                }}
+            }}
+            @media (max-width: 1024px) {{
+                .server-row {{
+                    grid-template-columns: 1fr;
+                }}
+                .server-row button {{
+                    grid-column: auto;
+                }}
+                .network-row {{
+                    grid-template-columns: 1fr;
+                }}
+            }}
+            @media (max-width: 960px) {{
+                .header {{
+                    padding: 12px 14px;
+                    justify-content: space-between;
+                    gap: 8px;
+                }}
+                .nav {{
+                    width: auto;
+                    gap: 6px;
+                    justify-content: flex-end;
+                    margin-left: auto;
+                    flex-wrap: nowrap;
+                }}
+                .nav > button {{
+                    flex: 0 0 auto;
+                }}
+                .nav-controls {{
+                    width: auto;
+                    margin-left: auto;
+                    display: flex;
+                    gap: 6px;
+                }}
+                .daemon-icon-btn {{
+                    width: 34px;
+                    height: 34px;
+                    min-width: 34px;
+                    border-radius: 999px;
+                }}
+                .daemon-trash-btn {{
+                    margin-left: 4px;
+                }}
+            }}
+            @media (max-width: 640px) {{
+                .header {{
+                    justify-content: space-between;
+                    flex-wrap: wrap;
+                }}
+                .nav {{
+                    width: 100%;
+                    justify-content: flex-end;
+                    margin-left: 0;
+                    flex-wrap: wrap;
+                }}
+                .nav > button {{
+                    flex: 0 0 auto;
+                }}
+                .nav-controls {{
+                    width: auto;
+                    margin-left: 8px;
+                    display: flex;
+                }}
+                .daemon-icon-btn {{
+                    width: 34px;
+                    height: 34px;
+                    min-width: 34px;
+                    border-radius: 999px;
+                }}
+                .daemon-trash-btn {{
+                    margin-left: 4px;
+                }}
+            }}
             @media (max-width: 860px) {{
                 .simple-top {{ grid-template-columns: 1fr; }}
                 .simple-row {{ flex-direction: column; align-items: stretch; }}
+                .server-row {{ grid-template-columns: 1fr; }}
                 .simple-row .mcp-name {{ flex: 1 1 auto; }}
                 .simple-row .mcp-url {{ flex: 1 1 auto; }}
                 .simple-row .mcp-header-key {{ flex: 1 1 auto; }}
@@ -3267,7 +3437,7 @@ fn app_view() -> Element {
                                     label { "MCP Servers" }
                                     div { class: "simple-list",
                                         for (index, server) in mcp_servers_form.read().iter().enumerate() {
-                                            div { class: "simple-row",
+                                            div { class: "simple-row server-row",
                                                 input {
                                                     class: "mcp-name",
                                                     value: "{server.name}",
@@ -3351,7 +3521,7 @@ fn app_view() -> Element {
                                     label { "HTTP Call Servers" }
                                     div { class: "simple-list",
                                         for (index, server) in http_call_servers_form.read().iter().enumerate() {
-                                            div { class: "simple-row",
+                                            div { class: "simple-row server-row",
                                                 input {
                                                     class: "mcp-name",
                                                     value: "{server.name}",
@@ -3435,7 +3605,7 @@ fn app_view() -> Element {
                                     label { "Network Allow List" }
                                     div { class: "simple-list",
                                         for (index, host) in network_allow_form.read().iter().enumerate() {
-                                            div { class: "simple-row",
+                                            div { class: "simple-row network-row",
                                                 input {
                                                     class: "host-input",
                                                     value: "{host}",

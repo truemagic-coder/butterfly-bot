@@ -168,6 +168,102 @@ async fn http_call_tool_uses_named_server_config() {
 }
 
 #[tokio::test]
+async fn http_call_tool_supports_multiple_server_headers() {
+    let server = MockServer::start_async().await;
+    let request_mock = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/ping")
+                .header("x-default", "alpha")
+                .header("x-auth", "token-123")
+                .query_param("q", "rust");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"ok": true}));
+        })
+        .await;
+
+    let tool = HttpCallTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "http_call": {
+                "servers": [
+                    {
+                        "name": "primary",
+                        "url": format!("{}/v1", server.base_url()),
+                        "headers": {
+                            "x-default": "alpha",
+                            "x-auth": "token-123"
+                        }
+                    }
+                ]
+            }
+        }
+    }))
+    .expect("configure http_call multi-headers");
+
+    let result = tool
+        .execute(json!({
+            "method": "GET",
+            "server": "primary",
+            "endpoint": "ping",
+            "query": {"q": "rust"}
+        }))
+        .await
+        .expect("execute http_call with multiple server headers");
+
+    assert_eq!(result["status"], json!("ok"));
+    assert_eq!(result["http_status"], json!(200));
+    request_mock.assert_calls(1);
+}
+
+#[tokio::test]
+async fn http_call_tool_merges_multiple_legacy_headers() {
+    let server = MockServer::start_async().await;
+    let request_mock = server
+        .mock_async(|when, then| {
+            when.method(GET)
+                .path("/v1/ping")
+                .header("x-custom", "alpha")
+                .header("x-default", "beta")
+                .query_param("q", "legacy");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"ok": true}));
+        })
+        .await;
+
+    let tool = HttpCallTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "http_call": {
+                "base_urls": [format!("{}/v1", server.base_url())],
+                "custom_headers": {
+                    "x-custom": "alpha"
+                },
+                "default_headers": {
+                    "x-default": "beta"
+                }
+            }
+        }
+    }))
+    .expect("configure http_call legacy headers");
+
+    let result = tool
+        .execute(json!({
+            "method": "GET",
+            "endpoint": "ping",
+            "query": {"q": "legacy"}
+        }))
+        .await
+        .expect("execute http_call legacy headers");
+
+    assert_eq!(result["status"], json!("ok"));
+    assert_eq!(result["http_status"], json!(200));
+    request_mock.assert_calls(1);
+}
+
+#[tokio::test]
 async fn coding_tool_execute_fails_without_api_key() {
     let tool = CodingTool::new();
     tool.configure(&json!({"tools": {"coding": {}}}))
