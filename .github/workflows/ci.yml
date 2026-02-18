@@ -17,6 +17,8 @@ jobs:
   test:
     name: Rust Tests
     runs-on: ubuntu-latest
+    env:
+      BUTTERFLY_BOT_DB_KEY: ci-test-sqlcipher-key
     steps:
       - uses: actions/checkout@v4
       - name: Install Ubuntu build dependencies
@@ -43,3 +45,16 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
+
+  windows-check:
+    name: Windows Build Check
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust and cache
+        uses: ./.github/actions/setup-rust
+
+      - name: Build check (workspace)
+        run: cargo check --workspace --all-targets

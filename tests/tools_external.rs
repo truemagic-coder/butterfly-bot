@@ -9,6 +9,14 @@ use butterfly_bot::tools::zapier::ZapierTool;
 use httpmock::Method::{GET, POST};
 use httpmock::MockServer;
 use serde_json::json;
+use std::sync::Once;
+
+fn disable_keyring_for_test_process() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        std::env::set_var("BUTTERFLY_BOT_DISABLE_KEYRING", "1");
+    });
+}
 
 fn assert_runtime_err_contains(err: ButterflyBotError, expected: &str) {
     match err {
@@ -313,6 +321,7 @@ async fn mcp_tool_validates_config_and_reports_routing_errors() {
 
 #[tokio::test]
 async fn github_tool_secret_requirement_and_missing_pat_error() {
+    disable_keyring_for_test_process();
     let tool = GitHubTool::new();
     let needed = tool.required_secrets_for_config(&json!({"tools": {"github": {}}}));
     assert_eq!(needed.len(), 1);
@@ -329,6 +338,7 @@ async fn github_tool_secret_requirement_and_missing_pat_error() {
 
 #[tokio::test]
 async fn zapier_tool_secret_requirement_and_missing_token_error() {
+    disable_keyring_for_test_process();
     let tool = ZapierTool::new();
     let needed = tool.required_secrets_for_config(&json!({
         "tools": {"zapier": {"url": "https://mcp.zapier.com/api/v1/connect"}}
@@ -349,6 +359,7 @@ async fn zapier_tool_secret_requirement_and_missing_token_error() {
 
 #[tokio::test]
 async fn zapier_tool_placeholder_token_is_rejected() {
+    disable_keyring_for_test_process();
     let tool = ZapierTool::new();
     let needed = tool.required_secrets_for_config(&json!({
         "tools": {"zapier": {"url": "https://mcp.zapier.com/api/v1/connect?token=my_token"}}

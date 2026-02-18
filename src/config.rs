@@ -239,16 +239,22 @@ impl Config {
     }
 
     pub fn from_store(db_path: &str) -> Result<Self> {
-        if let Ok(Some(secret)) = crate::vault::get_secret("app_config_json") {
-            if !secret.trim().is_empty() {
-                let value: Value = serde_json::from_str(&secret)
-                    .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-                let config: Config = serde_json::from_value(value)
-                    .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
-                return Ok(config.apply_security_defaults());
+        match crate::config_store::load_config(db_path) {
+            Ok(config) => Ok(config.apply_security_defaults()),
+            Err(store_err) => {
+                if let Ok(Some(secret)) = crate::vault::get_secret("app_config_json") {
+                    if !secret.trim().is_empty() {
+                        let value: Value = serde_json::from_str(&secret)
+                            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+                        let config: Config = serde_json::from_value(value)
+                            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+                        return Ok(config.apply_security_defaults());
+                    }
+                }
+
+                Err(store_err)
             }
         }
-        crate::config_store::load_config(db_path).map(|config| config.apply_security_defaults())
     }
 
     pub fn resolve_vault(mut self) -> Result<Self> {

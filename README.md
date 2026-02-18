@@ -30,7 +30,7 @@ Download the `deb` file for Ubuntu from the latest [GitHub Release](https://gith
 
 `cargo install butterfly-bot`
 
-`butterfly-botd` now auto-provisions bundled WASM tool modules and smart-refreshes them on upgrades (to `$XDG_DATA_HOME/butterfly-bot/wasm` or `~/.local/share/butterfly-bot/wasm` on Linux, and `~/Library/Application Support/butterfly-bot/wasm` on macOS).
+`butterfly-botd` now auto-provisions bundled WASM tool modules and smart-refreshes them on upgrades (to `$XDG_DATA_HOME/butterfly-bot/wasm` or `~/.local/share/butterfly-bot/wasm` on Linux, `~/Library/Application Support/butterfly-bot/wasm` on macOS, and `%APPDATA%/butterfly-bot/wasm` on Windows).
 
 
 ### Why users pick it:
@@ -228,12 +228,13 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - Designed for always-on use with unlimited token use (local inference) and customized wakeup and task intervals.
 - Conversation data and memory are only stored locally.
 - Config JSON is stored in the OS keychain.
-- SQLite data is encrypted at rest via SQLCipher when a DB key is set.
+- SQLite data is always encrypted at rest via SQLCipher.
 
 ### Prerequisites
 
 - Rust (via rustup): https://rustup.rs (only if `cargo install`)
 - Ollama is auto-installed on Linux and Mac at first run (via `curl -fsSL https://ollama.com/install.sh | sh`) when local Ollama is configured.
+- On Windows, install Ollama manually before first run: https://ollama.com/download/windows
 
 ### Requirements
 
@@ -242,6 +243,7 @@ Memory entries are stored as time-ordered events and entities in the SQLCipher d
 - 16GB+ RAM with 8GB+ VRAM (for Linux)
 - Certain system libraries for Linux (only if using `cargo install`)
 - 16GB+ RAM with M2 Pro (for Mac)
+- 16GB+ RAM recommended for Windows
 
 #### Models Used
 
@@ -280,7 +282,7 @@ cargo llvm-cov --workspace --tests --lcov --output-path lcov.info
 If your environment prompts for keychain/keyring access during tests, disable keyring usage for that run:
 
 ```bash
-BUTTERFLY_BOT_DISABLE_KEYRING=1 cargo test
+BUTTERFLY_BOT_DISABLE_KEYRING=1 BUTTERFLY_BOT_DB_KEY=test-key cargo test
 ```
 
 ## Run
@@ -468,7 +470,7 @@ tool call
 
 ## SQLCipher (encrypted storage)
 
-Butterfly Bot uses SQLCipher-backed SQLite when you provide a DB key.
+Butterfly Bot always uses SQLCipher-backed SQLite with an encryption key.
 
 Set the environment variable before running:
 
@@ -476,7 +478,7 @@ Set the environment variable before running:
 export BUTTERFLY_BOT_DB_KEY="your-strong-passphrase"
 ```
 
-If no key is set, storage falls back to plaintext SQLite.
+If `BUTTERFLY_BOT_DB_KEY` is not set, Butterfly Bot auto-provisions a key and persists it. It first tries the OS keychain (`db_encryption_key`) and falls back to an app-local key file at `<app_root>/secrets/db_encryption_key` when keychain storage is unavailable or disabled.
 
 ## Competitive Feature Matrix (Butterfly Bot vs OpenClaw, ZeroClaw, IronClaw)
 

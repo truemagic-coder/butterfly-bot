@@ -57,6 +57,7 @@ async fn sqlite_memory_clear_history_repairs_memories_fts_before_delete() {
             .unwrap();
 
     let mut conn = SqliteConnection::establish(db_path.to_str().unwrap()).unwrap();
+    butterfly_bot::db::apply_sqlcipher_key_sync(&mut conn).unwrap();
     conn.batch_execute(
         "INSERT INTO memories (user_id, summary, tags, salience, created_at)
          VALUES ('u3', 'retain me briefly', NULL, NULL, 1);",

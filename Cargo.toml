@@ -1,6 +1,6 @@
 [package]
 name = "butterfly-bot"
-version = "0.5.0"
+version = "0.6.0"
 description = "Butterfly Bot is an opinionated personal-ops AI assistant built for people who want results, not setup overhead."
 repository = "https://github.com/truemagic-coder/butterfly-bot"
 homepage = "https://butterfly-bot.com"
@@ -48,18 +48,23 @@ sqlite-vec = "0.1"
 reqwest = { version = "0.13.2", features = ["json", "rustls", "query", "stream"] }
 pulldown-cmark = "0.13.0"
 syntect = "5.3"
-keyring = { version = "3.6", features = ["sync-secret-service"] }
 axum = "0.8.8"
 bytes = "1.11.1"
 sha2 = "0.10"
 md-5 = "0.10"
-notify-rust = { version = "4.12.0", features = ["d"] }
 dioxus = { version = "0.7.3", features = ["desktop"] }
 time = { version = "0.3.47", features = ["formatting", "macros", "local-offset"] }
 lru = "0.16.3"
 rmcp = { version = "0.16.0", features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 libsqlite3-sys = { version = "0.35", features = ["bundled-sqlcipher"] }
 wasmtime = "41.0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6", features = ["sync-secret-service"] }
+notify-rust = { version = "4.12.0", features = ["d"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+keyring = "3.6"
 
 [features]
 default = []

@@ -43,13 +43,26 @@ fn keyring_disabled() -> bool {
 }
 
 pub fn set_secret(name: &str, value: &str) -> Result<()> {
+    set_secret_internal(name, value, true)
+}
+
+pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
+    set_secret_internal(name, value, false)
+}
+
+fn set_secret_internal(name: &str, value: &str, allow_backend_unavailable: bool) -> Result<()> {
     if keyring_disabled() {
-        return Ok(());
+        if allow_backend_unavailable {
+            return Ok(());
+        }
+        return Err(ButterflyBotError::Runtime(
+            "keyring disabled by BUTTERFLY_BOT_DISABLE_KEYRING".to_string(),
+        ));
     }
     let entry = keyring::Entry::new(SERVICE, name)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     if let Err(err) = entry.set_password(value) {
-        if keyring_backend_unavailable(&err.to_string()) {
+        if allow_backend_unavailable && keyring_backend_unavailable(&err.to_string()) {
             return Ok(());
         }
         return Err(ButterflyBotError::Runtime(err.to_string()));

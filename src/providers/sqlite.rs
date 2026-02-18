@@ -541,11 +541,10 @@ impl MemoryProvider for SqliteMemoryProvider {
                     conn.execute_batch("PRAGMA busy_timeout = 5000;")
                         .map_err(|e| format!("append_message step=pragma_busy_timeout failed: {e}"))?;
 
-                    if let Some(key) = key {
-                        let escaped_key = key.replace('\'', "''");
-                        conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                            .map_err(|e| format!("append_message step=pragma_key failed: {e}"))?;
-                    }
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("append_message step=pragma_key failed: {e}"))?;
+                    let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
 
                     deadpool_sqlite::rusqlite::Connection::execute(
                         conn,
@@ -798,11 +797,10 @@ impl SqliteMemoryProvider {
                 conn.execute_batch("PRAGMA busy_timeout = 5000;")
                     .map_err(|e| format!("clear_history step=pragma_busy_timeout failed: {e}"))?;
 
-                if let Some(key) = key {
-                    let escaped_key = key.replace('\'', "''");
-                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                        .map_err(|e| format!("clear_history step=pragma_key failed: {e}"))?;
-                }
+                let escaped_key = key.replace('\'', "''");
+                conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                    .map_err(|e| format!("clear_history step=pragma_key failed: {e}"))?;
+                let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
 
                 deadpool_sqlite::rusqlite::Connection::execute(
                     conn,
@@ -920,11 +918,10 @@ impl SqliteMemoryProvider {
                 conn.execute_batch("PRAGMA busy_timeout = 5000;")
                     .map_err(|e| format!("store_vector step=pragma_busy_timeout failed: {e}"))?;
 
-                if let Some(key) = key {
-                    let escaped_key = key.replace('\'', "''");
-                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                        .map_err(|e| format!("store_vector step=pragma_key failed: {e}"))?;
-                }
+                let escaped_key = key.replace('\'', "''");
+                conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                    .map_err(|e| format!("store_vector step=pragma_key failed: {e}"))?;
+                let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
 
                 conn.execute_batch(
                     "CREATE TABLE IF NOT EXISTS message_vector_meta (
@@ -1016,11 +1013,10 @@ impl SqliteMemoryProvider {
                 conn.execute_batch("PRAGMA busy_timeout = 5000;")
                     .map_err(|e| format!("delete_vector step=pragma_busy_timeout failed: {e}"))?;
 
-                if let Some(key) = key {
-                    let escaped_key = key.replace('\'', "''");
-                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                        .map_err(|e| format!("delete_vector step=pragma_key failed: {e}"))?;
-                }
+                let escaped_key = key.replace('\'', "''");
+                conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                    .map_err(|e| format!("delete_vector step=pragma_key failed: {e}"))?;
+                let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
 
                 deadpool_sqlite::rusqlite::Connection::execute(
                     conn,
@@ -1062,11 +1058,10 @@ impl SqliteMemoryProvider {
                             format!("search_vector step=pragma_busy_timeout failed: {e}")
                         })?;
 
-                    if let Some(key) = key {
-                        let escaped_key = key.replace('\'', "''");
-                        conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                            .map_err(|e| format!("search_vector step=pragma_key failed: {e}"))?;
-                    }
+                    let escaped_key = key.replace('\'', "''");
+                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
+                        .map_err(|e| format!("search_vector step=pragma_key failed: {e}"))?;
+                    let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
 
                     let mut stmt = match conn.prepare(
                         "SELECT content, timestamp

@@ -8,6 +8,7 @@ use dioxus::document::eval;
 use dioxus::launch;
 use dioxus::prelude::*;
 use futures::StreamExt;
+#[cfg(target_os = "linux")]
 use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,20 @@ use time::{macros::format_description, OffsetDateTime, UtcOffset};
 use tokio::time::{sleep, timeout, Duration};
 
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
+
+#[cfg(target_os = "linux")]
+fn send_desktop_notification(title: &str) {
+    if let Err(err) = Notification::new()
+        .summary("Butterfly Bot")
+        .body(title)
+        .show()
+    {
+        eprintln!("Notification error: {err}");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn send_desktop_notification(_title: &str) {}
 
 #[derive(Clone, Serialize)]
 struct ProcessTextRequest {
@@ -1149,8 +1164,6 @@ fn app_view() -> Element {
         let token = token.clone();
         let user_id = user_id.clone();
         let messages = messages.clone();
-        let activity_messages = activity_messages.clone();
-        let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
 
         use_effect(move || {
@@ -1162,7 +1175,6 @@ fn app_view() -> Element {
             started.set(true);
 
             let mut messages = messages.clone();
-            let mut activity_messages = activity_messages.clone();
             let mut next_id = next_id.clone();
 
             spawn(async move {
@@ -1198,13 +1210,6 @@ fn app_view() -> Element {
                         ChatMessage::new(id, role, text, timestamp.unwrap_or_else(now_unix_ts)),
                         MAX_CHAT_MESSAGES,
                     );
-                }
-
-                let mut activity = activity_messages.write();
-                if activity.is_empty() {
-                    for entry in list.iter().cloned() {
-                        push_bounded_message(&mut activity, entry, MAX_ACTIVITY_MESSAGES);
-                    }
                 }
 
                 drop(list);
@@ -1315,13 +1320,7 @@ fn app_view() -> Element {
                                             MAX_CHAT_MESSAGES,
                                         );
                                         scroll_chat_to_bottom().await;
-                                        if let Err(err) = Notification::new()
-                                            .summary("Butterfly Bot")
-                                            .body(title)
-                                            .show()
-                                        {
-                                            eprintln!("Notification error: {err}");
-                                        }
+                                        send_desktop_notification(title);
                                     }
                                 }
                             }
