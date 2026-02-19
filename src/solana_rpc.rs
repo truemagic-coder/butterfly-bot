@@ -70,7 +70,9 @@ pub async fn get_balance(endpoint: &str, address: &str, commitment: &str) -> Res
     result
         .get("value")
         .and_then(|value| value.as_u64())
-        .ok_or_else(|| ButterflyBotError::Runtime("solana rpc getBalance missing value".to_string()))
+        .ok_or_else(|| {
+            ButterflyBotError::Runtime("solana rpc getBalance missing value".to_string())
+        })
 }
 
 pub async fn get_latest_blockhash(endpoint: &str, commitment: &str) -> Result<String> {
@@ -87,7 +89,9 @@ pub async fn get_latest_blockhash(endpoint: &str, commitment: &str) -> Result<St
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
         .ok_or_else(|| {
-            ButterflyBotError::Runtime("solana rpc getLatestBlockhash missing blockhash".to_string())
+            ButterflyBotError::Runtime(
+                "solana rpc getLatestBlockhash missing blockhash".to_string(),
+            )
         })
 }
 
@@ -144,7 +148,7 @@ pub fn build_transfer_transaction_base64_with_unit_limit(
 }
 
 pub fn probe_compute_unit_limit(policy: &SolanaRpcExecutionPolicy) -> u32 {
-    policy.compute_budget.unit_limit.max(1_000_000).min(1_400_000)
+    policy.compute_budget.unit_limit.clamp(1_000_000, 1_400_000)
 }
 
 pub fn recommended_compute_unit_limit(simulation_result: &Value, fallback: u32) -> u32 {
@@ -226,7 +230,9 @@ pub async fn send_transaction(
     result
         .as_str()
         .map(|value| value.to_string())
-        .ok_or_else(|| ButterflyBotError::Runtime("solana rpc sendTransaction missing signature".to_string()))
+        .ok_or_else(|| {
+            ButterflyBotError::Runtime("solana rpc sendTransaction missing signature".to_string())
+        })
 }
 
 pub async fn get_signature_status(endpoint: &str, signature: &str) -> Result<Value> {
@@ -238,11 +244,15 @@ pub async fn get_signature_status(endpoint: &str, signature: &str) -> Result<Val
     .await
 }
 
-pub async fn get_signatures_for_address(endpoint: &str, address: &str, limit: usize) -> Result<Value> {
+pub async fn get_signatures_for_address(
+    endpoint: &str,
+    address: &str,
+    limit: usize,
+) -> Result<Value> {
     rpc_call(
         endpoint,
         "getSignaturesForAddress",
-        json!([address, {"limit": limit.max(1).min(100)}]),
+        json!([address, {"limit": limit.clamp(1, 100)}]),
     )
     .await
 }
@@ -277,7 +287,8 @@ mod tests {
         .unwrap();
 
         let simulation = json!({"value": {"unitsConsumed": 500_000}});
-        let adjusted_limit = recommended_compute_unit_limit(&simulation, policy.compute_budget.unit_limit);
+        let adjusted_limit =
+            recommended_compute_unit_limit(&simulation, policy.compute_budget.unit_limit);
         assert_ne!(adjusted_limit, probe_limit);
 
         let (final_encoded, _) = build_transfer_transaction_base64_with_unit_limit(
@@ -296,7 +307,13 @@ mod tests {
         let expected_probe_ix = ComputeBudgetInstruction::set_compute_unit_limit(probe_limit);
         let expected_final_ix = ComputeBudgetInstruction::set_compute_unit_limit(adjusted_limit);
 
-        assert_eq!(probe_tx.message.instructions[0].data, expected_probe_ix.data);
-        assert_eq!(final_tx.message.instructions[0].data, expected_final_ix.data);
+        assert_eq!(
+            probe_tx.message.instructions[0].data,
+            expected_probe_ix.data
+        );
+        assert_eq!(
+            final_tx.message.instructions[0].data,
+            expected_final_ix.data
+        );
     }
 }

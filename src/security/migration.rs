@@ -207,7 +207,12 @@ pub fn run_legacy_secret_migration(mode: MigrationMode) -> Result<MigrationRepor
 
     let legacy = KeyringLegacySecretStore;
     let target = VaultTargetSecretStore;
-    Ok(migrate_with_stores(mode, LEGACY_SECRET_NAMES, &legacy, &target))
+    Ok(migrate_with_stores(
+        mode,
+        LEGACY_SECRET_NAMES,
+        &legacy,
+        &target,
+    ))
 }
 
 #[cfg(test)]
@@ -269,7 +274,10 @@ mod tests {
         }
 
         fn value(&self, name: &str) -> Option<String> {
-            self.values.lock().ok().and_then(|guard| guard.get(name).cloned())
+            self.values
+                .lock()
+                .ok()
+                .and_then(|guard| guard.get(name).cloned())
         }
     }
 
@@ -297,12 +305,8 @@ mod tests {
         let legacy = MemoryLegacyStore::with(&[("openai_api_key", "abc")]);
         let target = MemoryTargetStore::default();
 
-        let report = migrate_with_stores(
-            MigrationMode::DryRun,
-            &["openai_api_key"],
-            &legacy,
-            &target,
-        );
+        let report =
+            migrate_with_stores(MigrationMode::DryRun, &["openai_api_key"], &legacy, &target);
 
         assert_eq!(report.migrated, 1);
         assert_eq!(report.errors, 0);
@@ -314,22 +318,14 @@ mod tests {
         let legacy = MemoryLegacyStore::with(&[("openai_api_key", "abc")]);
         let target = MemoryTargetStore::default();
 
-        let first = migrate_with_stores(
-            MigrationMode::Apply,
-            &["openai_api_key"],
-            &legacy,
-            &target,
-        );
+        let first =
+            migrate_with_stores(MigrationMode::Apply, &["openai_api_key"], &legacy, &target);
         assert_eq!(first.migrated, 1);
         assert_eq!(first.errors, 0);
         assert_eq!(target.value("openai_api_key").as_deref(), Some("abc"));
 
-        let second = migrate_with_stores(
-            MigrationMode::Apply,
-            &["openai_api_key"],
-            &legacy,
-            &target,
-        );
+        let second =
+            migrate_with_stores(MigrationMode::Apply, &["openai_api_key"], &legacy, &target);
         assert_eq!(second.migrated, 0);
         assert_eq!(second.skipped, 1);
     }
@@ -339,12 +335,8 @@ mod tests {
         let legacy = MemoryLegacyStore::with(&[("openai_api_key", "legacy")]);
         let target = MemoryTargetStore::with(&[("openai_api_key", "new")]);
 
-        let report = migrate_with_stores(
-            MigrationMode::Apply,
-            &["openai_api_key"],
-            &legacy,
-            &target,
-        );
+        let report =
+            migrate_with_stores(MigrationMode::Apply, &["openai_api_key"], &legacy, &target);
 
         assert_eq!(report.migrated, 0);
         assert_eq!(report.skipped, 1);

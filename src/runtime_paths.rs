@@ -2,12 +2,22 @@ use directories::{BaseDirs, ProjectDirs};
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 fn app_root_override_lock() -> &'static RwLock<Option<PathBuf>> {
     static OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
     OVERRIDE.get_or_init(|| RwLock::new(None))
 }
 
 fn app_root_override() -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        if let Some(path) = TEST_APP_ROOT_OVERRIDE.with(|cell| cell.borrow().clone()) {
+            return Some(path);
+        }
+    }
+
     let lock = app_root_override_lock();
     match lock.read() {
         Ok(guard) => guard.clone(),
@@ -16,15 +26,15 @@ fn app_root_override() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+thread_local! {
+    static TEST_APP_ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
 pub(crate) fn set_app_root_override_for_tests(path: Option<PathBuf>) {
-    let lock = app_root_override_lock();
-    match lock.write() {
-        Ok(mut guard) => *guard = path,
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = path;
-        }
-    }
+    TEST_APP_ROOT_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = path;
+    });
 }
 
 fn platform_app_root() -> PathBuf {
@@ -71,7 +81,12 @@ pub fn default_wasm_dir_candidates() -> Vec<PathBuf> {
     }
 
     if let Some(base_dirs) = BaseDirs::new() {
-        roots.push(base_dirs.data_local_dir().join("butterfly-bot").join("wasm"));
+        roots.push(
+            base_dirs
+                .data_local_dir()
+                .join("butterfly-bot")
+                .join("wasm"),
+        );
     }
 
     let app_root = app_root();

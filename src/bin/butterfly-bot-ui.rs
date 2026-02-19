@@ -19,10 +19,24 @@ struct UiCli {
 fn main() -> butterfly_bot::Result<()> {
     let cli = UiCli::parse();
 
-    if butterfly_bot::config::Config::from_store(&cli.db).is_err() {
+    let config = if let Ok(config) = butterfly_bot::config::Config::from_store(&cli.db) {
+        config
+    } else {
         let defaults = butterfly_bot::config::Config::convention_defaults(&cli.db);
         butterfly_bot::config_store::save_config(&cli.db, &defaults)?;
-    }
+        defaults
+    };
+
+    let tpm_mode = config
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.get("settings"))
+        .and_then(|settings| settings.get("security"))
+        .and_then(|security| security.get("tpm_mode"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("auto")
+        .to_string();
+    std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode);
 
     let _token = butterfly_bot::vault::ensure_daemon_auth_token()?;
 

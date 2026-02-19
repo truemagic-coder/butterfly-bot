@@ -598,6 +598,64 @@ impl Tool for SearchInternetTool {
 #[cfg(test)]
 mod tests {
     use super::SearchInternetTool;
+    use crate::interfaces::plugins::Tool;
+    use serde_json::json;
+
+    #[test]
+    fn set_defaults_covers_supported_and_unknown_providers() {
+        let mut openai = super::SearchInternetState {
+            provider: "openai".to_string(),
+            model: String::new(),
+            ..Default::default()
+        };
+        SearchInternetTool::set_defaults(&mut openai, false);
+        assert_eq!(openai.model, "gpt-4o-mini-search-preview");
+
+        let mut grok = super::SearchInternetState {
+            provider: "grok".to_string(),
+            model: String::new(),
+            ..Default::default()
+        };
+        SearchInternetTool::set_defaults(&mut grok, false);
+        assert_eq!(grok.model, "grok-4-1-fast-non-reasoning");
+
+        let mut unknown = super::SearchInternetState {
+            provider: "other".to_string(),
+            model: "preset".to_string(),
+            ..Default::default()
+        };
+        SearchInternetTool::set_defaults(&mut unknown, false);
+        assert_eq!(unknown.model, "");
+
+        let mut explicit = super::SearchInternetState {
+            provider: "perplexity".to_string(),
+            model: "custom-model".to_string(),
+            ..Default::default()
+        };
+        SearchInternetTool::set_defaults(&mut explicit, true);
+        assert_eq!(explicit.model, "custom-model");
+    }
+
+    #[test]
+    fn required_secrets_match_provider_selection() {
+        let tool = SearchInternetTool::new();
+
+        let default_needed = tool.required_secrets_for_config(&json!({}));
+        assert_eq!(default_needed[0].name, "search_internet_openai_api_key");
+
+        let perplexity_needed = tool.required_secrets_for_config(&json!({
+            "tools": {"search_internet": {"provider": "perplexity"}}
+        }));
+        assert_eq!(
+            perplexity_needed[0].name,
+            "search_internet_perplexity_api_key"
+        );
+
+        let grok_needed = tool.required_secrets_for_config(&json!({
+            "tools": {"search_internet": {"provider": "grok"}}
+        }));
+        assert_eq!(grok_needed[0].name, "search_internet_grok_api_key");
+    }
 
     #[test]
     fn network_allowlist_allows_wildcard() {
@@ -637,5 +695,238 @@ mod tests {
             &allow,
             false
         ));
+    }
+
+    #[test]
+    fn configure_applies_defaults_and_permissions() {
+        let tool = SearchInternetTool::new();
+        tool.configure(&json!({
+            "tools": {
+                "settings": {
+                    "permissions": {
+                        "default_deny": true,
+                        "network_allow": ["*.perplexity.ai"]
+                    }
+                },
+                "search_internet": {
+                    "provider": "perplexity",
+                    "citations": false
+                }
+            }
+        }))
+        .expect("configure search_internet");
+
+        let state = tool.snapshot();
+        assert_eq!(state.provider, "perplexity");
+        assert_eq!(state.model, "sonar");
+        assert!(!state.citations);
+        assert!(state.default_deny);
+        assert_eq!(state.network_allow, vec!["*.perplexity.ai".to_string()]);
+    }
+
+    #[test]
+    fn configure_allows_tool_overrides_and_openai_key_fallback() {
+        let tool = SearchInternetTool::new();
+        tool.configure(&json!({
+            "openai": {
+                "api_key": "from-openai-config"
+            },
+            "tools": {
+                "settings": {
+                    "permissions": {
+                        "default_deny": true,
+                        "network_allow": ["*.openai.com"]
+                    }
+                },
+                "search_internet": {
+                    "provider": "openai",
+                    "model": "custom-openai-model",
+                    "permissions": {
+                        "network_allow": ["api.openai.com"]
+                    },
+                    "grok_web_search": false,
+                    "grok_x_search": false,
+                    "grok_timeout": 7
+                }
+            }
+        }))
+        .expect("configure search_internet with overrides");
+
+        let state = tool.snapshot();
+        assert_eq!(state.provider, "openai");
+        assert_eq!(state.model, "custom-openai-model");
+        assert_eq!(state.api_key, Some("from-openai-config".to_string()));
+        assert_eq!(state.network_allow, vec!["api.openai.com".to_string()]);
+        assert!(state.default_deny);
+        assert!(!state.grok_web_search);
+        assert!(!state.grok_x_search);
+        assert_eq!(state.grok_timeout, 7);
+    }
+
+    #[test]
+    fn parse_allowlist_and_extract_query_handle_invalid_inputs() {
+        let parsed = SearchInternetTool::parse_allowlist(&json!([
+            "api.openai.com",
+            1,
+            "*.x.ai"
+        ]));
+        assert_eq!(parsed, vec!["api.openai.com".to_string(), "*.x.ai".to_string()]);
+
+        assert!(SearchInternetTool::extract_query(json!({"query": "   "})).is_none());
+        assert_eq!(
+            SearchInternetTool::extract_query(json!({"query": "latest rust"})),
+            Some("latest rust".to_string())
+        );
+    }
+
+    #[test]
+    fn format_sources_is_stable_and_numbered() {
+        let sources = vec![
+            "https://example.com/1".to_string(),
+            "https://example.com/2".to_string(),
+        ];
+        let rendered = SearchInternetTool::format_sources("**Sources:**", &sources);
+        assert!(rendered.contains("**Sources:**"));
+        assert!(rendered.contains("[1] https://example.com/1"));
+        assert!(rendered.contains("[2] https://example.com/2"));
+
+        let empty = SearchInternetTool::format_sources("**Sources:**", &[]);
+        assert_eq!(empty, "");
+    }
+
+    #[test]
+    fn parameters_schema_requires_query() {
+        let schema = SearchInternetTool::new().parameters();
+        assert_eq!(schema["required"], json!(["query"]));
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[tokio::test]
+    async fn execute_rejects_missing_query() {
+        let tool = SearchInternetTool::new();
+        let response = tool.execute(json!({})).await.expect("execute response");
+        assert_eq!(response["status"], json!("error"));
+        assert_eq!(response["message"], json!("query is required"));
+    }
+
+    #[tokio::test]
+    async fn execute_returns_network_denied_for_each_provider() {
+        let openai = SearchInternetTool::new();
+        openai
+            .configure(&json!({
+                "tools": {
+                    "settings": {
+                        "permissions": {
+                            "default_deny": true,
+                            "network_allow": []
+                        }
+                    },
+                    "search_internet": {
+                        "provider": "openai",
+                        "api_key": "x"
+                    }
+                }
+            }))
+            .expect("configure openai deny");
+        let openai_resp = openai
+            .execute(json!({"query": "rust"}))
+            .await
+            .expect("openai response");
+        assert_eq!(openai_resp["status"], json!("error"));
+        assert!(openai_resp["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("api.openai.com"));
+
+        let perplexity = SearchInternetTool::new();
+        perplexity
+            .configure(&json!({
+                "tools": {
+                    "settings": {
+                        "permissions": {
+                            "default_deny": true,
+                            "network_allow": []
+                        }
+                    },
+                    "search_internet": {
+                        "provider": "perplexity",
+                        "api_key": "x"
+                    }
+                }
+            }))
+            .expect("configure perplexity deny");
+        let perplexity_resp = perplexity
+            .execute(json!({"query": "rust"}))
+            .await
+            .expect("perplexity response");
+        assert!(perplexity_resp["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("api.perplexity.ai"));
+
+        let grok = SearchInternetTool::new();
+        grok.configure(&json!({
+            "tools": {
+                "settings": {
+                    "permissions": {
+                        "default_deny": true,
+                        "network_allow": []
+                    }
+                },
+                "search_internet": {
+                    "provider": "grok",
+                    "api_key": "x"
+                }
+            }
+        }))
+        .expect("configure grok deny");
+        let grok_resp = grok
+            .execute(json!({"query": "rust"}))
+            .await
+            .expect("grok response");
+        assert!(grok_resp["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("api.x.ai"));
+    }
+
+    #[tokio::test]
+    async fn execute_returns_missing_key_for_perplexity_and_grok() {
+        let perplexity = SearchInternetTool::new();
+        perplexity
+            .configure(&json!({
+                "tools": {
+                    "search_internet": {
+                        "provider": "perplexity",
+                        "api_key": ""
+                    }
+                }
+            }))
+            .expect("configure perplexity");
+
+        let perplexity_response = perplexity
+            .execute(json!({"query": "rust release notes"}))
+            .await
+            .expect("perplexity execute");
+        assert_eq!(perplexity_response["status"], json!("error"));
+        assert_eq!(perplexity_response["message"], json!("API key not configured"));
+
+        let grok = SearchInternetTool::new();
+        grok.configure(&json!({
+            "tools": {
+                "search_internet": {
+                    "provider": "grok",
+                    "api_key": ""
+                }
+            }
+        }))
+        .expect("configure grok");
+
+        let grok_response = grok
+            .execute(json!({"query": "ai funding news"}))
+            .await
+            .expect("grok execute");
+        assert_eq!(grok_response["status"], json!("error"));
+        assert_eq!(grok_response["message"], json!("API key not configured"));
     }
 }

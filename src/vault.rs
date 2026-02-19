@@ -6,13 +6,11 @@ use rand::TryRng;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock, RwLock};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 pub trait SecretProvider: Send + Sync {
-    fn set_secret(
-        &self,
-        name: &str,
-        value: &str,
-        allow_backend_unavailable: bool,
-    ) -> Result<()>;
+    fn set_secret(&self, name: &str, value: &str, allow_backend_unavailable: bool) -> Result<()>;
     fn get_secret(&self, name: &str) -> Result<Option<String>>;
 }
 
@@ -41,12 +39,7 @@ impl CocoonFileSecretProvider {
 }
 
 impl SecretProvider for CocoonFileSecretProvider {
-    fn set_secret(
-        &self,
-        name: &str,
-        value: &str,
-        _allow_backend_unavailable: bool,
-    ) -> Result<()> {
+    fn set_secret(&self, name: &str, value: &str, _allow_backend_unavailable: bool) -> Result<()> {
         let passphrase = self.passphrase()?;
         crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
             cocoon_store::persist_secret(&self.secret_path(name), sensitive_passphrase, value)
@@ -72,6 +65,14 @@ fn provider_lock() -> &'static RwLock<Arc<dyn SecretProvider>> {
 }
 
 fn active_provider() -> Arc<dyn SecretProvider> {
+    #[cfg(test)]
+    {
+        let provider = TEST_SECRET_PROVIDER.with(|cell| cell.borrow().clone());
+        if let Some(provider) = provider {
+            return provider;
+        }
+    }
+
     match provider_lock().read() {
         Ok(guard) => Arc::clone(&guard),
         Err(poisoned) => Arc::clone(poisoned.get_ref()),
@@ -79,19 +80,22 @@ fn active_provider() -> Arc<dyn SecretProvider> {
 }
 
 #[cfg(test)]
+thread_local! {
+    static TEST_SECRET_PROVIDER: RefCell<Option<Arc<dyn SecretProvider>>> = RefCell::new(None);
+}
+
+#[cfg(test)]
 fn set_secret_provider_for_tests(provider: Arc<dyn SecretProvider>) {
-    match provider_lock().write() {
-        Ok(mut guard) => *guard = provider,
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = provider;
-        }
-    }
+    TEST_SECRET_PROVIDER.with(|cell| {
+        *cell.borrow_mut() = Some(provider);
+    });
 }
 
 #[cfg(test)]
 fn reset_secret_provider_for_tests() {
-    set_secret_provider_for_tests(build_default_provider());
+    TEST_SECRET_PROVIDER.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
 }
 
 pub fn set_secret(name: &str, value: &str) -> Result<()> {
@@ -231,12 +235,11 @@ mod tests {
         let loaded = get_secret("cocoon_secret").unwrap();
 
         assert_eq!(loaded.as_deref(), Some("encrypted-value"));
-        assert!(
-            temp.path()
-                .join("secrets")
-                .join("cocoon_secret.cocoon")
-                .exists()
-        );
+        assert!(temp
+            .path()
+            .join("secrets")
+            .join("cocoon_secret.cocoon")
+            .exists());
 
         reset_secret_provider_for_tests();
         crate::runtime_paths::set_app_root_override_for_tests(None);
@@ -282,5 +285,4 @@ mod tests {
         crate::runtime_paths::set_app_root_override_for_tests(None);
         crate::security::tpm_provider::set_tpm_available_for_tests(None);
     }
-
 }

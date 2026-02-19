@@ -1,4 +1,6 @@
-use butterfly_bot::security::hardening::{run_startup_self_check, with_sensitive_string, StartupComplianceReport};
+use butterfly_bot::security::hardening::{
+    run_startup_self_check, with_sensitive_string, StartupComplianceReport,
+};
 
 #[test]
 fn sensitive_string_executes_in_bounded_scope() {

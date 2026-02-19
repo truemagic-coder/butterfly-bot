@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 
 use cocoon::Cocoon;
@@ -110,23 +111,68 @@ pub fn persist_secret(path: &Path, passphrase: &str, value: &str) -> Result<()> 
         }
     }
 
-    let mut file = File::create(path).map_err(|e| {
+    let temp_path = {
+        let suffix = format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        );
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("secret.cocoon");
+        let temp_name = format!("{file_name}{suffix}");
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(temp_name)
+    };
+
+    let mut file = File::create(&temp_path).map_err(|e| {
         ButterflyBotError::SecurityStorage(format!(
-            "failed to create encrypted secret {}: {e}",
-            path.to_string_lossy()
+            "failed to create encrypted secret temp {}: {e}",
+            temp_path.to_string_lossy()
         ))
     })?;
 
     let mut cocoon = Cocoon::new(passphrase.as_bytes());
     let payload = wrap_envelope(value.as_bytes());
-    cocoon
-        .dump(payload, &mut file)
-        .map_err(|e| {
-            ButterflyBotError::SecurityStorage(format!(
-                "failed to write encrypted secret {}: {e:?}",
-                path.to_string_lossy()
-            ))
-        })?;
+    cocoon.dump(payload, &mut file).map_err(|e| {
+        ButterflyBotError::SecurityStorage(format!(
+            "failed to write encrypted secret temp {}: {e:?}",
+            temp_path.to_string_lossy()
+        ))
+    })?;
+
+    file.flush().map_err(|e| {
+        ButterflyBotError::SecurityStorage(format!(
+            "failed to flush encrypted secret temp {}: {e}",
+            temp_path.to_string_lossy()
+        ))
+    })?;
+    file.sync_all().map_err(|e| {
+        ButterflyBotError::SecurityStorage(format!(
+            "failed to sync encrypted secret temp {}: {e}",
+            temp_path.to_string_lossy()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
+    std::fs::rename(&temp_path, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp_path);
+        ButterflyBotError::SecurityStorage(format!(
+            "failed to move encrypted secret temp {} to {}: {e}",
+            temp_path.to_string_lossy(),
+            path.to_string_lossy()
+        ))
+    })?;
 
     #[cfg(unix)]
     {

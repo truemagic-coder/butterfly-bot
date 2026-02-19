@@ -11,15 +11,120 @@ use std::path::PathBuf;
 use std::path::Path;
 
 #[cfg(test)]
-use std::sync::{OnceLock, RwLock};
+use std::cell::RefCell;
+
+#[cfg(test)]
+use std::thread_local;
 
 #[cfg(all(debug_assertions, not(test)))]
 use std::sync::{OnceLock as DebugOnceLock, RwLock as DebugRwLock};
 
 const SERVICE: &str = "butterfly-bot";
 const TPM_KEK_NAME: &str = "tpm_kek";
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(not(test))]
+const COMPAT_KEK_NAME: &str = "compat_kek";
+const TPM_MODE_ENV: &str = "BUTTERFLY_TPM_MODE";
+#[cfg(any(target_os = "macos", target_os = "windows", not(test)))]
 const PLATFORM_BINDING_NAME: &str = "platform_secure_binding";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TpmMode {
+    Strict,
+    Auto,
+    Compatible,
+}
+
+impl TpmMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::Auto => "auto",
+            Self::Compatible => "compatible",
+        }
+    }
+}
+
+fn parse_tpm_mode(value: Option<&str>) -> TpmMode {
+    match value.unwrap_or("auto").trim().to_ascii_lowercase().as_str() {
+        "strict" => TpmMode::Strict,
+        "compatible" => TpmMode::Compatible,
+        _ => TpmMode::Auto,
+    }
+}
+
+fn configured_tpm_mode() -> TpmMode {
+    parse_tpm_mode(std::env::var(TPM_MODE_ENV).ok().as_deref())
+}
+
+#[cfg(not(test))]
+fn is_missing_tpm_policy(err: &ButterflyBotError) -> bool {
+    let lowered = err.to_string().to_ascii_lowercase();
+    lowered.contains("tpm is required") || lowered.contains("no tpm")
+}
+
+fn should_fallback_to_compatible(err: &ButterflyBotError) -> bool {
+    match err {
+        ButterflyBotError::SecurityPolicy(_) | ButterflyBotError::SecurityStorage(_) => true,
+        ButterflyBotError::Runtime(_) => {
+            let lowered = err.to_string().to_ascii_lowercase();
+            lowered.contains("tpm") || lowered.contains("keyring") || lowered.contains("secure")
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(test))]
+struct CompatibleBackend;
+
+#[cfg(not(test))]
+impl CompatibleBackend {
+    fn keychain_entry() -> Result<keyring::Entry> {
+        keyring::Entry::new(SERVICE, PLATFORM_BINDING_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))
+    }
+
+    fn ensure_binding_id(&self) -> Result<String> {
+        let entry = Self::keychain_entry()?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    let generated =
+                        TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                    entry
+                        .set_password(&generated)
+                        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                    Ok(generated)
+                } else {
+                    Ok(trimmed)
+                }
+            }
+            Err(keyring::Error::NoEntry) => {
+                let generated = TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                entry
+                    .set_password(&generated)
+                    .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                Ok(generated)
+            }
+            Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl TpmBackend for CompatibleBackend {
+    fn is_present(&self) -> bool {
+        Self::keychain_entry().is_ok()
+    }
+
+    fn fingerprint(&self) -> Result<String> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"compatible-keyring-backend");
+        hasher.update(self.ensure_binding_id()?.as_bytes());
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+}
+
 const POLICY_VERSION: u8 = 2;
 
 fn missing_tpm_policy_message() -> String {
@@ -44,9 +149,9 @@ fn missing_tpm_policy_message() -> String {
             );
         }
 
-        return format!(
+        format!(
             "{base}; probe found no /dev/tpm* or /sys/class/tpm/tpm*. Verify TPM/fTPM is enabled in BIOS/UEFI and Linux TPM drivers are loaded."
-        );
+        )
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -135,57 +240,33 @@ fn debug_dek_override() -> Option<String> {
 }
 
 #[cfg(test)]
-fn available_override_lock() -> &'static RwLock<Option<bool>> {
-    static OVERRIDE: OnceLock<RwLock<Option<bool>>> = OnceLock::new();
-    OVERRIDE.get_or_init(|| RwLock::new(None))
-}
-
-#[cfg(test)]
-fn dek_override_lock() -> &'static RwLock<Option<String>> {
-    static OVERRIDE: OnceLock<RwLock<Option<String>>> = OnceLock::new();
-    OVERRIDE.get_or_init(|| RwLock::new(None))
+thread_local! {
+    static TEST_TPM_AVAILABLE_OVERRIDE: RefCell<Option<bool>> = const { RefCell::new(None) };
+    static TEST_DEK_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
 pub(crate) fn set_tpm_available_for_tests(value: Option<bool>) {
-    let lock = available_override_lock();
-    match lock.write() {
-        Ok(mut guard) => *guard = value,
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = value;
-        }
-    }
+    TEST_TPM_AVAILABLE_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = value;
+    });
 }
 
 #[cfg(test)]
 pub(crate) fn set_dek_passphrase_for_tests(value: Option<String>) {
-    let lock = dek_override_lock();
-    match lock.write() {
-        Ok(mut guard) => *guard = value,
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = value;
-        }
-    }
+    TEST_DEK_OVERRIDE.with(|cell| {
+        *cell.borrow_mut() = value;
+    });
 }
 
 #[cfg(test)]
 fn tpm_available_override() -> Option<bool> {
-    let lock = available_override_lock();
-    match lock.read() {
-        Ok(guard) => *guard,
-        Err(poisoned) => *poisoned.into_inner(),
-    }
+    TEST_TPM_AVAILABLE_OVERRIDE.with(|cell| *cell.borrow())
 }
 
 #[cfg(test)]
 fn dek_override() -> Option<String> {
-    let lock = dek_override_lock();
-    match lock.read() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    }
+    TEST_DEK_OVERRIDE.with(|cell| cell.borrow().clone())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,7 +393,8 @@ impl AppleSecureBackend {
             Ok(value) => {
                 let trimmed = value.trim().to_string();
                 if trimmed.is_empty() {
-                    let generated = TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                    let generated =
+                        TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
                     entry
                         .set_password(&generated)
                         .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
@@ -444,7 +526,9 @@ impl TpmBackend for DeviceTpmBackend {
                 return Ok(format!("{:x}", hasher.finalize()));
             }
 
-            return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+            Err(ButterflyBotError::SecurityPolicy(
+                missing_tpm_policy_message(),
+            ))
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -452,11 +536,15 @@ impl TpmBackend for DeviceTpmBackend {
             let path = if let Some(path) = self.active_device_path() {
                 path
             } else {
-                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+                return Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ));
             };
 
             if path.as_os_str().is_empty() {
-                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+                return Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ));
             }
 
             hasher.update(path.to_string_lossy().as_bytes());
@@ -495,6 +583,46 @@ impl KekStore for KeyringKekStore {
 
     fn clear_kek(&self) -> Result<()> {
         let entry = keyring::Entry::new(SERVICE, TPM_KEK_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
+        }
+    }
+}
+
+#[cfg(not(test))]
+struct KeyringCompatibleKekStore;
+
+#[cfg(not(test))]
+impl KekStore for KeyringCompatibleKekStore {
+    fn get_kek(&self) -> Result<Option<String>> {
+        let entry = keyring::Entry::new(SERVICE, COMPAT_KEK_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(trimmed))
+                }
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
+        }
+    }
+
+    fn set_kek(&self, value: &str) -> Result<()> {
+        let entry = keyring::Entry::new(SERVICE, COMPAT_KEK_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        entry
+            .set_password(value)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))
+    }
+
+    fn clear_kek(&self) -> Result<()> {
+        let entry = keyring::Entry::new(SERVICE, COMPAT_KEK_NAME)
             .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -736,6 +864,23 @@ fn runtime_root() -> PathBuf {
     crate::runtime_paths::app_root().join("security")
 }
 
+#[cfg(not(test))]
+fn compatible_runtime_root() -> PathBuf {
+    crate::runtime_paths::app_root().join("security_compatible")
+}
+
+#[cfg(not(test))]
+fn production_runtime_compatible(
+) -> TpmRuntime<'static, CompatibleBackend, KeyringCompatibleKekStore> {
+    static BACKEND: CompatibleBackend = CompatibleBackend;
+    static STORE: KeyringCompatibleKekStore = KeyringCompatibleKekStore;
+    TpmRuntime {
+        backend: &BACKEND,
+        kek_store: &STORE,
+        security_root: compatible_runtime_root(),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn production_runtime() -> TpmRuntime<'static, DeviceTpmBackend, KeyringKekStore> {
     static BACKEND: DeviceTpmBackend = DeviceTpmBackend;
@@ -787,7 +932,9 @@ pub fn require_tpm() -> Result<()> {
             return if value {
                 Ok(())
             } else {
-                Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()))
+                Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ))
             };
         }
     }
@@ -798,7 +945,9 @@ pub fn require_tpm() -> Result<()> {
             return if value {
                 Ok(())
             } else {
-                Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()))
+                Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ))
             };
         }
     }
@@ -806,9 +955,24 @@ pub fn require_tpm() -> Result<()> {
     production_runtime().require_present()
 }
 
+pub fn tpm_mode() -> &'static str {
+    configured_tpm_mode().as_str()
+}
+
+pub fn tpm_available() -> bool {
+    require_tpm().is_ok()
+}
+
 pub fn resolve_dek_passphrase() -> Result<String> {
     #[cfg(all(debug_assertions, not(test)))]
     {
+        if let Some(value) = debug_tpm_available_override() {
+            if !value {
+                return Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ));
+            }
+        }
         if let Some(value) = debug_dek_override() {
             return Ok(value);
         }
@@ -816,12 +980,37 @@ pub fn resolve_dek_passphrase() -> Result<String> {
 
     #[cfg(test)]
     {
+        if let Some(value) = tpm_available_override() {
+            if !value {
+                return Err(ButterflyBotError::SecurityPolicy(
+                    missing_tpm_policy_message(),
+                ));
+            }
+        }
         if let Some(value) = dek_override() {
             return Ok(value);
         }
+
+        // Keep unit tests deterministic and isolated from host keyring/TPM state.
+        Ok("butterfly-bot-test-dek-passphrase".to_string())
     }
 
-    production_runtime().unseal_dek()
+    #[cfg(not(test))]
+    {
+        match configured_tpm_mode() {
+            TpmMode::Strict => production_runtime().unseal_dek(),
+            TpmMode::Compatible => production_runtime_compatible().unseal_dek(),
+            TpmMode::Auto => match production_runtime().unseal_dek() {
+                Ok(value) => Ok(value),
+                Err(err) => {
+                    if is_missing_tpm_policy(&err) || should_fallback_to_compatible(&err) {
+                        return production_runtime_compatible().unseal_dek();
+                    }
+                    Err(err)
+                }
+            },
+        }
+    }
 }
 
 pub fn provision_kek_and_dek() -> Result<()> {
@@ -1007,7 +1196,10 @@ mod tests {
 
     #[test]
     fn parse_tpm_index_accepts_numeric_suffixes() {
-        assert_eq!(DeviceTpmBackend::parse_tpm_index("tpmrm0", "tpmrm"), Some(0));
+        assert_eq!(
+            DeviceTpmBackend::parse_tpm_index("tpmrm0", "tpmrm"),
+            Some(0)
+        );
         assert_eq!(DeviceTpmBackend::parse_tpm_index("tpm12", "tpm"), Some(12));
     }
 
@@ -1016,5 +1208,37 @@ mod tests {
         assert_eq!(DeviceTpmBackend::parse_tpm_index("tpm", "tpm"), None);
         assert_eq!(DeviceTpmBackend::parse_tpm_index("tpmrmx", "tpmrm"), None);
         assert_eq!(DeviceTpmBackend::parse_tpm_index("atpm0", "tpm"), None);
+    }
+
+    #[test]
+    fn configured_tpm_mode_defaults_to_auto() {
+        assert_eq!(parse_tpm_mode(None), TpmMode::Auto);
+    }
+
+    #[test]
+    fn configured_tpm_mode_parses_strict_and_compatible() {
+        assert_eq!(parse_tpm_mode(Some("strict")), TpmMode::Strict);
+        assert_eq!(parse_tpm_mode(Some("compatible")), TpmMode::Compatible);
+        assert_eq!(parse_tpm_mode(Some("AUTO")), TpmMode::Auto);
+    }
+
+    #[test]
+    fn should_fallback_to_compatible_for_security_errors() {
+        assert!(should_fallback_to_compatible(
+            &ButterflyBotError::SecurityPolicy("TPM not present".to_string())
+        ));
+        assert!(should_fallback_to_compatible(
+            &ButterflyBotError::SecurityStorage("Keyring unavailable".to_string())
+        ));
+    }
+
+    #[test]
+    fn should_fallback_to_compatible_for_runtime_secure_backend_errors() {
+        assert!(should_fallback_to_compatible(&ButterflyBotError::Runtime(
+            "TPM backend unavailable".to_string()
+        )));
+        assert!(!should_fallback_to_compatible(&ButterflyBotError::Runtime(
+            "network timeout".to_string()
+        )));
     }
 }

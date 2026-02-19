@@ -60,7 +60,10 @@ impl AgentService {
                 );
             }
             Err(err) => {
-                warn!("Failed to resolve runtime Solana wallet for user {}: {}", user_id, err);
+                warn!(
+                    "Failed to resolve runtime Solana wallet for user {}: {}",
+                    user_id, err
+                );
             }
         }
     }

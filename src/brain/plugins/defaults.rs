@@ -110,3 +110,14 @@ impl_default!(
     ZeroCostReasoningBrain,
     ZepContextEnricherBrain,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::{AgeDetectionBrain, MultiAgentCoordinationBrain};
+
+    #[test]
+    fn default_impls_construct_plugins() {
+        let _age = AgeDetectionBrain::default();
+        let _coordination = MultiAgentCoordinationBrain::default();
+    }
+}

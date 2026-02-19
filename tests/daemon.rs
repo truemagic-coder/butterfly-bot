@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -16,11 +16,28 @@ use butterfly_bot::config_store;
 use butterfly_bot::daemon::{build_router, AppState};
 use butterfly_bot::reminders::ReminderStore;
 
+fn test_app_root() -> std::path::PathBuf {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("butterfly-daemon-tests-root-{unique}"));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    })
+    .clone()
+}
+
 async fn make_agent(server: &MockServer) -> ButterflyBot {
     butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
     butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
         "daemon-test-dek-passphrase".to_string(),
     ));
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(test_app_root()));
+    butterfly_bot::vault::set_secret("db_encryption_key", "daemon-test-sqlcipher-key")
+        .expect("set deterministic test db key");
 
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -30,6 +47,7 @@ async fn make_agent(server: &MockServer) -> ButterflyBot {
     std::fs::create_dir_all(&base).unwrap();
 
     let config = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: Some("key".to_string()),
             model: Some("gpt-4o-mini".to_string()),
@@ -488,7 +506,10 @@ async fn daemon_signer_endpoints_enforce_auth_and_transitions() {
                         "action_type": "x402_payment",
                         "amount_atomic": 100,
                         "payee": "merchant.local",
-                        "context_requires_approval": false
+                        "context_requires_approval": false,
+                        "scheme_id": "v2-solana-exact",
+                        "chain_id": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                        "payment_authority": "https://merchant.local"
                     })
                     .to_string(),
                 ))
@@ -514,7 +535,10 @@ async fn daemon_signer_endpoints_enforce_auth_and_transitions() {
                         "action_type": "x402_payment",
                         "amount_atomic": 100,
                         "payee": "merchant.local",
-                        "context_requires_approval": true
+                        "context_requires_approval": true,
+                        "scheme_id": "v2-solana-exact",
+                        "chain_id": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                        "payment_authority": "https://merchant.local"
                     })
                     .to_string(),
                 ))
@@ -568,6 +592,186 @@ async fn daemon_signer_endpoints_enforce_auth_and_transitions() {
         .await
         .unwrap();
     assert_eq!(denied_transition.status(), StatusCode::FORBIDDEN);
+
+    let preview_for_deny = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signer/preview")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "request_id": "req-deny",
+                        "actor": "agent",
+                        "user_id": "u1",
+                        "action_type": "x402_payment",
+                        "amount_atomic": 100,
+                        "payee": "merchant.local",
+                        "context_requires_approval": true,
+                        "scheme_id": "v2-solana-exact",
+                        "chain_id": "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+                        "payment_authority": "https://merchant.local"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(preview_for_deny.status(), StatusCode::OK);
+
+    let deny = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signer/deny")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"request_id":"req-deny"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deny.status(), StatusCode::OK);
+
+    let denied_sign_after_deny = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/signer/sign")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"request_id":"req-deny"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_sign_after_deny.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn daemon_x_api_key_auth_and_reload_config_workflow() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-reload-config.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let config = Config::convention_defaults(&db_path);
+    config_store::save_config(&db_path, &config).expect("save config for reload");
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let unauthorized = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/reload_config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let reloaded = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/reload_config")
+                .header("x-api-key", "token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reloaded.status(), StatusCode::OK);
+
+    let doctor = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/doctor")
+                .header("x-api-key", "token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(doctor.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn daemon_preload_boot_emits_boot_events() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-preload.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let config = Config::convention_defaults(&db_path);
+    config_store::save_config(&db_path, &config).expect("save config for preload");
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, mut ui_event_rx) = broadcast::channel(64);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/preload_boot")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"user_id":"boot-user"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut saw_boot_event = false;
+    for _ in 0..10 {
+        let evt = tokio::time::timeout(std::time::Duration::from_secs(2), ui_event_rx.recv())
+            .await
+            .expect("boot event timeout")
+            .expect("boot event receive");
+        if evt.event_type == "boot" {
+            saw_boot_event = true;
+            break;
+        }
+    }
+
+    assert!(
+        saw_boot_event,
+        "expected preload_boot workflow to emit at least one boot event"
+    );
 }
 
 #[tokio::test]
@@ -715,8 +919,9 @@ async fn daemon_solana_api_surface_and_rpc_policy_wiring() {
             when.method(POST)
                 .path("/")
                 .body_includes("\"method\":\"getBalance\"");
-            then.status(200)
-                .json_body(json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":123456789}}));
+            then.status(200).json_body(
+                json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":123456789}}),
+            );
         })
         .await;
     let get_latest_blockhash = rpc
@@ -786,7 +991,10 @@ async fn daemon_solana_api_surface_and_rpc_policy_wiring() {
     let loaded_policy =
         butterfly_bot::security::solana_rpc_policy::SolanaRpcExecutionPolicy::from_config(&loaded)
             .unwrap();
-    assert_eq!(loaded_policy.endpoint.as_deref(), Some(rpc.base_url().as_str()));
+    assert_eq!(
+        loaded_policy.endpoint.as_deref(),
+        Some(rpc.base_url().as_str())
+    );
 
     let reminder_store = ReminderStore::new(&db_path).await.unwrap();
     let (ui_event_tx, _) = broadcast::channel(16);
@@ -904,7 +1112,9 @@ async fn daemon_solana_api_surface_and_rpc_policy_wiring() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/solana/tx/history?address={wallet_address}&limit=5"))
+                .uri(format!(
+                    "/solana/tx/history?address={wallet_address}&limit=5"
+                ))
                 .header("authorization", "Bearer token")
                 .body(Body::empty())
                 .unwrap(),

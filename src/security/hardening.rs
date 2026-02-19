@@ -69,8 +69,9 @@ where
     F: FnOnce(&str) -> Result<T>,
 {
     let buffer = SensitiveBuffer::from_vec(secret.into_bytes())?;
-    let text = std::str::from_utf8(buffer.bytes.as_slice())
-        .map_err(|e| ButterflyBotError::SecurityPolicy(format!("invalid utf-8 in sensitive string: {e}")))?;
+    let text = std::str::from_utf8(buffer.bytes.as_slice()).map_err(|e| {
+        ButterflyBotError::SecurityPolicy(format!("invalid utf-8 in sensitive string: {e}"))
+    })?;
     f(text)
 }
 

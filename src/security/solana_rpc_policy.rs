@@ -134,7 +134,9 @@ impl SolanaRpcExecutionPolicy {
 
         if let Some(endpoint) = rpc.get("endpoint") {
             let endpoint_value = endpoint.as_str().ok_or_else(|| {
-                ButterflyBotError::Config("tools.settings.solana.rpc.endpoint must be a string".to_string())
+                ButterflyBotError::Config(
+                    "tools.settings.solana.rpc.endpoint must be a string".to_string(),
+                )
             })?;
             if !endpoint_value.trim().is_empty() {
                 policy.endpoint = Some(endpoint_value.to_string());
@@ -224,7 +226,9 @@ impl SolanaRpcExecutionPolicy {
 
         if let Some(send) = rpc.get("send") {
             let send_obj = send.as_object().ok_or_else(|| {
-                ButterflyBotError::Config("tools.settings.solana.rpc.send must be an object".to_string())
+                ButterflyBotError::Config(
+                    "tools.settings.solana.rpc.send must be an object".to_string(),
+                )
             })?;
 
             if let Some(skip_preflight) = send_obj.get("skip_preflight") {
@@ -272,9 +276,9 @@ fn parse_provider(value: Option<&Value>) -> Result<SolanaRpcProvider, ButterflyB
 }
 
 fn normalize_commitment(value: &Value) -> Result<String, ButterflyBotError> {
-    let commitment = value.as_str().ok_or_else(|| {
-        ButterflyBotError::Config("commitment must be a string".to_string())
-    })?;
+    let commitment = value
+        .as_str()
+        .ok_or_else(|| ButterflyBotError::Config("commitment must be a string".to_string()))?;
 
     let normalized = commitment.to_ascii_lowercase();
     match normalized.as_str() {
@@ -320,7 +324,8 @@ mod tests {
 
     #[test]
     fn quicknode_and_helius_have_distinct_defaults() {
-        let quicknode = SolanaRpcExecutionPolicy::default_for_provider(SolanaRpcProvider::QuickNode);
+        let quicknode =
+            SolanaRpcExecutionPolicy::default_for_provider(SolanaRpcProvider::QuickNode);
         let helius = SolanaRpcExecutionPolicy::default_for_provider(SolanaRpcProvider::Helius);
 
         assert_ne!(
@@ -366,7 +371,10 @@ mod tests {
 
         let policy = SolanaRpcExecutionPolicy::from_tools(&tools).unwrap();
         assert_eq!(policy.provider, SolanaRpcProvider::Helius);
-        assert_eq!(policy.endpoint.as_deref(), Some("https://example.invalid/rpc"));
+        assert_eq!(
+            policy.endpoint.as_deref(),
+            Some("https://example.invalid/rpc")
+        );
         assert_eq!(policy.commitment, "finalized");
         assert_eq!(policy.compute_budget.unit_limit, 1_400_000);
         assert_eq!(policy.compute_budget.unit_price_microlamports, 1_000_000);
@@ -388,10 +396,9 @@ mod tests {
         });
 
         let err = SolanaRpcExecutionPolicy::from_tools(&tools).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("commitment must be one of processed, confirmed, finalized")
-        );
+        assert!(err
+            .to_string()
+            .contains("commitment must be one of processed, confirmed, finalized"));
     }
 
     #[test]

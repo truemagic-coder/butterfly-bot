@@ -68,9 +68,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let _token = vault::ensure_daemon_auth_token()?;
-
     let config = ensure_default_config(&cli.db)?;
+    apply_tpm_mode_from_config(&config);
+    let _token = vault::ensure_daemon_auth_token()?;
     ensure_ollama_installed(&config)?;
     ensure_ollama_models(&config)?;
     ui::launch_ui_with_config(ui::UiLaunchConfig {
@@ -99,6 +99,20 @@ fn ensure_default_config(db_path: &str) -> Result<Config> {
             Ok(config)
         }
     }
+}
+
+#[cfg(not(test))]
+fn apply_tpm_mode_from_config(config: &Config) {
+    let mode = config
+        .tools
+        .as_ref()
+        .and_then(|tools| tools.get("settings"))
+        .and_then(|settings| settings.get("security"))
+        .and_then(|security| security.get("tpm_mode"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("auto");
+
+    std::env::set_var("BUTTERFLY_TPM_MODE", mode);
 }
 
 #[cfg(not(test))]
@@ -151,6 +165,10 @@ fn ollama_available() -> bool {
 
 #[cfg(not(test))]
 fn uses_local_ollama(config: &Config) -> bool {
+    if config.runtime_provider() != butterfly_bot::config::RuntimeProvider::Ollama {
+        return false;
+    }
+
     let Some(openai) = &config.openai else {
         return false;
     };

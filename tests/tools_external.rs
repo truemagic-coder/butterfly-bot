@@ -5,11 +5,36 @@ use butterfly_bot::tools::github::GitHubTool;
 use butterfly_bot::tools::http_call::HttpCallTool;
 use butterfly_bot::tools::mcp::McpTool;
 use butterfly_bot::tools::search_internet::SearchInternetTool;
+use butterfly_bot::tools::solana::SolanaTool;
 use butterfly_bot::tools::zapier::ZapierTool;
 use httpmock::Method::{GET, POST};
 use httpmock::MockServer;
 use serde_json::json;
-use std::sync::Once;
+use std::sync::{Once, OnceLock};
+
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("butterfly-tools-external-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "tools-external-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "tools-external-test-sqlcipher-key")
+        .expect("set deterministic external tools db key");
+}
 
 fn disable_keyring_for_test_process() {
     static ONCE: Once = Once::new();
@@ -30,6 +55,7 @@ fn assert_runtime_err_contains(err: ButterflyBotError, expected: &str) {
 
 #[tokio::test]
 async fn http_call_tool_uses_base_url_headers_query_and_parses_json() {
+    setup_security_env();
     let server = MockServer::start_async().await;
     let request_mock = server
         .mock_async(|when, then| {
@@ -74,6 +100,7 @@ async fn http_call_tool_uses_base_url_headers_query_and_parses_json() {
 
 #[tokio::test]
 async fn http_call_tool_infers_json_from_string_body() {
+    setup_security_env();
     let server = MockServer::start_async().await;
     let request_mock = server
         .mock_async(|when, then| {
@@ -104,6 +131,7 @@ async fn http_call_tool_infers_json_from_string_body() {
 
 #[tokio::test]
 async fn http_call_tool_requires_server_when_multiple_configured() {
+    setup_security_env();
     let tool = HttpCallTool::new();
     tool.configure(&json!({
         "tools": {
@@ -130,6 +158,7 @@ async fn http_call_tool_requires_server_when_multiple_configured() {
 
 #[tokio::test]
 async fn http_call_tool_uses_named_server_config() {
+    setup_security_env();
     let server = MockServer::start_async().await;
     let request_mock = server
         .mock_async(|when, then| {
@@ -177,6 +206,7 @@ async fn http_call_tool_uses_named_server_config() {
 
 #[tokio::test]
 async fn http_call_tool_supports_multiple_server_headers() {
+    setup_security_env();
     let server = MockServer::start_async().await;
     let request_mock = server
         .mock_async(|when, then| {
@@ -227,6 +257,7 @@ async fn http_call_tool_supports_multiple_server_headers() {
 
 #[tokio::test]
 async fn http_call_tool_merges_multiple_legacy_headers() {
+    setup_security_env();
     let server = MockServer::start_async().await;
     let request_mock = server
         .mock_async(|when, then| {
@@ -273,6 +304,7 @@ async fn http_call_tool_merges_multiple_legacy_headers() {
 
 #[tokio::test]
 async fn coding_tool_execute_fails_without_api_key() {
+    setup_security_env();
     let tool = CodingTool::new();
     tool.configure(&json!({"tools": {"coding": {}}}))
         .expect("configure coding tool");
@@ -285,7 +317,22 @@ async fn coding_tool_execute_fails_without_api_key() {
 }
 
 #[tokio::test]
+async fn coding_tool_requires_prompt_before_provider_call() {
+    setup_security_env();
+    let tool = CodingTool::new();
+    tool.configure(&json!({"tools": {"coding": {"api_key": "sk-test"}}}))
+        .expect("configure coding tool with api key");
+
+    let err = tool
+        .execute(json!({}))
+        .await
+        .expect_err("missing prompt should fail early");
+    assert_runtime_err_contains(err, "Missing prompt");
+}
+
+#[tokio::test]
 async fn mcp_tool_validates_config_and_reports_routing_errors() {
+    setup_security_env();
     let tool = McpTool::new();
 
     let configure_err = tool
@@ -320,7 +367,75 @@ async fn mcp_tool_validates_config_and_reports_routing_errors() {
 }
 
 #[tokio::test]
+async fn mcp_tool_surfaces_configuration_and_action_errors() {
+    setup_security_env();
+    let tool = McpTool::new();
+
+    let empty_err = tool
+        .execute(json!({"action": "list_tools"}))
+        .await
+        .expect_err("no configured MCP servers should fail");
+    assert_runtime_err_contains(empty_err, "No MCP servers configured");
+
+    tool.configure(&json!({
+        "tools": {
+            "mcp": {
+                "servers": [
+                    {"name": "primary", "url": "http://localhost:3001"}
+                ]
+            }
+        }
+    }))
+    .expect("configure single mcp server");
+
+    let unknown_server_err = tool
+        .execute(json!({"action": "list_tools", "server": "missing"}))
+        .await
+        .expect_err("unknown server should fail");
+    assert_runtime_err_contains(unknown_server_err, "Unknown MCP server");
+
+    let missing_tool_err = tool
+        .execute(json!({"action": "call_tool", "server": "primary"}))
+        .await
+        .expect_err("call_tool requires tool field");
+    assert_runtime_err_contains(missing_tool_err, "Missing tool name");
+
+    let unsupported_action_err = tool
+        .execute(json!({"action": "not_real", "server": "primary"}))
+        .await
+        .expect_err("unsupported actions should fail");
+    assert_runtime_err_contains(unsupported_action_err, "Unsupported action");
+
+    tool.configure(&json!({
+        "tools": {
+            "mcp": {
+                "servers": [
+                    {
+                        "name": "primary",
+                        "url": "http://localhost:3001",
+                        "headers": {"bad header": "value"}
+                    }
+                ]
+            }
+        }
+    }))
+    .expect("configure mcp with invalid header for runtime validation");
+
+    let invalid_header_err = tool
+        .execute(json!({"action": "list_tools", "server": "primary"}))
+        .await
+        .expect_err("invalid header should fail before transport");
+    match invalid_header_err {
+        ButterflyBotError::Config(message) => {
+            assert!(message.contains("Invalid MCP header name"));
+        }
+        other => panic!("expected config error, got {other}"),
+    }
+}
+
+#[tokio::test]
 async fn github_tool_secret_requirement_and_missing_pat_error() {
+    setup_security_env();
     disable_keyring_for_test_process();
     let tool = GitHubTool::new();
     let needed = tool.required_secrets_for_config(&json!({"tools": {"github": {}}}));
@@ -337,7 +452,49 @@ async fn github_tool_secret_requirement_and_missing_pat_error() {
 }
 
 #[tokio::test]
+async fn github_tool_respects_authorization_header_and_validates_actions() {
+    setup_security_env();
+    disable_keyring_for_test_process();
+    let tool = GitHubTool::new();
+
+    let needed = tool.required_secrets_for_config(&json!({
+        "tools": {
+            "github": {
+                "headers": {
+                    "Authorization": "Bearer test-token"
+                }
+            }
+        }
+    }));
+    assert!(needed.is_empty());
+
+    tool.configure(&json!({
+        "tools": {
+            "github": {
+                "headers": {
+                    "Authorization": "Bearer test-token"
+                }
+            }
+        }
+    }))
+    .expect("configure github tool with auth header");
+
+    let unsupported_err = tool
+        .execute(json!({"action": "nope"}))
+        .await
+        .expect_err("unsupported action should fail");
+    assert_runtime_err_contains(unsupported_err, "Unsupported action");
+
+    let missing_tool_err = tool
+        .execute(json!({"action": "call_tool"}))
+        .await
+        .expect_err("call_tool requires tool name");
+    assert_runtime_err_contains(missing_tool_err, "Missing tool name");
+}
+
+#[tokio::test]
 async fn zapier_tool_secret_requirement_and_missing_token_error() {
+    setup_security_env();
     disable_keyring_for_test_process();
     let tool = ZapierTool::new();
     let needed = tool.required_secrets_for_config(&json!({
@@ -359,6 +516,7 @@ async fn zapier_tool_secret_requirement_and_missing_token_error() {
 
 #[tokio::test]
 async fn zapier_tool_placeholder_token_is_rejected() {
+    setup_security_env();
     disable_keyring_for_test_process();
     let tool = ZapierTool::new();
     let needed = tool.required_secrets_for_config(&json!({
@@ -380,7 +538,49 @@ async fn zapier_tool_placeholder_token_is_rejected() {
 }
 
 #[tokio::test]
+async fn zapier_tool_header_auth_and_action_validation() {
+    setup_security_env();
+    disable_keyring_for_test_process();
+    let tool = ZapierTool::new();
+
+    let needed = tool.required_secrets_for_config(&json!({
+        "tools": {
+            "zapier": {
+                "headers": {
+                    "Authorization": "Bearer token-123"
+                }
+            }
+        }
+    }));
+    assert!(needed.is_empty());
+
+    tool.configure(&json!({
+        "tools": {
+            "zapier": {
+                "headers": {
+                    "Authorization": "Bearer token-123"
+                }
+            }
+        }
+    }))
+    .expect("configure zapier with auth header");
+
+    let unsupported_err = tool
+        .execute(json!({"action": "invalid"}))
+        .await
+        .expect_err("unsupported action should fail");
+    assert_runtime_err_contains(unsupported_err, "Unsupported action");
+
+    let missing_tool_err = tool
+        .execute(json!({"action": "call_tool"}))
+        .await
+        .expect_err("call_tool requires tool name");
+    assert_runtime_err_contains(missing_tool_err, "Missing tool name");
+}
+
+#[tokio::test]
 async fn search_internet_tool_honors_network_policy_and_query_validation() {
+    setup_security_env();
     let tool = SearchInternetTool::new();
     tool.configure(&json!({
         "tools": {
@@ -413,4 +613,184 @@ async fn search_internet_tool_honors_network_policy_and_query_validation() {
         .as_str()
         .expect("message")
         .contains("Network access denied"));
+}
+
+#[tokio::test]
+async fn solana_tool_requires_rpc_endpoint_for_network_actions() {
+    setup_security_env();
+    let tool = SolanaTool::new();
+
+    let err = tool
+        .execute(json!({
+            "action": "get_balance",
+            "address": "11111111111111111111111111111111"
+        }))
+        .await
+        .expect_err("missing endpoint should fail");
+
+    match err {
+        ButterflyBotError::Config(message) => {
+            assert!(message.contains("tools.settings.solana.rpc.endpoint"));
+        }
+        other => panic!("expected config error, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn solana_tool_wallet_balance_transfer_status_and_history_workflow() {
+    setup_security_env();
+    let rpc = MockServer::start_async().await;
+
+    let get_balance = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getBalance\"");
+            then.status(200)
+                .json_body(json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":42}}));
+        })
+        .await;
+
+    let get_latest_blockhash = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getLatestBlockhash\"");
+            then.status(200).json_body(json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "result":{"context":{"slot":1},"value":{"blockhash":"11111111111111111111111111111111","lastValidBlockHeight":100}}
+            }));
+        })
+        .await;
+
+    let simulate_transaction = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"simulateTransaction\"");
+            then.status(200).json_body(
+                json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":{"err":null,"unitsConsumed":1000000}}}),
+            );
+        })
+        .await;
+
+    let send_transaction = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"sendTransaction\"");
+            then.status(200)
+                .json_body(json!({"jsonrpc":"2.0","id":1,"result":"sig-tool-123"}));
+        })
+        .await;
+
+    let signature_status = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getSignatureStatuses\"");
+            then.status(200).json_body(
+                json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":[{"confirmationStatus":"confirmed","err":null}]}}),
+            );
+        })
+        .await;
+
+    let history = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getSignaturesForAddress\"");
+            then.status(200).json_body(json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "result":[{"signature":"sig-tool-123","slot":1,"err":null}]
+            }));
+        })
+        .await;
+
+    let tool = SolanaTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "settings": {
+                "solana": {
+                    "rpc": {
+                        "provider": "custom",
+                        "endpoint": rpc.base_url(),
+                        "simulation": {
+                            "enabled": true,
+                            "replace_recent_blockhash": true,
+                            "sig_verify": false
+                        },
+                        "send": {
+                            "skip_preflight": false,
+                            "max_retries": 0
+                        }
+                    }
+                }
+            }
+        }
+    }))
+    .expect("configure solana tool");
+
+    let wallet = tool
+        .execute(json!({"action":"address","user_id":"u1"}))
+        .await
+        .expect("wallet action alias should work");
+    assert_eq!(wallet["status"], json!("ok"));
+    let address = wallet["address"].as_str().expect("wallet address").to_string();
+
+    let balance = tool
+        .execute(json!({"action":"get_balance","address":address}))
+        .await
+        .expect("balance action alias should work");
+    assert_eq!(balance["status"], json!("ok"));
+    assert_eq!(balance["lamports"], json!(42));
+
+    let simulated = tool
+        .execute(json!({
+            "action": "dry_run",
+            "user_id": "u1",
+            "to": "11111111111111111111111111111111",
+            "amount": "0.000001 sol"
+        }))
+        .await
+        .expect("simulate alias should work");
+    assert_eq!(simulated["status"], json!("simulated"));
+    assert!(simulated["signature"].is_null());
+
+    let submitted = tool
+        .execute(json!({
+            "action": "send",
+            "user_id": "u1",
+            "to": "11111111111111111111111111111111",
+            "lamports": 1000
+        }))
+        .await
+        .expect("transfer submit should work");
+    assert_eq!(submitted["status"], json!("submitted"));
+    assert_eq!(submitted["signature"], json!("sig-tool-123"));
+
+    let status = tool
+        .execute(json!({"action":"status","signature":"sig-tool-123"}))
+        .await
+        .expect("status alias should work");
+    assert_eq!(status["status"], json!("ok"));
+
+    let tx_history = tool
+        .execute(json!({"action":"history","address":"11111111111111111111111111111111","limit":5}))
+        .await
+        .expect("history alias should work");
+    assert_eq!(tx_history["status"], json!("ok"));
+    assert_eq!(
+        tx_history["entries"][0]["signature"],
+        json!("sig-tool-123")
+    );
+
+    get_balance.assert_calls(1);
+    get_latest_blockhash.assert_calls(2);
+    simulate_transaction.assert_calls(2);
+    send_transaction.assert_calls(1);
+    signature_status.assert_calls(1);
+    history.assert_calls(1);
 }

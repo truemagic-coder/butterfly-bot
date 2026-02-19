@@ -1,6 +1,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -22,6 +23,29 @@ use butterfly_bot::services::query::{
 };
 
 use common::{DummyTool, FlakyNameTool, QueueLlmProvider};
+
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("butterfly-query-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "query-service-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "query-service-test-sqlcipher-key")
+        .expect("set deterministic query service db key");
+}
 
 struct MockTasksTool;
 
@@ -159,6 +183,7 @@ impl Tool for MockRemindersTool {
 
 #[tokio::test]
 async fn query_service_and_client() {
+    setup_security_env();
     let llm = Arc::new(QueueLlmProvider::new(vec![]));
     let brain = Arc::new(BrainManager::new(json!({})));
     let agent = AIAgent {
@@ -288,6 +313,7 @@ async fn query_service_and_client() {
     }
 
     let config = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: Some("key".to_string()),
             model: None,

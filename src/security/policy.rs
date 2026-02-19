@@ -125,7 +125,8 @@ impl PolicyEngine {
         }
 
         if intent.amount_atomic > self.global_limits.per_tx_limit
-            || user_daily_spend.saturating_add(intent.amount_atomic) > self.global_limits.daily_limit
+            || user_daily_spend.saturating_add(intent.amount_atomic)
+                > self.global_limits.daily_limit
         {
             return PolicyDecision::Denied {
                 reason_code: DENY_GLOBAL_LIMIT,
@@ -152,9 +153,12 @@ impl PolicyEngine {
             ButterflyBotError::SecurityPolicy("policy config must be an object".to_string())
         })?;
 
-        let user = object.get("user_limits").and_then(|v| v.as_object()).ok_or_else(|| {
-            ButterflyBotError::SecurityPolicy("policy config missing user_limits".to_string())
-        })?;
+        let user = object
+            .get("user_limits")
+            .and_then(|v| v.as_object())
+            .ok_or_else(|| {
+                ButterflyBotError::SecurityPolicy("policy config missing user_limits".to_string())
+            })?;
         let global = object
             .get("global_limits")
             .and_then(|v| v.as_object())
@@ -165,7 +169,9 @@ impl PolicyEngine {
             .get("trusted_payees")
             .and_then(|v| v.as_array())
             .ok_or_else(|| {
-                ButterflyBotError::SecurityPolicy("policy config missing trusted_payees".to_string())
+                ButterflyBotError::SecurityPolicy(
+                    "policy config missing trusted_payees".to_string(),
+                )
             })?;
         let trusted_payment_authorities = object
             .get("trusted_payment_authorities")
@@ -279,18 +285,15 @@ pub fn default_policy_engine() -> PolicyEngine {
         },
         trusted_payees: vec!["merchant.local".to_string()],
         trusted_payment_authorities: vec!["https://merchant.local".to_string()],
-        allowed_x402_schemes: vec![
-            "v1-solana-exact".to_string(),
-            "v2-solana-exact".to_string(),
-        ],
+        allowed_x402_schemes: vec!["v1-solana-exact".to_string(), "v2-solana-exact".to_string()],
     }
 }
 
 pub fn ensure_policy_allows(decision: &PolicyDecision) -> Result<(), ButterflyBotError> {
     match decision {
-        PolicyDecision::Denied { reason_code } => Err(ButterflyBotError::SecurityPolicy(
-            reason_code.to_string(),
-        )),
+        PolicyDecision::Denied { reason_code } => {
+            Err(ButterflyBotError::SecurityPolicy(reason_code.to_string()))
+        }
         _ => Ok(()),
     }
 }

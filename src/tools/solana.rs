@@ -35,8 +35,7 @@ impl SolanaTool {
         let endpoint = policy.endpoint.as_deref().unwrap_or("").trim();
         if endpoint.is_empty() {
             return Err(ButterflyBotError::Config(
-                "tools.settings.solana.rpc.endpoint must be configured for Solana RPC"
-                    .to_string(),
+                "tools.settings.solana.rpc.endpoint must be configured for Solana RPC".to_string(),
             ));
         }
         Ok(endpoint.to_string())
@@ -282,9 +281,12 @@ impl Tool for SolanaTool {
                             probe_unit_limit,
                         )?;
 
-                    let simulation =
-                        crate::solana_rpc::simulate_transaction(&endpoint, &probe_tx_base64, &policy)
-                            .await?;
+                    let simulation = crate::solana_rpc::simulate_transaction(
+                        &endpoint,
+                        &probe_tx_base64,
+                        &policy,
+                    )
+                    .await?;
                     let adjusted_unit_limit = crate::solana_rpc::recommended_compute_unit_limit(
                         &simulation,
                         policy.compute_budget.unit_limit,

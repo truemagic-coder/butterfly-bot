@@ -3,11 +3,14 @@ use std::sync::{OnceLock, RwLock};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use diesel::sqlite::SqliteConnection;
 use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
+#[cfg(not(test))]
 use rand::rngs::SysRng;
+#[cfg(not(test))]
 use rand::TryRng;
 
 use crate::error::{ButterflyBotError, Result};
 
+#[cfg(not(test))]
 const DB_KEY_NAME: &str = "db_encryption_key";
 
 fn sqlcipher_key_cache() -> &'static RwLock<Option<(String, String)>> {
@@ -34,6 +37,7 @@ async fn tune_sqlcipher_log_level_async(conn: &mut SyncConnectionWrapper<SqliteC
     }
 }
 
+#[cfg(not(test))]
 fn log_sqlcipher_key_source_once(source: &str) {
     static LOGGED: OnceLock<()> = OnceLock::new();
     if LOGGED.set(()).is_ok() {
@@ -41,6 +45,7 @@ fn log_sqlcipher_key_source_once(source: &str) {
     }
 }
 
+#[cfg(not(test))]
 fn generated_db_key() -> Result<String> {
     let mut bytes = [0u8; 32];
     let mut rng = SysRng;
@@ -49,21 +54,51 @@ fn generated_db_key() -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+#[cfg(test)]
 pub fn get_sqlcipher_key() -> Result<String> {
     let root = crate::runtime_paths::app_root()
         .to_string_lossy()
         .to_string();
 
-    {
-        let lock = sqlcipher_key_cache();
-        let cached = match lock.read() {
-            Ok(guard) => guard.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
-        };
-        if let Some((cached_root, cached_key)) = cached {
-            if cached_root == root {
-                return Ok(cached_key);
-            }
+    let lock = sqlcipher_key_cache();
+    let cached = match lock.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    if let Some((cached_root, cached_key)) = cached {
+        if cached_root == root {
+            return Ok(cached_key);
+        }
+    }
+
+    let resolved = format!(
+        "test-sqlcipher-key-{}",
+        URL_SAFE_NO_PAD.encode(root.as_bytes())
+    );
+    match lock.write() {
+        Ok(mut guard) => *guard = Some((root, resolved.clone())),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = Some((root, resolved.clone()));
+        }
+    }
+    Ok(resolved)
+}
+
+#[cfg(not(test))]
+pub fn get_sqlcipher_key() -> Result<String> {
+    let root = crate::runtime_paths::app_root()
+        .to_string_lossy()
+        .to_string();
+
+    let lock = sqlcipher_key_cache();
+    let cached = match lock.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    if let Some((cached_root, cached_key)) = cached {
+        if cached_root == root {
+            return Ok(cached_key);
         }
     }
 
@@ -85,14 +120,11 @@ pub fn get_sqlcipher_key() -> Result<String> {
         generated
     };
 
-    {
-        let lock = sqlcipher_key_cache();
-        match lock.write() {
-            Ok(mut guard) => *guard = Some((root, resolved.clone())),
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                *guard = Some((root, resolved.clone()));
-            }
+    match lock.write() {
+        Ok(mut guard) => *guard = Some((root, resolved.clone())),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = Some((root, resolved.clone()));
         }
     }
 

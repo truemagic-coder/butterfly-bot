@@ -34,7 +34,7 @@ impl SentimentTunerBrain {
                 intensity: 0.7,
             };
         }
-        if lower.contains("anxious") || lower.contains("overwhelmed") {
+        if lower.contains("anxious") || lower.contains("overwhelmed") || lower.contains("frustrated") {
             return SentimentTuning {
                 tone: "calming".to_string(),
                 intensity: 0.8,

@@ -12,6 +12,7 @@ async fn all_registered_tools_resolve_to_wasm_runtime() {
     ));
 
     let config = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: Some("test-key".to_string()),
             model: Some("gpt-4o-mini".to_string()),

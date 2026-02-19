@@ -162,7 +162,8 @@ pub fn enforce_same_user_named_pipe_client(pipe_handle: HANDLE) -> Result<()> {
         }
 
         let mut client_token: HANDLE = 0;
-        let thread_token_opened = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut client_token) != 0;
+        let thread_token_opened =
+            OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut client_token) != 0;
         let _ = RevertToSelf();
 
         if !thread_token_opened {

@@ -1,6 +1,6 @@
 use crate::error::{ButterflyBotError, Result};
 use crate::security::policy::{
-    ensure_policy_allows, default_policy_engine, PolicyDecision, PolicyEngine, SigningIntent,
+    default_policy_engine, ensure_policy_allows, PolicyDecision, PolicyEngine, SigningIntent,
 };
 use rust_fsm::*;
 use serde::{Deserialize, Serialize};
@@ -11,21 +11,21 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, OPEN_EXISTING,
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
+    OPEN_EXISTING,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_MESSAGE,
     PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
-use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "windows")]
 struct HandleGuard(HANDLE);
@@ -65,7 +65,7 @@ pub enum RequestState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SignerRequest {
-    Preview { intent: SigningIntent },
+    Preview { intent: Box<SigningIntent> },
     Approve { request_id: String },
     Sign { request_id: String },
     Deny { request_id: String },
@@ -370,13 +370,9 @@ impl SignerService {
         }
     }
 
-    pub fn default() -> Self {
-        Self::new(default_policy_engine())
-    }
-
     pub fn process(&self, request: SignerRequest) -> Result<SignerResponse> {
         match request {
-            SignerRequest::Preview { intent } => self.preview(intent),
+            SignerRequest::Preview { intent } => self.preview(*intent),
             SignerRequest::Approve { request_id } => self.approve(&request_id),
             SignerRequest::Sign { request_id } => self.sign(&request_id),
             SignerRequest::Deny { request_id } => self.deny(&request_id),
@@ -400,16 +396,21 @@ impl SignerService {
         let decision = self.policy.evaluate(&effective_intent, 0);
 
         let mut machine = signer_flow::StateMachine::new();
-        machine.consume(&signer_flow::Input::PolicyChecked).map_err(|_| {
-            ButterflyBotError::SecurityPolicy("DENY_INVALID_TRANSITION".to_string())
-        })?;
+        machine
+            .consume(&signer_flow::Input::PolicyChecked)
+            .map_err(|_| {
+                ButterflyBotError::SecurityPolicy("DENY_INVALID_TRANSITION".to_string())
+            })?;
 
         {
             let mut intents = self
                 .intents
                 .lock()
                 .map_err(|_| ButterflyBotError::Runtime("intent lock poisoned".to_string()))?;
-            intents.insert(effective_intent.request_id.clone(), effective_intent.clone());
+            intents.insert(
+                effective_intent.request_id.clone(),
+                effective_intent.clone(),
+            );
         }
 
         {
@@ -432,7 +433,10 @@ impl SignerService {
 
         match decision {
             PolicyDecision::AutoApproved { reason_code } => {
-                self.consume_transition(&effective_intent.request_id, signer_flow::Input::AutoApprove)?;
+                self.consume_transition(
+                    &effective_intent.request_id,
+                    signer_flow::Input::AutoApprove,
+                )?;
                 states.insert(effective_intent.request_id, RequestState::Approved);
                 Ok(SignerResponse {
                     status: "approved".to_string(),
@@ -441,7 +445,10 @@ impl SignerService {
                 })
             }
             PolicyDecision::NeedsApproval { reason_code } => {
-                self.consume_transition(&effective_intent.request_id, signer_flow::Input::RequireApproval)?;
+                self.consume_transition(
+                    &effective_intent.request_id,
+                    signer_flow::Input::RequireApproval,
+                )?;
                 states.insert(effective_intent.request_id, RequestState::AwaitUserApproval);
                 Ok(SignerResponse {
                     status: "await_user_approval".to_string(),
@@ -540,10 +547,16 @@ impl SignerService {
         let machine = machines.get_mut(request_id).ok_or_else(|| {
             ButterflyBotError::SecurityPolicy("DENY_INVALID_TRANSITION".to_string())
         })?;
-        machine
-            .consume(&input)
-            .map_err(|_| ButterflyBotError::SecurityPolicy("DENY_INVALID_TRANSITION".to_string()))?;
+        machine.consume(&input).map_err(|_| {
+            ButterflyBotError::SecurityPolicy("DENY_INVALID_TRANSITION".to_string())
+        })?;
         Ok(())
+    }
+}
+
+impl Default for SignerService {
+    fn default() -> Self {
+        Self::new(default_policy_engine())
     }
 }
 
@@ -558,9 +571,9 @@ fn material_change_requires_reapproval(previous: &SigningIntent, next: &SigningI
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     #[cfg(unix)]
     use std::thread;
-    use std::sync::{Mutex, OnceLock};
 
     fn test_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -607,7 +620,7 @@ mod tests {
 
         let preview = service
             .process(SignerRequest::Preview {
-                intent: intent("req-1"),
+                intent: Box::new(intent("req-1")),
             })
             .unwrap();
         assert_eq!(preview.status, "approved");
@@ -644,7 +657,7 @@ mod tests {
 
         let preview = service
             .process(SignerRequest::Preview {
-                intent: approval_intent,
+                intent: Box::new(approval_intent),
             })
             .unwrap();
         assert_eq!(preview.status, "await_user_approval");
@@ -673,7 +686,7 @@ mod tests {
 
         let first_preview = service
             .process(SignerRequest::Preview {
-                intent: intent("req-3"),
+                intent: Box::new(intent("req-3")),
             })
             .unwrap();
         assert_eq!(first_preview.status, "approved");
@@ -681,7 +694,9 @@ mod tests {
         let mut changed = intent("req-3");
         changed.amount_atomic = 250_000;
         let second_preview = service
-            .process(SignerRequest::Preview { intent: changed })
+            .process(SignerRequest::Preview {
+                intent: Box::new(changed),
+            })
             .unwrap();
         assert_eq!(second_preview.status, "await_user_approval");
         teardown_signing_env();
@@ -703,7 +718,7 @@ mod tests {
         let response = send_unix_request(
             &socket_path,
             &SignerRequest::Preview {
-                intent: intent("req-sock"),
+                intent: Box::new(intent("req-sock")),
             },
         )
         .unwrap();
@@ -727,7 +742,7 @@ mod tests {
         let response = send_windows_request(
             &pipe_name,
             &SignerRequest::Preview {
-                intent: intent("req-pipe"),
+                intent: Box::new(intent("req-pipe")),
             },
         )
         .unwrap();

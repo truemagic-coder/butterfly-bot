@@ -14,8 +14,8 @@ use pulldown_cmark::{html, Options, Parser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::thread;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::html::styled_line_to_highlighted_html;
@@ -26,6 +26,10 @@ use time::{macros::format_description, OffsetDateTime, UtcOffset};
 use tokio::time::{sleep, timeout, Duration};
 
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
+const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const OPENAI_DEFAULT_CHAT_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
+const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-4.1-mini";
 
 #[cfg(target_os = "linux")]
 fn send_desktop_notification(title: &str) {
@@ -557,8 +561,7 @@ fn force_dbusrs() {}
 fn force_dbusrs() {}
 
 struct DaemonControl {
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    thread: thread::JoinHandle<()>,
+    child: Child,
 }
 
 fn daemon_control() -> &'static Mutex<Option<DaemonControl>> {
@@ -571,34 +574,41 @@ fn start_local_daemon() -> Result<(), String> {
     let mut guard = control
         .lock()
         .map_err(|_| "Daemon lock unavailable".to_string())?;
-    if guard.is_some() {
-        return Ok(());
+    if let Some(control) = guard.as_mut() {
+        match control.child.try_wait() {
+            Ok(Some(_)) => {
+                *guard = None;
+            }
+            Ok(None) => return Ok(()),
+            Err(_) => {
+                *guard = None;
+            }
+        }
     }
 
     let config = ui_launch_config();
     let daemon_url = config.daemon_url;
     let (host, port) = parse_daemon_address(&daemon_url);
     let db_path = config.db_path;
-    let token = env_auth_token();
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let child = Command::new("butterfly-botd")
+        .arg("--host")
+        .arg(host)
+        .arg("--port")
+        .arg(port.to_string())
+        .arg("--db")
+        .arg(db_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| {
+            format!(
+                "Failed to start butterfly-botd process: {err}. Ensure butterfly-botd is installed and in PATH."
+            )
+        })?;
 
-    let thread = thread::spawn(move || {
-        if let Ok(runtime) = tokio::runtime::Runtime::new() {
-            runtime.block_on(async move {
-                let shutdown = async move {
-                    let _ = shutdown_rx.await;
-                };
-                let _ =
-                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown).await;
-            });
-        }
-    });
-
-    *guard = Some(DaemonControl {
-        shutdown: shutdown_tx,
-        thread,
-    });
+    *guard = Some(DaemonControl { child });
 
     Ok(())
 }
@@ -612,11 +622,9 @@ fn stop_local_daemon() -> Result<(), String> {
     let mut guard = control
         .lock()
         .map_err(|_| "Daemon lock unavailable".to_string())?;
-    if let Some(control) = guard.take() {
-        let _ = control.shutdown.send(());
-        thread::spawn(move || {
-            let _ = control.thread.join();
-        });
+    if let Some(mut control) = guard.take() {
+        let _ = control.child.kill();
+        let _ = control.child.wait();
         Ok(())
     } else {
         Err("Daemon is not running".to_string())
@@ -697,6 +705,13 @@ fn app_view() -> Element {
     let wakeup_poll_seconds_input = use_signal(|| "60".to_string());
     let github_pat_input = use_signal(String::new);
     let zapier_token_input = use_signal(String::new);
+    let runtime_provider_input = use_signal(|| "ollama".to_string());
+    let tpm_mode_input = use_signal(|| "auto".to_string());
+    let openai_api_key_input = use_signal(String::new);
+    let openai_base_url_input = use_signal(String::new);
+    let openai_model_input = use_signal(String::new);
+    let openai_embedding_model_input = use_signal(String::new);
+    let openai_rerank_model_input = use_signal(String::new);
     let coding_api_key_input = use_signal(String::new);
     let search_api_key_input = use_signal(String::new);
     let solana_rpc_endpoint_input = use_signal(String::new);
@@ -1131,6 +1146,64 @@ fn app_view() -> Element {
                         daemon_status.set(err);
                     }
                 }
+            });
+        })
+    };
+
+    let on_run_doctor = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
+
+        use_callback(move |_: ()| {
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
+
+            spawn(async move {
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
+
+                if !daemon_running() {
+                    doctor_error
+                        .set("Doctor requires a running daemon. Start daemon first.".to_string());
+                    doctor_status.set(String::new());
+                    return;
+                }
+
+                doctor_running.set(true);
+                doctor_error.set(String::new());
+                doctor_status.set("Running diagnostics…".to_string());
+
+                match run_doctor_request(daemon_url(), token()).await {
+                    Ok(report) => {
+                        let overall = report.overall.clone();
+                        doctor_overall.set(overall.clone());
+                        doctor_checks.set(report.checks);
+                        doctor_status.set(format!("Diagnostics complete ({overall})."));
+                    }
+                    Err(err) => {
+                        doctor_error.set(format!("Diagnostics failed: {err}"));
+                        doctor_status.set(String::new());
+                        doctor_overall.set(String::new());
+                        doctor_checks.set(Vec::new());
+                    }
+                }
+
+                doctor_running.set(false);
             });
         })
     };
@@ -1574,6 +1647,13 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let runtime_provider_input = runtime_provider_input.clone();
+        let tpm_mode_input = tpm_mode_input.clone();
+        let openai_api_key_input = openai_api_key_input.clone();
+        let openai_base_url_input = openai_base_url_input.clone();
+        let openai_model_input = openai_model_input.clone();
+        let openai_embedding_model_input = openai_embedding_model_input.clone();
+        let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
         let search_api_key_input = search_api_key_input.clone();
         let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
@@ -1620,6 +1700,13 @@ fn app_view() -> Element {
                 let mut wakeup_poll_seconds_input = wakeup_poll_seconds_input;
                 let mut github_pat_input = github_pat_input;
                 let mut zapier_token_input = zapier_token_input;
+                let mut runtime_provider_input = runtime_provider_input;
+                let mut tpm_mode_input = tpm_mode_input;
+                let mut openai_api_key_input = openai_api_key_input;
+                let mut openai_base_url_input = openai_base_url_input;
+                let mut openai_model_input = openai_model_input;
+                let mut openai_embedding_model_input = openai_embedding_model_input;
+                let mut openai_rerank_model_input = openai_rerank_model_input;
                 let mut coding_api_key_input = coding_api_key_input;
                 let mut search_api_key_input = search_api_key_input;
                 let mut solana_rpc_endpoint_input = solana_rpc_endpoint_input;
@@ -1703,6 +1790,43 @@ fn app_view() -> Element {
                     .and_then(|memory| memory.enabled)
                     .unwrap_or(true);
                 memory_enabled.set(enabled);
+
+                let runtime_provider = match config.runtime_provider() {
+                    crate::config::RuntimeProvider::Ollama => "ollama",
+                    crate::config::RuntimeProvider::Openai => "openai",
+                };
+                runtime_provider_input.set(runtime_provider.to_string());
+
+                let tpm_mode = config
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.get("settings"))
+                    .and_then(|settings| settings.get("security"))
+                    .and_then(|security| security.get("tpm_mode"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("auto");
+                tpm_mode_input.set(match tpm_mode {
+                    "strict" | "auto" | "compatible" => tpm_mode.to_string(),
+                    _ => "auto".to_string(),
+                });
+
+                if let Some(openai) = &config.openai {
+                    if let Some(base_url) = &openai.base_url {
+                        openai_base_url_input.set(base_url.clone());
+                    }
+                    if let Some(model) = &openai.model {
+                        openai_model_input.set(model.clone());
+                    }
+                }
+
+                if let Some(memory) = &config.memory {
+                    if let Some(embedding_model) = &memory.embedding_model {
+                        openai_embedding_model_input.set(embedding_model.clone());
+                    }
+                    if let Some(rerank_model) = &memory.rerank_model {
+                        openai_rerank_model_input.set(rerank_model.clone());
+                    }
+                }
 
                 if let Some(tools_value) = &config.tools {
                     if let Some(wakeup_cfg) = tools_value.get("wakeup") {
@@ -2039,6 +2163,25 @@ fn app_view() -> Element {
                     }
                 }
 
+                match crate::vault::get_secret("openai_api_key") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        openai_api_key_input.set(secret);
+                    }
+                    Ok(_) => {
+                        let fallback = config
+                            .openai
+                            .as_ref()
+                            .and_then(|openai| openai.api_key.clone())
+                            .unwrap_or_default();
+                        openai_api_key_input.set(fallback);
+                    }
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
+                }
+
                 match crate::vault::get_secret("coding_openai_api_key") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         coding_api_key_input.set(secret);
@@ -2128,6 +2271,13 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let runtime_provider_input = runtime_provider_input.clone();
+        let tpm_mode_input = tpm_mode_input.clone();
+        let openai_api_key_input = openai_api_key_input.clone();
+        let openai_base_url_input = openai_base_url_input.clone();
+        let openai_model_input = openai_model_input.clone();
+        let openai_embedding_model_input = openai_embedding_model_input.clone();
+        let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
         let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let search_provider = search_provider.clone();
@@ -2146,6 +2296,13 @@ fn app_view() -> Element {
             let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
             let github_pat_input = github_pat_input.clone();
             let zapier_token_input = zapier_token_input.clone();
+            let runtime_provider_input = runtime_provider_input.clone();
+            let tpm_mode_input = tpm_mode_input.clone();
+            let openai_api_key_input = openai_api_key_input.clone();
+            let openai_base_url_input = openai_base_url_input.clone();
+            let openai_model_input = openai_model_input.clone();
+            let openai_embedding_model_input = openai_embedding_model_input.clone();
+            let openai_rerank_model_input = openai_rerank_model_input.clone();
             let coding_api_key_input = coding_api_key_input.clone();
             let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
             let search_provider = search_provider.clone();
@@ -2173,6 +2330,45 @@ fn app_view() -> Element {
                         return;
                     }
                 };
+
+                let runtime_provider_value = match runtime_provider_input().trim() {
+                    "ollama" | "openai" => runtime_provider_input().trim().to_string(),
+                    _ => {
+                        settings_error
+                            .set("Runtime provider must be either ollama or openai.".to_string());
+                        return;
+                    }
+                };
+
+                let tpm_mode_value = match tpm_mode_input().trim() {
+                    "strict" | "auto" | "compatible" => tpm_mode_input().trim().to_string(),
+                    _ => {
+                        settings_error
+                            .set("TPM mode must be strict, auto, or compatible.".to_string());
+                        return;
+                    }
+                };
+
+                let mut openai_base_url_value = openai_base_url_input().trim().to_string();
+                let mut openai_model_value = openai_model_input().trim().to_string();
+                let mut openai_embedding_model_value =
+                    openai_embedding_model_input().trim().to_string();
+                let mut openai_rerank_model_value = openai_rerank_model_input().trim().to_string();
+
+                if runtime_provider_value == "openai" {
+                    if openai_base_url_value.is_empty() {
+                        openai_base_url_value = OPENAI_DEFAULT_BASE_URL.to_string();
+                    }
+                    if openai_model_value.is_empty() {
+                        openai_model_value = OPENAI_DEFAULT_CHAT_MODEL.to_string();
+                    }
+                    if openai_embedding_model_value.is_empty() {
+                        openai_embedding_model_value = OPENAI_DEFAULT_EMBED_MODEL.to_string();
+                    }
+                    if openai_rerank_model_value.is_empty() {
+                        openai_rerank_model_value = OPENAI_DEFAULT_RERANK_MODEL.to_string();
+                    }
+                }
 
                 let mut mcp_servers = Vec::new();
                 for entry in mcp_servers_form().iter() {
@@ -2280,6 +2476,52 @@ fn app_view() -> Element {
                         settings_error.set(format!("Failed to load current config: {err}"));
                         return;
                     }
+                };
+
+                let runtime = if runtime_provider_value == "ollama" {
+                    crate::config::RuntimeProvider::Ollama
+                } else {
+                    crate::config::RuntimeProvider::Openai
+                };
+                config.provider = Some(crate::config::ProviderConfig { runtime });
+
+                let openai_cfg = config.openai.get_or_insert(crate::config::OpenAiConfig {
+                    api_key: None,
+                    model: None,
+                    base_url: None,
+                });
+                openai_cfg.base_url = if openai_base_url_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_base_url_value)
+                };
+                openai_cfg.model = if openai_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_model_value)
+                };
+                openai_cfg.api_key = None;
+
+                let memory_cfg = config.memory.get_or_insert(crate::config::MemoryConfig {
+                    enabled: Some(true),
+                    sqlite_path: Some(db_path.clone()),
+                    summary_model: None,
+                    embedding_model: None,
+                    rerank_model: None,
+                    openai: None,
+                    context_embed_enabled: Some(false),
+                    summary_threshold: None,
+                    retention_days: None,
+                });
+                memory_cfg.embedding_model = if openai_embedding_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_embedding_model_value)
+                };
+                memory_cfg.rerank_model = if openai_rerank_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_rerank_model_value)
                 };
 
                 let tools_value = config
@@ -2436,6 +2678,19 @@ fn app_view() -> Element {
                         );
                     }
 
+                    let security_cfg = settings_obj
+                        .entry("security")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !security_cfg.is_object() {
+                        *security_cfg = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(security_obj) = security_cfg.as_object_mut() {
+                        security_obj.insert(
+                            "tpm_mode".to_string(),
+                            Value::String(tpm_mode_value.clone()),
+                        );
+                    }
+
                     let solana_cfg = settings_obj
                         .entry("solana")
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -2450,15 +2705,14 @@ fn app_view() -> Element {
                             *rpc_cfg = Value::Object(serde_json::Map::new());
                         }
                         if let Some(rpc_obj) = rpc_cfg.as_object_mut() {
-                            rpc_obj.insert(
-                                "endpoint".to_string(),
-                                Value::String(solana_rpc_endpoint),
-                            );
+                            rpc_obj
+                                .insert("endpoint".to_string(), Value::String(solana_rpc_endpoint));
                         }
                     }
                 }
 
                 let github_pat = github_pat_input().trim().to_string();
+                std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode_value);
                 if let Err(err) = crate::vault::set_secret("github_pat", &github_pat) {
                     settings_error.set(format!("Failed to store GitHub token: {err}"));
                     return;
@@ -2467,6 +2721,12 @@ fn app_view() -> Element {
                 let zapier_token = zapier_token_input().trim().to_string();
                 if let Err(err) = crate::vault::set_secret("zapier_token", &zapier_token) {
                     settings_error.set(format!("Failed to store Zapier token: {err}"));
+                    return;
+                }
+
+                let openai_api_key = openai_api_key_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret("openai_api_key", &openai_api_key) {
+                    settings_error.set(format!("Failed to store OpenAI API key: {err}"));
                     return;
                 }
 
@@ -3451,7 +3711,118 @@ fn app_view() -> Element {
                                             placeholder: "https://...",
                                         }
                                     }
-                                    div {}
+                                    div {
+                                        label { "Runtime Provider" }
+                                        select {
+                                            value: "{runtime_provider_input}",
+                                            onchange: move |evt| {
+                                                let selected = evt.value();
+                                                let normalized = match selected.as_str() {
+                                                    "ollama" | "openai" => selected,
+                                                    _ => "ollama".to_string(),
+                                                };
+                                                let mut runtime_provider_input = runtime_provider_input.clone();
+                                                runtime_provider_input.set(normalized);
+                                            },
+                                            option {
+                                                value: "ollama",
+                                                "Ollama"
+                                            }
+                                            option {
+                                                value: "openai",
+                                                "OpenAI"
+                                            }
+                                        }
+                                    }
+                                    div {
+                                        label { "OpenAI Base URL" }
+                                        input {
+                                            value: "{openai_base_url_input}",
+                                            oninput: move |evt| {
+                                                let mut openai_base_url_input = openai_base_url_input.clone();
+                                                openai_base_url_input.set(evt.value());
+                                            },
+                                            placeholder: "https://api.openai.com/v1",
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-top",
+                                    div {
+                                        label { "OpenAI API Key" }
+                                        input {
+                                            r#type: "password",
+                                            value: "{openai_api_key_input}",
+                                            oninput: move |evt| {
+                                                let mut openai_api_key_input = openai_api_key_input.clone();
+                                                openai_api_key_input.set(evt.value());
+                                            },
+                                            placeholder: "Paste OpenAI API key",
+                                        }
+                                    }
+                                    div {
+                                        label { "Runtime Model" }
+                                        input {
+                                            value: "{openai_model_input}",
+                                            oninput: move |evt| {
+                                                let mut openai_model_input = openai_model_input.clone();
+                                                openai_model_input.set(evt.value());
+                                            },
+                                            placeholder: "gpt-4.1-mini",
+                                        }
+                                    }
+                                    div {
+                                        label { "Embedding Model (small)" }
+                                        input {
+                                            value: "{openai_embedding_model_input}",
+                                            oninput: move |evt| {
+                                                let mut openai_embedding_model_input = openai_embedding_model_input.clone();
+                                                openai_embedding_model_input.set(evt.value());
+                                            },
+                                            placeholder: "text-embedding-3-small",
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-top",
+                                    div {
+                                        label { "Rerank Model" }
+                                        input {
+                                            value: "{openai_rerank_model_input}",
+                                            oninput: move |evt| {
+                                                let mut openai_rerank_model_input = openai_rerank_model_input.clone();
+                                                openai_rerank_model_input.set(evt.value());
+                                            },
+                                            placeholder: "owner-selected reranker",
+                                        }
+                                    }
+                                    div {
+                                        label { "TPM Mode" }
+                                        select {
+                                            value: "{tpm_mode_input}",
+                                            onchange: move |evt| {
+                                                let selected = evt.value();
+                                                let normalized = match selected.as_str() {
+                                                    "strict" | "auto" | "compatible" => selected,
+                                                    _ => "auto".to_string(),
+                                                };
+                                                let mut tpm_mode_input = tpm_mode_input.clone();
+                                                tpm_mode_input.set(normalized);
+                                            },
+                                            option {
+                                                value: "strict",
+                                                "strict"
+                                            }
+                                            option {
+                                                value: "auto",
+                                                "auto"
+                                            }
+                                            option {
+                                                value: "compatible",
+                                                "compatible"
+                                            }
+                                        }
+                                    }
                                     div {}
                                 }
 
@@ -3740,6 +4111,40 @@ fn app_view() -> Element {
                                                 network_allow_form.set(list);
                                             },
                                             "+ Add Host"
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-section",
+                                    label { "Doctor" }
+                                    p { class: "hint", "Run diagnostics for provider health, security posture, and daemon readiness." }
+                                    div { class: "simple-actions",
+                                        button {
+                                            onclick: move |_| on_run_doctor.call(()),
+                                            disabled: *doctor_running.read(),
+                                            if *doctor_running.read() { "Running…" } else { "Run Doctor" }
+                                        }
+                                    }
+                                    if !doctor_status.read().is_empty() {
+                                        p { class: "hint", "{doctor_status}" }
+                                    }
+                                    if !doctor_overall.read().is_empty() {
+                                        p { class: "hint", "Overall: {doctor_overall}" }
+                                    }
+                                    if !doctor_error.read().is_empty() {
+                                        p { class: "error", "{doctor_error}" }
+                                    }
+                                    if !doctor_checks.read().is_empty() {
+                                        div { class: "simple-list",
+                                            for check in doctor_checks.read().iter() {
+                                                div { class: "simple-row",
+                                                    div { class: "hint", "{check.name}: {check.status}" }
+                                                    div { class: "hint", "{check.message}" }
+                                                    if let Some(fix) = &check.fix_hint {
+                                                        div { class: "hint", "Fix: {fix}" }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }

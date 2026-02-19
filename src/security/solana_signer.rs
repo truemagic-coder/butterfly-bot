@@ -9,9 +9,9 @@ fn wallet_secret_name(user_id: &str, actor: &str) -> String {
 }
 
 fn decode_seed(secret: &str) -> Result<[u8; 32]> {
-    let bytes = bs58::decode(secret)
-        .into_vec()
-        .map_err(|_| ButterflyBotError::SecurityStorage("invalid base58 wallet seed".to_string()))?;
+    let bytes = bs58::decode(secret).into_vec().map_err(|_| {
+        ButterflyBotError::SecurityStorage("invalid base58 wallet seed".to_string())
+    })?;
     if bytes.len() != 32 {
         return Err(ButterflyBotError::SecurityStorage(
             "wallet seed must be 32 bytes".to_string(),

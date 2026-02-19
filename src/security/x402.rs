@@ -86,10 +86,7 @@ pub fn canonicalize_payment_required(
         let chain_id = x402_rs::chain::ChainId::from_network_name(&requirement.network)
             .ok_or_else(|| deny(DENY_INVALID_X402_INTENT, "unknown v1 network"))?;
         if chain_id.namespace() != "solana" {
-            return Err(deny(
-                DENY_UNAPPROVED_SCHEME,
-                "only Solana chain is allowed",
-            ));
+            return Err(deny(DENY_UNAPPROVED_SCHEME, "only Solana chain is allowed"));
         }
 
         let amount_atomic = parse_u64_atomic(&requirement.max_amount_required)?;
@@ -138,10 +135,7 @@ pub fn canonicalize_payment_required(
             .ok_or_else(|| deny(DENY_UNAPPROVED_SCHEME, "no supported v2 scheme"))?;
 
         if requirement.network.namespace() != "solana" {
-            return Err(deny(
-                DENY_UNAPPROVED_SCHEME,
-                "only Solana chain is allowed",
-            ));
+            return Err(deny(DENY_UNAPPROVED_SCHEME, "only Solana chain is allowed"));
         }
 
         let amount_atomic = parse_u64_atomic(&requirement.amount)?;
@@ -227,7 +221,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(canonical.scheme_id, "v2-solana-exact");
-        assert_eq!(canonical.chain_id, "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp");
+        assert_eq!(
+            canonical.chain_id,
+            "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
+        );
         assert_eq!(canonical.amount_atomic, 1000);
         assert_eq!(canonical.idempotency_key, "idem-1");
         assert_eq!(intent.amount_atomic, 1000);
@@ -286,16 +283,9 @@ mod tests {
             }]
         });
 
-        let err = canonicalize_payment_required(
-            "req-3",
-            "agent",
-            "user",
-            &challenge,
-            None,
-            false,
-            None,
-        )
-        .unwrap_err();
+        let err =
+            canonicalize_payment_required("req-3", "agent", "user", &challenge, None, false, None)
+                .unwrap_err();
 
         assert!(format!("{err}").contains(DENY_UNAPPROVED_SCHEME));
     }

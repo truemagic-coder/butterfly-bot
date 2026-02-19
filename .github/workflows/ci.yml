@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BUTTERFLY_BOT_DB_KEY: ci-test-sqlcipher-key
+      COVERAGE_IGNORE_REGEX: '(^|/)(ui\.rs|main\.rs|bin/.*)$'
     steps:
       - uses: actions/checkout@v4
       - name: Install Ubuntu build dependencies
@@ -38,7 +39,10 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Run coverage (llvm-cov)
-        run: cargo llvm-cov --workspace --tests --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --tests --lcov --output-path lcov.info --ignore-filename-regex "${COVERAGE_IGNORE_REGEX}"
+
+      - name: Enforce coverage floor (excluding non-testable entrypoints)
+        run: cargo llvm-cov --workspace --tests --summary-only --ignore-filename-regex "${COVERAGE_IGNORE_REGEX}" --fail-under-lines 68 --fail-under-regions 66
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

@@ -29,8 +29,8 @@ use crate::reminders::{resolve_reminder_db_path, ReminderStore};
 use crate::sandbox::{SandboxSettings, ToolRuntime};
 use crate::scheduler::Scheduler;
 use crate::security::policy::SigningIntent;
-use crate::security::solana_rpc_policy::SolanaRpcExecutionPolicy;
 use crate::security::signer_daemon::{SignerRequest, SignerService};
+use crate::security::solana_rpc_policy::SolanaRpcExecutionPolicy;
 use crate::security::x402::canonicalize_payment_required;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
@@ -653,23 +653,19 @@ async fn solana_balance(
         }
     };
 
-    let address = match resolve_query_or_wallet_address(
-        query.address,
-        query.user_id,
-        query.actor,
-        "agent",
-    ) {
-        Ok(address) => address,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let address =
+        match resolve_query_or_wallet_address(query.address, query.user_id, query.actor, "agent") {
+            Ok(address) => address,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     match crate::solana_rpc::get_balance(&endpoint, &address, &policy.commitment).await {
         Ok(lamports) => (
@@ -719,7 +715,7 @@ async fn execute_solana_transfer(
 
     let actor = payload.actor.unwrap_or_else(|| "agent".to_string());
     let signer_preview = match state.signer_service.process(SignerRequest::Preview {
-        intent: SigningIntent {
+        intent: Box::new(SigningIntent {
             request_id: payload.request_id.clone(),
             actor: actor.clone(),
             user_id: payload.user_id.clone(),
@@ -734,7 +730,7 @@ async fn execute_solana_transfer(
             chain_id: Some("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string()),
             payment_authority: None,
             idempotency_key: Some(payload.request_id.clone()),
-        },
+        }),
     }) {
         Ok(response) => response,
         Err(err) => {
@@ -797,18 +793,19 @@ async fn execute_solana_transfer(
         }
     };
 
-    let latest_blockhash = match crate::solana_rpc::get_latest_blockhash(&endpoint, &policy.commitment).await {
-        Ok(hash) => hash,
-        Err(err) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let latest_blockhash =
+        match crate::solana_rpc::get_latest_blockhash(&endpoint, &policy.commitment).await {
+            Ok(hash) => hash,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     let probe_unit_limit = crate::solana_rpc::probe_compute_unit_limit(&policy);
     let (probe_tx_base64, wallet_address) =
@@ -832,18 +829,19 @@ async fn execute_solana_transfer(
             }
         };
 
-    let probe_simulation = match crate::solana_rpc::simulate_transaction(&endpoint, &probe_tx_base64, &policy).await {
-        Ok(value) => value,
-        Err(err) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorResponse {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let probe_simulation =
+        match crate::solana_rpc::simulate_transaction(&endpoint, &probe_tx_base64, &policy).await {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     let adjusted_unit_limit = crate::solana_rpc::recommended_compute_unit_limit(
         &probe_simulation,
@@ -1014,23 +1012,19 @@ async fn solana_tx_history(
         }
     };
 
-    let address = match resolve_query_or_wallet_address(
-        query.address,
-        query.user_id,
-        query.actor,
-        "agent",
-    ) {
-        Ok(address) => address,
-        Err(err) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: err.to_string(),
-                }),
-            )
-                .into_response()
-        }
-    };
+    let address =
+        match resolve_query_or_wallet_address(query.address, query.user_id, query.actor, "agent") {
+            Ok(address) => address,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
 
     match crate::solana_rpc::get_signatures_for_address(
         &endpoint,
@@ -1086,10 +1080,9 @@ async fn x402_preview(
         }
     };
 
-    match state
-        .signer_service
-        .process(SignerRequest::Preview { intent: signing_intent })
-    {
+    match state.signer_service.process(SignerRequest::Preview {
+        intent: Box::new(signing_intent),
+    }) {
         Ok(signer_response) => (
             StatusCode::OK,
             Json(X402PreviewResponse {
@@ -1119,7 +1112,9 @@ async fn signer_preview(
 
     match state
         .signer_service
-        .process(SignerRequest::Preview { intent })
+        .process(SignerRequest::Preview {
+            intent: Box::new(intent),
+        })
     {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (
@@ -1514,6 +1509,53 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
                     Some("Verify provider base_url/model and network access."),
                 )),
             }
+
+            let mode = crate::security::tpm_provider::tpm_mode();
+            let tpm_available = crate::security::tpm_provider::tpm_available();
+            if tpm_available {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "pass",
+                    format!("TPM capability available (mode={mode})."),
+                    None,
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "pass",
+                    "Secure Solana wallet custody/signing backend is available.".to_string(),
+                    None,
+                ));
+            } else if mode == "strict" {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "fail",
+                    "TPM unavailable while strict mode is enabled.".to_string(),
+                    Some("Switch TPM mode to auto/compatible or restore TPM availability."),
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "warn",
+                    "Solana signing/custody is disabled because secure key backend is unavailable in strict mode."
+                        .to_string(),
+                    Some("Use a machine with TPM support or relax TPM mode for compatibility."),
+                ));
+            } else {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "warn",
+                    format!(
+                        "TPM unavailable; running in compatibility path (mode={mode}) with degraded hardware binding."
+                    ),
+                    Some("Use strict mode on TPM-capable hardware for strongest key protection."),
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "warn",
+                    "Solana signing/custody is degraded or disabled without hardware-backed key protection."
+                        .to_string(),
+                    Some("For production custody, run on TPM-capable hardware in strict mode."),
+                ));
+            }
         }
         Err(err) => {
             checks.push(doctor_check(
@@ -1530,6 +1572,18 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
             ));
             checks.push(doctor_check(
                 "provider_health",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+            checks.push(doctor_check(
+                "security_tpm_mode",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+            checks.push(doctor_check(
+                "solana_custody",
                 "warn",
                 "Skipped because config could not be loaded.".to_string(),
                 Some("Fix config_store check first."),
@@ -2306,9 +2360,11 @@ fn bootstrap_wallet_targets(config: Option<&Config>) -> Vec<(String, String)> {
         .and_then(|tools| tools.get("settings"))
         .and_then(|settings| settings.get("solana"))
         .and_then(|solana| {
-            solana
-                .get("bootstrap_wallets")
-                .or_else(|| solana.get("rpc").and_then(|rpc| rpc.get("bootstrap_wallets")))
+            solana.get("bootstrap_wallets").or_else(|| {
+                solana
+                    .get("rpc")
+                    .and_then(|rpc| rpc.get("bootstrap_wallets"))
+            })
         })
         .and_then(|targets| targets.as_array())
         .map(|targets| {
