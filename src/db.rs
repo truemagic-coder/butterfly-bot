@@ -1,4 +1,4 @@
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use diesel::sqlite::SqliteConnection;
@@ -9,6 +9,11 @@ use rand::TryRng;
 use crate::error::{ButterflyBotError, Result};
 
 const DB_KEY_NAME: &str = "db_encryption_key";
+
+fn sqlcipher_key_cache() -> &'static RwLock<Option<(String, String)>> {
+    static CACHE: OnceLock<RwLock<Option<(String, String)>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
+}
 
 fn tune_sqlcipher_log_level_sync(conn: &mut SqliteConnection) {
     if let Err(err) =
@@ -45,18 +50,53 @@ fn generated_db_key() -> Result<String> {
 }
 
 pub fn get_sqlcipher_key() -> Result<String> {
-    if let Some(value) = crate::vault::get_secret(DB_KEY_NAME)? {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            log_sqlcipher_key_source_once("keychain");
-            return Ok(trimmed.to_string());
+    let root = crate::runtime_paths::app_root()
+        .to_string_lossy()
+        .to_string();
+
+    {
+        let lock = sqlcipher_key_cache();
+        let cached = match lock.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some((cached_root, cached_key)) = cached {
+            if cached_root == root {
+                return Ok(cached_key);
+            }
         }
     }
 
-    let generated = generated_db_key()?;
-    crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
-    log_sqlcipher_key_source_once("generated_keychain");
-    Ok(generated)
+    let resolved = if let Some(value) = crate::vault::get_secret(DB_KEY_NAME)? {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            log_sqlcipher_key_source_once("keychain");
+            trimmed.to_string()
+        } else {
+            let generated = generated_db_key()?;
+            crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
+            log_sqlcipher_key_source_once("generated_keychain");
+            generated
+        }
+    } else {
+        let generated = generated_db_key()?;
+        crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
+        log_sqlcipher_key_source_once("generated_keychain");
+        generated
+    };
+
+    {
+        let lock = sqlcipher_key_cache();
+        match lock.write() {
+            Ok(mut guard) => *guard = Some((root, resolved.clone())),
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                *guard = Some((root, resolved.clone()));
+            }
+        }
+    }
+
+    Ok(resolved)
 }
 
 pub fn apply_sqlcipher_key_sync(conn: &mut SqliteConnection) -> Result<()> {

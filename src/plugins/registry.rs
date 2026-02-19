@@ -801,6 +801,130 @@ impl ToolRegistry {
                 )
                 .await?
             }
+            "solana.wallet" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        Ok(serde_json::json!({
+                            "action": "wallet",
+                            "user_id": Self::require_str(args, "user_id")?,
+                            "actor": args.get("actor").and_then(|v| v.as_str())
+                        }))
+                    },
+                )
+                .await?
+            }
+            "solana.balance" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        let address = args.get("address").and_then(|v| v.as_str());
+                        let user_id = args.get("user_id").and_then(|v| v.as_str());
+                        if address.is_none() && user_id.is_none() {
+                            return Err(ButterflyBotError::Runtime(
+                                "capability args missing address or user_id".to_string(),
+                            ));
+                        }
+                        Ok(serde_json::json!({
+                            "action": "balance",
+                            "address": address,
+                            "user_id": user_id,
+                            "actor": args.get("actor").and_then(|v| v.as_str())
+                        }))
+                    },
+                )
+                .await?
+            }
+            "solana.transfer" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        Ok(serde_json::json!({
+                            "action": "transfer",
+                            "request_id": args.get("request_id").and_then(|v| v.as_str()),
+                            "user_id": Self::require_str(args, "user_id")?,
+                            "actor": args.get("actor").and_then(|v| v.as_str()),
+                            "to": Self::require_str(args, "to")?,
+                            "lamports": args.get("lamports").and_then(|v| v.as_u64()).ok_or_else(|| ButterflyBotError::Runtime("capability args missing lamports".to_string()))?
+                        }))
+                    },
+                )
+                .await?
+            }
+            "solana.simulate_transfer" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        Ok(serde_json::json!({
+                            "action": "simulate_transfer",
+                            "request_id": args.get("request_id").and_then(|v| v.as_str()),
+                            "user_id": Self::require_str(args, "user_id")?,
+                            "actor": args.get("actor").and_then(|v| v.as_str()),
+                            "to": Self::require_str(args, "to")?,
+                            "lamports": args.get("lamports").and_then(|v| v.as_u64()).ok_or_else(|| ButterflyBotError::Runtime("capability args missing lamports".to_string()))?
+                        }))
+                    },
+                )
+                .await?
+            }
+            "solana.tx_status" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        Ok(serde_json::json!({
+                            "action": "tx_status",
+                            "signature": Self::require_str(args, "signature")?
+                        }))
+                    },
+                )
+                .await?
+            }
+            "solana.tx_history" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "solana",
+                    capability,
+                    &args,
+                    |args| {
+                        let address = args.get("address").and_then(|v| v.as_str());
+                        let user_id = args.get("user_id").and_then(|v| v.as_str());
+                        if address.is_none() && user_id.is_none() {
+                            return Err(ButterflyBotError::Runtime(
+                                "capability args missing address or user_id".to_string(),
+                            ));
+                        }
+                        Ok(serde_json::json!({
+                            "action": "tx_history",
+                            "address": address,
+                            "user_id": user_id,
+                            "actor": args.get("actor").and_then(|v| v.as_str()),
+                            "limit": args.get("limit").and_then(|v| v.as_u64())
+                        }))
+                    },
+                )
+                .await?
+            }
             "secrets.get" => {
                 let secret_name = Self::require_str(&args, "name")?;
                 let scoped = format!("secrets.get.{secret_name}");

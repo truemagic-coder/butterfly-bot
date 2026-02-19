@@ -19,6 +19,8 @@ fn tool_name() -> &'static str {
         "reminders"
     } else if cfg!(feature = "tool_search_internet") {
         "search_internet"
+    } else if cfg!(feature = "tool_solana") {
+        "solana"
     } else if cfg!(feature = "tool_tasks") {
         "tasks"
     } else if cfg!(feature = "tool_todo") {
@@ -43,6 +45,7 @@ fn execute_for_tool(tool: &str, input: &Value) -> Value {
         "github" => execute_github(input),
         "zapier" => execute_zapier(input),
         "search_internet" => execute_search_internet(input),
+        "solana" => execute_solana(input),
         _ => json!({
             "status": "error",
             "code": "internal",
@@ -87,6 +90,14 @@ fn require_string(args: &Map<String, Value>, key: &str) -> Result<(), Value> {
 
 fn require_i64(args: &Map<String, Value>, key: &str) -> Result<(), Value> {
     if args.get(key).and_then(|value| value.as_i64()).is_some() {
+        Ok(())
+    } else {
+        Err(invalid_args(&format!("Missing {}", key)))
+    }
+}
+
+fn require_u64(args: &Map<String, Value>, key: &str) -> Result<(), Value> {
+    if args.get(key).and_then(|value| value.as_u64()).is_some() {
         Ok(())
     } else {
         Err(invalid_args(&format!("Missing {}", key)))
@@ -483,6 +494,207 @@ fn execute_search_internet(input: &Value) -> Value {
     capability_call("search.internet", Value::Object(args))
 }
 
+fn sol_to_lamports(amount_sol: f64) -> Option<u64> {
+    if !amount_sol.is_finite() || amount_sol < 0.0 {
+        return None;
+    }
+    let lamports = (amount_sol * 1_000_000_000f64).round();
+    if !lamports.is_finite() || lamports < 0.0 {
+        return None;
+    }
+    Some(lamports as u64)
+}
+
+fn parse_amount_string_to_lamports(raw: &str) -> Option<u64> {
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let compact = normalized.replace(' ', "");
+    if let Some(value) = compact.strip_suffix("lamports") {
+        return value.parse::<u64>().ok();
+    }
+    if let Some(value) = compact.strip_suffix("lamport") {
+        return value.parse::<u64>().ok();
+    }
+    if let Some(value) = compact.strip_suffix("sol") {
+        return value.parse::<f64>().ok().and_then(sol_to_lamports);
+    }
+
+    compact
+        .parse::<f64>()
+        .ok()
+        .and_then(sol_to_lamports)
+}
+
+fn execute_solana(input: &Value) -> Value {
+    let mut args = match input_object(input) {
+        Ok(args) => args,
+        Err(err) => return err,
+    };
+
+    if args
+        .get("to")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        let to_alias = args
+            .get("recipient")
+            .or_else(|| args.get("address_to"))
+            .or_else(|| args.get("to_address"))
+            .or_else(|| args.get("destination"))
+            .cloned();
+        if let Some(to_value) = to_alias {
+            args.insert("to".to_string(), to_value);
+        }
+    }
+
+    if args
+        .get("address")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        if let Some(address) = args.get("wallet_address").cloned() {
+            args.insert("address".to_string(), address);
+        }
+    }
+
+    let amount_sol_alias = args
+        .get("amount_sol")
+        .or_else(|| args.get("sol"))
+        .or_else(|| args.get("amount_in_sol"));
+
+    let mut normalized_lamports = amount_sol_alias.and_then(|value| match value {
+        Value::Number(number) => number.as_f64().and_then(sol_to_lamports),
+        Value::String(text) => parse_amount_string_to_lamports(text),
+        _ => None,
+    });
+
+    if normalized_lamports.is_none() {
+        normalized_lamports = args.get("amount").and_then(|value| match value {
+            Value::Number(number) => {
+                if let Some(value_u64) = number.as_u64() {
+                    Some(value_u64)
+                } else {
+                    number.as_f64().and_then(sol_to_lamports)
+                }
+            }
+            Value::String(text) => parse_amount_string_to_lamports(text),
+            _ => None,
+        });
+    }
+
+    if args.get("lamports").and_then(|value| value.as_u64()).is_none() {
+        if let Some(lamports) = normalized_lamports {
+            args.insert("lamports".to_string(), Value::from(lamports));
+        }
+    } else if amount_sol_alias.is_some() {
+        if let Some(lamports) = normalized_lamports {
+            args.insert("lamports".to_string(), Value::from(lamports));
+        }
+    }
+
+    if args
+        .get("user_id")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        args.insert("user_id".to_string(), Value::String("user".to_string()));
+    }
+
+    let raw_action = args
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let action = match raw_action.as_str() {
+        "address" | "get_wallet" => "wallet",
+        "get_balance" => "balance",
+        "send" | "send_transfer" | "transact" | "transaction" | "pay" => "transfer",
+        "simulate" | "dry_run" => "simulate_transfer",
+        "simulate_transaction" | "simulate_tx" => "simulate_transfer",
+        "status" | "signature_status" => "tx_status",
+        "history" => "tx_history",
+        "" => {
+            if args
+                .get("to")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+            {
+                "transfer"
+            } else {
+                ""
+            }
+        }
+        other => other,
+    }
+    .to_string();
+    args.insert("action".to_string(), Value::String(action.clone()));
+
+    let valid = match action.as_str() {
+        "wallet" => require_string(&args, "user_id"),
+        "balance" => {
+            let has_address = args
+                .get("address")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            let has_user = args
+                .get("user_id")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            if has_address || has_user {
+                Ok(())
+            } else {
+                Err(invalid_args("Missing address or user_id"))
+            }
+        }
+        "transfer" | "simulate_transfer" => {
+            require_string(&args, "user_id")
+                .and_then(|_| require_string(&args, "to"))
+                .and_then(|_| require_u64(&args, "lamports"))
+        }
+        "tx_status" => require_string(&args, "signature"),
+        "tx_history" => {
+            let has_address = args
+                .get("address")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            let has_user = args
+                .get("user_id")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            if has_address || has_user {
+                Ok(())
+            } else {
+                Err(invalid_args("Missing address or user_id"))
+            }
+        }
+        _ => Err(invalid_args("Unsupported action")),
+    };
+
+    if let Err(err) = valid {
+        return err;
+    }
+
+    let capability = match action.as_str() {
+        "wallet" => "solana.wallet",
+        "balance" => "solana.balance",
+        "transfer" => "solana.transfer",
+        "simulate_transfer" => "solana.simulate_transfer",
+        "tx_status" => "solana.tx_status",
+        "tx_history" => "solana.tx_history",
+        _ => return invalid_args("Unsupported action"),
+    };
+
+    capability_call(capability, Value::Object(args))
+}
+
 #[no_mangle]
 pub extern "C" fn alloc(len: i32) -> i32 {
     if len <= 0 {
@@ -555,6 +767,66 @@ mod tests {
         assert_eq!(
             output["capability_call"]["name"].as_str(),
             Some("kv.sqlite.todo.create")
+        );
+    }
+
+    #[test]
+    fn solana_transfer_uses_capability_call() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({"action":"transfer","user_id":"u1","to":"11111111111111111111111111111111","lamports":1}),
+        );
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+    }
+
+    #[test]
+    fn solana_transact_alias_with_address_to_and_amount_normalizes() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({
+                "action":"transact",
+                "address_to":"11111111111111111111111111111111",
+                "amount": 20000000
+            }),
+        );
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["lamports"].as_u64(),
+            Some(20000000)
+        );
+    }
+
+    #[test]
+    fn solana_missing_action_with_recipient_and_sol_amount_normalizes() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({
+                "recipient":"11111111111111111111111111111111",
+                "amount": 0.02,
+                "kind":"transfer",
+                "type":"SolanaTransaction"
+            }),
+        );
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["lamports"].as_u64(),
+            Some(20_000_000)
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["user_id"].as_str(),
+            Some("user")
         );
     }
 
@@ -644,6 +916,49 @@ mod tests {
         let http_missing_method = execute_for_tool("http_call", &json!({"url":"https://example.com"}));
         assert_eq!(http_missing_method["status"].as_str(), Some("error"));
         assert_eq!(http_missing_method["code"].as_str(), Some("invalid_args"));
+    }
+
+    #[test]
+    fn solana_amount_string_with_sol_unit_normalizes() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({
+                "action":"transfer",
+                "user_id":"u1",
+                "recipient":"11111111111111111111111111111111",
+                "amount":"0.02 SOL"
+            }),
+        );
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["lamports"].as_u64(),
+            Some(20_000_000)
+        );
+    }
+
+    #[test]
+    fn solana_amount_sol_overrides_bad_lamports() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({
+                "action":"transfer",
+                "user_id":"u1",
+                "to":"11111111111111111111111111111111",
+                "amount_sol":0.02,
+                "lamports":2_000_000
+            }),
+        );
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["lamports"].as_u64(),
+            Some(20_000_000)
+        );
     }
 
     #[test]

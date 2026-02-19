@@ -43,6 +43,18 @@ pub fn app_root() -> PathBuf {
     app_root_override().unwrap_or_else(platform_app_root)
 }
 
+#[cfg(all(debug_assertions, not(test)))]
+pub fn set_debug_app_root_override(path: Option<PathBuf>) {
+    let lock = app_root_override_lock();
+    match lock.write() {
+        Ok(mut guard) => *guard = path,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = path;
+        }
+    }
+}
+
 pub fn default_db_path() -> String {
     app_root()
         .join("data")

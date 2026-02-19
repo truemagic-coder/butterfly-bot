@@ -20,7 +20,7 @@ const SERVICE: &str = "butterfly-bot";
 const TPM_KEK_NAME: &str = "tpm_kek";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const PLATFORM_BINDING_NAME: &str = "platform_secure_binding";
-const POLICY_VERSION: u8 = 1;
+const POLICY_VERSION: u8 = 2;
 
 fn missing_tpm_policy_message() -> String {
     let base = "TPM is required in strict mode; no TPM device found";
@@ -412,48 +412,56 @@ impl TpmBackend for DeviceTpmBackend {
     }
 
     fn fingerprint(&self) -> Result<String> {
-        let path = if let Some(path) = self.active_device_path() {
-            path
-        } else {
-            #[cfg(target_os = "linux")]
-            {
-                if self.sysfs_has_tpm() {
-                    PathBuf::from("/sys/class/tpm")
-                } else {
-                    return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
-                }
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
-            }
-        };
-
-        if path.as_os_str().is_empty() {
-            return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
-        }
-
         let mut hasher = Sha256::new();
-        hasher.update(path.to_string_lossy().as_bytes());
-
-        if let Ok(meta) = std::fs::metadata(&path) {
-            hasher.update(meta.len().to_le_bytes());
-            if let Ok(modified) = meta.modified() {
-                if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                    hasher.update(duration.as_secs().to_le_bytes());
-                }
-            }
-        }
 
         #[cfg(target_os = "linux")]
         {
+            // Prefer sysfs hardware identity because /dev node metadata and selected
+            // frontend device path (/dev/tpmrmN vs /dev/tpmN) can change across boots.
             if let Some(uevent) = self.sysfs_uevent_bytes() {
+                hasher.update(b"linux-tpm-uevent-v1");
                 hasher.update(uevent);
+                return Ok(format!("{:x}", hasher.finalize()));
             }
+
+            if let Some(path) = self.active_device_path() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if let Some(index) = Self::parse_tpm_index(name, "tpmrm") {
+                        hasher.update(format!("linux-tpm-index:{index}").as_bytes());
+                        return Ok(format!("{:x}", hasher.finalize()));
+                    }
+                    if let Some(index) = Self::parse_tpm_index(name, "tpm") {
+                        hasher.update(format!("linux-tpm-index:{index}").as_bytes());
+                        return Ok(format!("{:x}", hasher.finalize()));
+                    }
+                }
+                hasher.update(path.to_string_lossy().as_bytes());
+                return Ok(format!("{:x}", hasher.finalize()));
+            }
+
+            if self.sysfs_has_tpm() {
+                hasher.update(b"linux-tpm-sysfs-present");
+                return Ok(format!("{:x}", hasher.finalize()));
+            }
+
+            return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
         }
 
-        Ok(format!("{:x}", hasher.finalize()))
+        #[cfg(not(target_os = "linux"))]
+        {
+            let path = if let Some(path) = self.active_device_path() {
+                path
+            } else {
+                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+            };
+
+            if path.as_os_str().is_empty() {
+                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+            }
+
+            hasher.update(path.to_string_lossy().as_bytes());
+            return Ok(format!("{:x}", hasher.finalize()));
+        }
     }
 }
 
@@ -598,13 +606,41 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         }
     }
 
-    fn verify_policy_fingerprint(&self, expected: &str) -> Result<()> {
-        let current = self.backend.fingerprint()?;
-        if current == expected {
-            Ok(())
-        } else {
-            Err(Self::policy_mismatch_error())
+    fn load_kek_mapped(&self) -> Result<String> {
+        let kek = self.kek_store.get_kek().map_err(|e| {
+            if Self::lockout_like(&e) {
+                Self::lockout_error()
+            } else {
+                e
+            }
+        })?;
+        kek.ok_or_else(|| Self::reset_error("KEK missing from TPM key store"))
+    }
+
+    fn verify_or_migrate_policy_fingerprint(
+        &self,
+        state: &TpmPolicyState,
+        current_fingerprint: &str,
+    ) -> Result<()> {
+        if state.fingerprint == current_fingerprint {
+            return Ok(());
         }
+
+        if state.version < POLICY_VERSION {
+            // Legacy policy versions used a fingerprint derivation that could vary after reboot
+            // even when bound to the same TPM. Prove continuity by unwrapping with existing KEK,
+            // then rebind policy to the stable current fingerprint.
+            let kek = self.load_kek_mapped()?;
+            let _ = self.load_unsealed_dek(&kek)?;
+            self.save_policy_state(TpmPolicyState {
+                version: POLICY_VERSION,
+                fingerprint: current_fingerprint.to_string(),
+                lifecycle_state: KeyLifecycleState::Recover,
+            })?;
+            return Ok(());
+        }
+
+        Err(Self::policy_mismatch_error())
     }
 
     fn load_unsealed_dek(&self, kek: &str) -> Result<String> {
@@ -625,15 +661,8 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         let state = self.load_policy_state()?;
 
         if let Some(state) = state {
-            self.verify_policy_fingerprint(&state.fingerprint)?;
-            let kek = self.kek_store.get_kek().map_err(|e| {
-                if Self::lockout_like(&e) {
-                    Self::lockout_error()
-                } else {
-                    e
-                }
-            })?;
-            let kek = kek.ok_or_else(|| Self::reset_error("KEK missing from TPM key store"))?;
+            self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
+            let kek = self.load_kek_mapped()?;
             let _ = self.load_unsealed_dek(&kek)?;
             return Ok(());
         }
@@ -663,21 +692,15 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         let state = self
             .load_policy_state()?
             .ok_or_else(|| Self::reset_error("TPM policy state missing"))?;
-        self.verify_policy_fingerprint(&state.fingerprint)?;
+        let fingerprint = self.backend.fingerprint()?;
+        self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
 
-        let kek = self.kek_store.get_kek().map_err(|e| {
-            if Self::lockout_like(&e) {
-                Self::lockout_error()
-            } else {
-                e
-            }
-        })?;
-        let kek = kek.ok_or_else(|| Self::reset_error("KEK missing from TPM key store"))?;
+        let kek = self.load_kek_mapped()?;
         let dek = self.load_unsealed_dek(&kek)?;
 
         self.save_policy_state(TpmPolicyState {
             version: POLICY_VERSION,
-            fingerprint: state.fingerprint,
+            fingerprint,
             lifecycle_state: KeyLifecycleState::Use,
         })?;
 
@@ -689,16 +712,14 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         let state = self
             .load_policy_state()?
             .ok_or_else(|| Self::reset_error("TPM policy state missing"))?;
-        self.verify_policy_fingerprint(&state.fingerprint)?;
-        let kek = self
-            .kek_store
-            .get_kek()?
-            .ok_or_else(|| Self::reset_error("KEK missing from TPM key store"))?;
+        let fingerprint = self.backend.fingerprint()?;
+        self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
+        let kek = self.load_kek_mapped()?;
         let new_dek = Self::random_secret()?;
         self.persist_wrapped_dek(&kek, &new_dek)?;
         self.save_policy_state(TpmPolicyState {
             version: POLICY_VERSION,
-            fingerprint: state.fingerprint,
+            fingerprint,
             lifecycle_state: KeyLifecycleState::Rotate,
         })
     }
@@ -949,6 +970,39 @@ mod tests {
         let runtime_b = runtime(&backend_b, &store, temp.path());
         let err = runtime_b.unseal_dek().unwrap_err();
         assert!(format!("{err}").contains("policy mismatch"));
+    }
+
+    #[test]
+    fn legacy_policy_mismatch_auto_migrates() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend_a = MemoryTpmBackend {
+            present: true,
+            fingerprint: "fp-a".to_string(),
+        };
+        let store = MemoryKekStore::default();
+        let runtime_a = runtime(&backend_a, &store, temp.path());
+        runtime_a.provision().unwrap();
+
+        runtime_a
+            .save_policy_state(TpmPolicyState {
+                version: 1,
+                fingerprint: "fp-a".to_string(),
+                lifecycle_state: KeyLifecycleState::Seal,
+            })
+            .unwrap();
+
+        let backend_b = MemoryTpmBackend {
+            present: true,
+            fingerprint: "fp-b".to_string(),
+        };
+        let runtime_b = runtime(&backend_b, &store, temp.path());
+
+        let dek = runtime_b.unseal_dek().unwrap();
+        assert!(!dek.trim().is_empty());
+
+        let migrated = runtime_b.load_policy_state().unwrap().unwrap();
+        assert_eq!(migrated.version, POLICY_VERSION);
+        assert_eq!(migrated.fingerprint, "fp-b");
     }
 
     #[test]

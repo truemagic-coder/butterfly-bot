@@ -48,6 +48,23 @@ pub struct UiEvent {
 }
 
 impl AgentService {
+    fn append_runtime_identity_context(&self, prompt: &mut String, user_id: &str) {
+        let actor = "agent";
+        match crate::security::solana_signer::wallet_address(user_id, actor) {
+            Ok(address) => {
+                prompt.push_str("\n\nRUNTIME IDENTITY:\n");
+                prompt.push_str("- Agent actor: agent\n");
+                prompt.push_str(&format!("- Solana wallet address: {address}\n"));
+                prompt.push_str(
+                    "- If the user asks for your Solana address, respond with this exact address.\n",
+                );
+            }
+            Err(err) => {
+                warn!("Failed to resolve runtime Solana wallet for user {}: {}", user_id, err);
+            }
+        }
+    }
+
     pub fn agent_name(&self) -> &str {
         &self.agent.name
     }
@@ -281,6 +298,9 @@ impl AgentService {
             "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- Use the `todo` tool for manual, checklist-style action items the user completes explicitly.\n- Use the `tasks` tool only for time-based/scheduled or recurring actions (run_at/interval).\n- When implementing code, writing functions, or building features, you MUST use the `coding` tool - it uses a specialized coding model optimized for development work.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
         );
         system_prompt.push_str(
+            "- For explicit Solana transfer requests, call the `solana` tool with action `transfer` directly.\n- For SOL-denominated amounts, pass the exact user amount using `amount_sol` (or `amount` as a decimal/string with SOL units) instead of manually converting to lamports.\n- 1 SOL = 1,000,000,000 lamports.\n- Do not ask for an extra confirmation step unless the user explicitly requested a dry-run/simulation-only flow.\n- Do not surface internal simulation/preflight details in the final user response unless the user asks for those details.\n",
+        );
+        system_prompt.push_str(
             "- Do NOT rely on memory or prior responses to decide whether a tool is usable or whether credentials exist. Tool availability and credentials can change at any time.\n- When a tool is relevant to the current request, attempt the tool call and let the tool response determine success/failure.\n",
         );
         system_prompt.push_str(&format!(
@@ -360,6 +380,7 @@ impl AgentService {
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
         full_prompt.push_str(&format!("\n\nUSER IDENTIFIER: {}", user_id));
+        self.append_runtime_identity_context(&mut full_prompt, user_id);
 
         let tools = self.tool_registry.get_agent_tools(&self.agent.name).await;
         let output = if tools.is_empty() {
@@ -420,6 +441,7 @@ impl AgentService {
             full_prompt.push_str("CURRENT USER MESSAGE:\n");
             full_prompt.push_str(query);
             full_prompt.push_str(&format!("\n\nUSER IDENTIFIER: {}", user_id));
+            self.append_runtime_identity_context(&mut full_prompt, user_id);
 
             let mut response_text = String::new();
             let tools = self.tool_registry.get_agent_tools(&self.agent.name).await;
@@ -497,6 +519,7 @@ impl AgentService {
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
         full_prompt.push_str(&format!("\n\nUSER IDENTIFIER: {}", user_id));
+        self.append_runtime_identity_context(&mut full_prompt, user_id);
 
         let output = self
             .llm_provider
@@ -533,6 +556,7 @@ impl AgentService {
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
         full_prompt.push_str(&format!("\n\nUSER IDENTIFIER: {}", user_id));
+        self.append_runtime_identity_context(&mut full_prompt, user_id);
 
         self.llm_provider
             .parse_structured_output(&full_prompt, &system_prompt, json_schema, None)

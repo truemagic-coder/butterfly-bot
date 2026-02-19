@@ -113,14 +113,6 @@ impl Tool for CodingTool {
             }
         }
 
-        if next.api_key.is_none() {
-            if let Some(secret) = vault::get_secret("coding_openai_api_key")? {
-                if !secret.trim().is_empty() {
-                    next.api_key = Some(secret);
-                }
-            }
-        }
-
         let mut guard = self
             .config
             .try_write()
@@ -136,9 +128,15 @@ impl Tool for CodingTool {
             .ok_or_else(|| ButterflyBotError::Runtime("Missing prompt".to_string()))?;
 
         let config = self.config.read().await.clone();
-        let api_key = config
-            .api_key
-            .ok_or_else(|| ButterflyBotError::Runtime("Missing coding tool api_key".to_string()))?;
+        let api_key = if let Some(key) = config.api_key {
+            key
+        } else {
+            vault::get_secret("coding_openai_api_key")?
+                .filter(|secret| !secret.trim().is_empty())
+                .ok_or_else(|| {
+                    ButterflyBotError::Runtime("Missing coding tool api_key".to_string())
+                })?
+        };
 
         let system_prompt = params
             .get("system_prompt")

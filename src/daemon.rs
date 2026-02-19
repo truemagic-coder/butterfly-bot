@@ -2498,6 +2498,7 @@ where
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    tracing::info!(address = %addr, "Daemon listener bound");
     let shutdown = async move {
         shutdown.await;
         scheduler.stop().await;

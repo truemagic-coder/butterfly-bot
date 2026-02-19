@@ -189,20 +189,39 @@ pub async fn send_transaction(
     tx_base64: &str,
     policy: &SolanaRpcExecutionPolicy,
 ) -> Result<String> {
-    let result = rpc_call(
-        endpoint,
-        "sendTransaction",
-        json!([
-            tx_base64,
-            {
-                "encoding": "base64",
-                "skipPreflight": policy.send.skip_preflight,
-                "preflightCommitment": policy.send.preflight_commitment,
-                "maxRetries": policy.send.max_retries,
-            }
-        ]),
-    )
-    .await?;
+    let send_once = |skip_preflight: bool| async move {
+        rpc_call(
+            endpoint,
+            "sendTransaction",
+            json!([
+                tx_base64,
+                {
+                    "encoding": "base64",
+                    "skipPreflight": skip_preflight,
+                    "preflightCommitment": policy.send.preflight_commitment,
+                    "maxRetries": policy.send.max_retries,
+                }
+            ]),
+        )
+        .await
+    };
+
+    let result = match send_once(policy.send.skip_preflight).await {
+        Ok(value) => value,
+        Err(err)
+            if !policy.send.skip_preflight
+                && err
+                    .to_string()
+                    .to_ascii_lowercase()
+                    .contains("preflight check is not supported") =>
+        {
+            tracing::warn!(
+                "Solana RPC does not support preflight checks; retrying sendTransaction with skipPreflight=true"
+            );
+            send_once(true).await?
+        }
+        Err(err) => return Err(err),
+    };
 
     result
         .as_str()

@@ -537,27 +537,6 @@ impl Tool for SearchInternetTool {
         }
 
         if state.api_key.is_none() {
-            let primary = match state.provider.as_str() {
-                "perplexity" => "search_internet_perplexity_api_key",
-                "grok" => "search_internet_grok_api_key",
-                _ => "search_internet_openai_api_key",
-            };
-            let fallbacks = [
-                "search_internet_grok_api_key",
-                "search_internet_perplexity_api_key",
-                "search_internet_openai_api_key",
-            ];
-            for name in std::iter::once(primary).chain(fallbacks.into_iter()) {
-                if let Some(secret) = vault::get_secret(name)? {
-                    if !secret.trim().is_empty() {
-                        state.api_key = Some(secret);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if state.api_key.is_none() {
             if let Some(openai_key) = config
                 .get("openai")
                 .and_then(|v| v.get("api_key"))
@@ -584,7 +563,29 @@ impl Tool for SearchInternetTool {
             }
         };
 
-        let state = self.snapshot();
+        let mut state = self.snapshot();
+
+        if state.api_key.is_none() {
+            let primary = match state.provider.as_str() {
+                "perplexity" => "search_internet_perplexity_api_key",
+                "grok" => "search_internet_grok_api_key",
+                _ => "search_internet_openai_api_key",
+            };
+            let fallbacks = [
+                "search_internet_grok_api_key",
+                "search_internet_perplexity_api_key",
+                "search_internet_openai_api_key",
+            ];
+
+            for name in std::iter::once(primary).chain(fallbacks.into_iter()) {
+                if let Some(secret) = vault::get_secret(name)? {
+                    if !secret.trim().is_empty() {
+                        state.api_key = Some(secret);
+                        break;
+                    }
+                }
+            }
+        }
 
         match state.provider.as_str() {
             "perplexity" => self.search_perplexity(&query, &state).await,

@@ -4,6 +4,13 @@ use butterfly_bot::sandbox::ToolRuntime;
 
 #[tokio::test]
 async fn all_registered_tools_resolve_to_wasm_runtime() {
+    let temp = tempfile::tempdir().expect("temp dir should create");
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(temp.path().to_path_buf()));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "wasm-runtime-invariant-test-dek".to_string(),
+    ));
+
     let config = Config {
         openai: Some(OpenAiConfig {
             api_key: Some("test-key".to_string()),
@@ -38,4 +45,8 @@ async fn all_registered_tools_resolve_to_wasm_runtime() {
             tool_name
         );
     }
+
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(None);
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(None);
+    butterfly_bot::runtime_paths::set_debug_app_root_override(None);
 }

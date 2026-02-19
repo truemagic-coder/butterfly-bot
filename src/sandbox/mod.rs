@@ -156,6 +156,14 @@ impl SandboxSettings {
             "github" => vec!["github.list_tools", "github.call_tool"],
             "zapier" => vec!["zapier.list_tools", "zapier.call_tool"],
             "search_internet" => vec!["search.internet"],
+            "solana" => vec![
+                "solana.wallet",
+                "solana.balance",
+                "solana.transfer",
+                "solana.simulate_transfer",
+                "solana.tx_status",
+                "solana.tx_history",
+            ],
             _ => Vec::new(),
         }
         .into_iter()
