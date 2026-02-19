@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -1219,17 +1219,17 @@
+                     .filter_map(|line| parse_history_entry(&line))
+                     .collect::<Vec<_>>();
+ 
+                 if parsed.is_empty() || !messages.read().is_empty() {
+                     return;
+                 }
+ 
+                 let mut list = messages.write();
+-                if !list.is_empty() {
++                if  /* ~ changed by cargo-mutants ~ */list.is_empty() {
+                     return;
+                 }
+ 
+                 for (role, text, timestamp) in parsed {
+                     let id = next_id();
+                     next_id.set(id + 1);
+                     push_bounded_message(
+                         &mut list,

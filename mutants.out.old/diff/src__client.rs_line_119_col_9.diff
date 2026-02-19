@@ -1,0 +1,16 @@
+--- src/client.rs
++++ replace ButterflyBot::brain_tick with ()
+@@ -111,12 +111,11 @@
+             return Err(ButterflyBotError::Runtime(
+                 "Tool registered but could not assign to agent".to_string(),
+             ));
+         }
+         Ok(true)
+     }
+ 
+     pub async fn brain_tick(&self) {
+-        let agent_service = self.query_service.agent_service();
+-        agent_service.dispatch_brain_tick().await;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ }

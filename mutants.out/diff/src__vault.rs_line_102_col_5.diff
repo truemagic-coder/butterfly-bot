@@ -1,0 +1,21 @@
+--- src/vault.rs
++++ replace set_secret_required -> Result<()> with Ok(())
+@@ -94,17 +94,17 @@
+     set_secret_provider_for_tests(build_default_provider());
+ }
+ 
+ pub fn set_secret(name: &str, value: &str) -> Result<()> {
+     set_secret_internal(name, value, true)
+ }
+ 
+ pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
+-    set_secret_internal(name, value, false)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn set_secret_internal(name: &str, value: &str, allow_backend_unavailable: bool) -> Result<()> {
+     active_provider().set_secret(name, value, allow_backend_unavailable)
+ }
+ 
+ pub fn get_secret(name: &str) -> Result<Option<String>> {
+     active_provider().get_secret(name)

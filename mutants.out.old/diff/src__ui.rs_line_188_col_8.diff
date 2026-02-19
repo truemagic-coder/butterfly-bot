@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in run_chat_history_request
+@@ -180,17 +180,17 @@
+         user_id,
+         limit
+     );
+     let mut request = client.get(url);
+     if !token.trim().is_empty() {
+         request = request.header("authorization", format!("Bearer {token}"));
+     }
+     let response = request.send().await.map_err(|err| err.to_string())?;
+-    if !response.status().is_success() {
++    if  /* ~ changed by cargo-mutants ~ */response.status().is_success() {
+         let status = response.status();
+         let text = response
+             .text()
+             .await
+             .unwrap_or_else(|_| "Unable to read response body".to_string());
+         return Err(format!("HTTP {status}: {text}"));
+     }
+ 

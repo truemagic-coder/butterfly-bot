@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -1992,17 +1992,17 @@
+                     }
+                     crate::config::MarkdownSource::Database { markdown } => {
+                         heartbeat_path.set("database".to_string());
+                         heartbeat_text.set(markdown.clone());
+                     }
+                 }
+ 
+                 search_default_deny.set(default_deny);
+-                if !allowlist.is_empty() {
++                if  /* ~ changed by cargo-mutants ~ */allowlist.is_empty() {
+                     search_network_allow.set(allowlist.join(", "));
+                 }
+                 network_allow_form.set(allowlist);
+ 
+                 match crate::vault::get_secret("github_pat") {
+                     Ok(Some(secret)) if !secret.trim().is_empty() => {
+                         github_pat_input.set(secret);
+                     }

@@ -1,0 +1,24 @@
+--- src/vault.rs
++++ replace <impl SecretProvider for CocoonFileSecretProvider>::get_secret -> Result<Option<String>> with Ok(Some("xyzzy".into()))
+@@ -49,20 +49,17 @@
+     ) -> Result<()> {
+         let passphrase = self.passphrase()?;
+         crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
+             cocoon_store::persist_secret(&self.secret_path(name), sensitive_passphrase, value)
+         })
+     }
+ 
+     fn get_secret(&self, name: &str) -> Result<Option<String>> {
+-        let passphrase = self.passphrase()?;
+-        crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
+-            cocoon_store::load_secret(&self.secret_path(name), sensitive_passphrase)
+-        })
++        Ok(Some("xyzzy".into())) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ fn build_default_provider() -> Arc<dyn SecretProvider> {
+     Arc::new(CocoonFileSecretProvider)
+ }
+ 
+ static SECRET_PROVIDER: OnceLock<RwLock<Arc<dyn SecretProvider>>> = OnceLock::new();

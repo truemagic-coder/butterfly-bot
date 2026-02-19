@@ -1,0 +1,24 @@
+--- src/client.rs
++++ replace ButterflyBot::set_heartbeat_markdown with ()
+@@ -82,20 +82,17 @@
+             .await
+     }
+ 
+     pub async fn preload_context(&self, user_id: &str) -> Result<()> {
+         self.query_service.preload_context(user_id).await
+     }
+ 
+     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
+-        let agent_service = self.query_service.agent_service();
+-        agent_service
+-            .set_heartbeat_markdown(heartbeat_markdown)
+-            .await;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn set_prompt_markdown(&self, prompt_markdown: Option<String>) {
+         let agent_service = self.query_service.agent_service();
+         agent_service.set_prompt_markdown(prompt_markdown).await;
+     }
+ 
+     pub async fn register_tool(&self, tool: Arc<dyn Tool>) -> Result<bool> {

@@ -1,0 +1,27 @@
+--- src/planning/mod.rs
++++ replace PlanStore::get_plan -> Result<PlanItem> with Ok(Default::default())
+@@ -123,23 +123,17 @@
+             .limit(limit as i64)
+             .load(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+         Ok(rows.into_iter().map(map_row).collect())
+     }
+ 
+     pub async fn get_plan(&self, id: i32) -> Result<PlanItem> {
+-        let mut conn = self.conn().await?;
+-        let row: PlanRow = plans::table
+-            .filter(plans::id.eq(id))
+-            .first(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(map_row(row))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn update_plan(
+         &self,
+         id: i32,
+         title: Option<&str>,
+         goal: Option<&str>,
+         steps: Option<&Value>,

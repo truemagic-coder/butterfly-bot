@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace ButterflyBot::process_text_stream -> BoxStream<'a, Result<String>> with BoxStream::from_iter([Ok(String::new())])
+@@ -45,18 +45,17 @@
+     }
+ 
+     pub fn process_text_stream<'a>(
+         &'a self,
+         user_id: &'a str,
+         message: &'a str,
+         prompt: Option<&'a str>,
+     ) -> BoxStream<'a, Result<String>> {
+-        let service = &self.query_service;
+-        service.process_text_stream(user_id, message, prompt)
++        BoxStream::from_iter([Ok(String::new())]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn process(
+         &self,
+         user_id: &str,
+         input: UserInput,
+         options: ProcessOptions,
+     ) -> Result<ProcessResult> {

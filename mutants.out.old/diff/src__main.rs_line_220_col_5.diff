@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace is_ollama_local -> bool with true
+@@ -212,17 +212,17 @@
+         }
+     }
+ 
+     Ok(())
+ }
+ 
+ #[cfg(not(test))]
+ fn is_ollama_local(base_url: &str) -> bool {
+-    base_url.starts_with("http://localhost:11434") || base_url.starts_with("http://127.0.0.1:11434")
++    true /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn list_ollama_models() -> Result<Vec<String>> {
+     let output = Command::new("ollama").arg("list").output().map_err(|e| {
+         if e.kind() == ErrorKind::NotFound {
+             butterfly_bot::error::ButterflyBotError::Runtime(
+                 "ollama binary not found in runtime environment".to_string(),

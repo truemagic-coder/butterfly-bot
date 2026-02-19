@@ -1,0 +1,33 @@
+--- src/vault.rs
++++ replace CocoonFileSecretProvider::secret_path -> PathBuf with Default::default()
+@@ -19,29 +19,17 @@
+ struct CocoonFileSecretProvider;
+ 
+ impl CocoonFileSecretProvider {
+     fn passphrase(&self) -> Result<String> {
+         crate::security::tpm_provider::resolve_dek_passphrase()
+     }
+ 
+     fn secret_path(&self, name: &str) -> PathBuf {
+-        let sanitized = name
+-            .chars()
+-            .map(|ch| {
+-                if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+-                    ch
+-                } else {
+-                    '_'
+-                }
+-            })
+-            .collect::<String>();
+-        crate::runtime_paths::app_root()
+-            .join("secrets")
+-            .join(format!("{sanitized}.cocoon"))
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl SecretProvider for CocoonFileSecretProvider {
+     fn set_secret(
+         &self,
+         name: &str,
+         value: &str,

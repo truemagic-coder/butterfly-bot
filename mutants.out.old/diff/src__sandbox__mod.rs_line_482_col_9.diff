@@ -1,0 +1,44 @@
+--- src/sandbox/mod.rs
++++ replace WasmRuntime::candidate_wasm_roots -> Vec<PathBuf> with vec![]
+@@ -474,40 +474,17 @@
+     const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+     pub const SUPPORTED_CAPABILITY_ABI_VERSION: u32 = 1;
+ 
+     fn module_filename(tool_name: &str) -> String {
+         format!("{tool_name}_tool.wasm")
+     }
+ 
+     fn candidate_wasm_roots() -> Vec<PathBuf> {
+-        let mut roots = crate::runtime_paths::default_wasm_dir_candidates();
+-
+-        if let Ok(exe) = std::env::current_exe() {
+-            if let Some(exe_dir) = exe.parent() {
+-                roots.push(exe_dir.join("wasm"));
+-
+-                if let Some(parent) = exe_dir.parent() {
+-                    roots.push(parent.join("Resources").join("wasm"));
+-                    roots.push(parent.join("resources").join("wasm"));
+-                    roots.push(parent.join("share").join("butterfly-bot").join("wasm"));
+-                    roots.push(parent.join("lib").join("butterfly-bot").join("wasm"));
+-                }
+-            }
+-        }
+-
+-        roots.push(PathBuf::from(".").join("wasm"));
+-
+-        let mut deduped = Vec::new();
+-        for root in roots {
+-            if !deduped.contains(&root) {
+-                deduped.push(root);
+-            }
+-        }
+-        deduped
++        vec![] /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn default_module_path(tool_name: &str) -> String {
+         let file_name = Self::module_filename(tool_name);
+         let fallback = PathBuf::from(".").join("wasm").join(&file_name);
+ 
+         for root in Self::candidate_wasm_roots() {
+             let candidate = root.join(&file_name);

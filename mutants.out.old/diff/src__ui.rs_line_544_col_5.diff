@@ -1,0 +1,23 @@
+--- src/ui.rs
++++ replace launch_ui_with_config with ()
+@@ -536,19 +536,17 @@
+     let lock = ui_launch_config_lock();
+     match lock.lock() {
+         Ok(guard) => guard.clone(),
+         Err(poisoned) => poisoned.into_inner().clone(),
+     }
+ }
+ 
+ pub fn launch_ui_with_config(config: UiLaunchConfig) {
+-    set_ui_launch_config(config);
+-    force_dbusrs();
+-    launch(app_view);
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn stream_timeout_duration() -> Duration {
+     Duration::from_secs(180)
+ }
+ 
+ #[cfg(target_os = "linux")]
+ fn force_dbusrs() {}

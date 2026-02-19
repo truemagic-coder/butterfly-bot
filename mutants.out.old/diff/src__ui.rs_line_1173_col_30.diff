@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace == with != in app_view
+@@ -1165,17 +1165,17 @@
+             let latest_bot_id = messages
+                 .read()
+                 .iter()
+                 .rev()
+                 .find(|msg| msg.role == MessageRole::Bot && !msg.text.is_empty())
+                 .map(|msg| msg.id)
+                 .unwrap_or(0);
+ 
+-            if latest_bot_id == 0 || latest_bot_id == *last_bot_scroll_id.read() {
++            if latest_bot_id != /* ~ changed by cargo-mutants ~ */ 0 || latest_bot_id == *last_bot_scroll_id.read() {
+                 return;
+             }
+ 
+             let mut last_bot_scroll_id = last_bot_scroll_id.clone();
+             last_bot_scroll_id.set(latest_bot_id);
+ 
+             spawn(async move {
+                 scroll_chat_after_render().await;

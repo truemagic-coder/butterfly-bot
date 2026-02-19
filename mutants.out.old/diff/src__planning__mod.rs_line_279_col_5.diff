@@ -1,0 +1,32 @@
+--- src/planning/mod.rs
++++ replace map_row -> PlanItem with Default::default()
+@@ -271,28 +271,17 @@
+         Ok::<_, ButterflyBotError>(())
+     })
+     .await
+     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+     Ok(())
+ }
+ 
+ fn map_row(row: PlanRow) -> PlanItem {
+-    PlanItem {
+-        id: row.id,
+-        user_id: row.user_id,
+-        title: row.title,
+-        goal: row.goal,
+-        steps: row
+-            .steps_json
+-            .and_then(|value| serde_json::from_str(&value).ok()),
+-        status: row.status,
+-        created_at: row.created_at,
+-        updated_at: row.updated_at,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn now_ts() -> i64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_secs() as i64
+ }

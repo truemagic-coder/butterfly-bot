@@ -1,0 +1,21 @@
+--- src/vault.rs
++++ replace set_secret_internal -> Result<()> with Ok(())
+@@ -98,17 +98,17 @@
+     set_secret_internal(name, value, true)
+ }
+ 
+ pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
+     set_secret_internal(name, value, false)
+ }
+ 
+ fn set_secret_internal(name: &str, value: &str, allow_backend_unavailable: bool) -> Result<()> {
+-    active_provider().set_secret(name, value, allow_backend_unavailable)
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn get_secret(name: &str) -> Result<Option<String>> {
+     active_provider().get_secret(name)
+ }
+ 
+ pub fn ensure_daemon_auth_token() -> Result<String> {
+     if let Some(token) = get_secret("daemon_auth_token")? {

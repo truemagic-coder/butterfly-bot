@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace <impl ScheduledJob for WakeupJob>::interval -> Duration with Default::default()
+@@ -192,17 +192,17 @@
+ 
+ #[async_trait::async_trait]
+ impl ScheduledJob for WakeupJob {
+     fn name(&self) -> &str {
+         "wakeup"
+     }
+ 
+     fn interval(&self) -> Duration {
+-        self.interval
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     async fn run(&self) -> Result<()> {
+         let now = now_ts();
+         let dynamic_source = Config::from_store(&self.db_path)
+             .ok()
+             .map(|cfg| cfg.heartbeat_source)
+             .unwrap_or_else(|| self.heartbeat_source.clone());

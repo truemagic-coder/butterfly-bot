@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace && with || in app_view
+@@ -1487,17 +1487,17 @@
+                                                 if let Some(payload) = value.get("payload") {
+                                                     if payload.get("error").is_none()
+                                                         && is_empty_list_result(payload)
+                                                     {
+                                                         continue;
+                                                     }
+                                                 }
+                                             } else if event_type != "boot"
+-                                                && event_type != "autonomy"
++                                                || /* ~ changed by cargo-mutants ~ */ event_type != "autonomy"
+                                             {
+                                                 if let Some(payload) = value.get("payload") {
+                                                     if payload.get("error").is_none() {
+                                                         continue;
+                                                     }
+                                                 } else {
+                                                     continue;
+                                                 }

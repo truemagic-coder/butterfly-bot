@@ -1,0 +1,21 @@
+--- src/runtime_paths.rs
++++ delete ! in default_wasm_dir_candidates
+@@ -58,17 +58,17 @@
+         roots.push(project_dirs.data_dir().join("wasm"));
+     }
+ 
+     if let Some(base_dirs) = BaseDirs::new() {
+         roots.push(base_dirs.data_local_dir().join("butterfly-bot").join("wasm"));
+     }
+ 
+     let app_root = app_root();
+-    if !app_root.as_os_str().is_empty() {
++    if  /* ~ changed by cargo-mutants ~ */app_root.as_os_str().is_empty() {
+         roots.push(app_root.join("wasm"));
+     }
+ 
+     roots.push(std::env::temp_dir().join("butterfly-bot").join("wasm"));
+     roots.push(PathBuf::from(".").join("wasm"));
+ 
+     roots.dedup();
+     roots

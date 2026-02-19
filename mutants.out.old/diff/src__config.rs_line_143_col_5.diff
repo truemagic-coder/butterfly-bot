@@ -1,0 +1,25 @@
+--- src/config.rs
++++ replace deserialize_heartbeat_source -> std::result::Result<MarkdownSource, D::Error> with Ok(Default::default())
+@@ -135,21 +135,17 @@
+ }
+ 
+ fn deserialize_heartbeat_source<'de, D>(
+     deserializer: D,
+ ) -> std::result::Result<MarkdownSource, D::Error>
+ where
+     D: Deserializer<'de>,
+ {
+-    let value = Option::<Value>::deserialize(deserializer)?;
+-    match value {
+-        None | Some(Value::Null) => Ok(default_heartbeat_source()),
+-        Some(value) => MarkdownSource::from_json_value(value).map_err(de::Error::custom),
+-    }
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn deserialize_prompt_source<'de, D>(
+     deserializer: D,
+ ) -> std::result::Result<MarkdownSource, D::Error>
+ where
+     D: Deserializer<'de>,
+ {

@@ -1,0 +1,28 @@
+--- src/ui.rs
++++ replace set_ui_launch_config with ()
+@@ -517,24 +517,17 @@
+ }
+ 
+ fn ui_launch_config_lock() -> &'static Mutex<UiLaunchConfig> {
+     static CONFIG: OnceLock<Mutex<UiLaunchConfig>> = OnceLock::new();
+     CONFIG.get_or_init(|| Mutex::new(UiLaunchConfig::default()))
+ }
+ 
+ fn set_ui_launch_config(config: UiLaunchConfig) {
+-    let lock = ui_launch_config_lock();
+-    match lock.lock() {
+-        Ok(mut guard) => *guard = config,
+-        Err(poisoned) => {
+-            let mut guard = poisoned.into_inner();
+-            *guard = config;
+-        }
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn ui_launch_config() -> UiLaunchConfig {
+     let lock = ui_launch_config_lock();
+     match lock.lock() {
+         Ok(guard) => guard.clone(),
+         Err(poisoned) => poisoned.into_inner().clone(),
+     }

@@ -1,0 +1,34 @@
+--- src/reminders/mod.rs
++++ replace ReminderStore::snooze_reminder -> Result<bool> with Ok(true)
+@@ -201,30 +201,17 @@
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+         };
+         Ok(deleted)
+     }
+ 
+     pub async fn snooze_reminder(&self, user_id: &str, id: i32, due_at: i64) -> Result<bool> {
+-        let mut conn = self.conn().await?;
+-        let updated = diesel::update(
+-            reminders::table
+-                .filter(reminders::user_id.eq(user_id))
+-                .filter(reminders::id.eq(id)),
+-        )
+-        .set((
+-            reminders::due_at.eq(due_at),
+-            reminders::fired_at.eq::<Option<i64>>(None),
+-        ))
+-        .execute(&mut conn)
+-        .await
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(updated > 0)
++        Ok(true) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn due_reminders(
+         &self,
+         user_id: &str,
+         now: i64,
+         limit: usize,
+     ) -> Result<Vec<ReminderItem>> {

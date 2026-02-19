@@ -1,0 +1,25 @@
+--- src/config_store.rs
++++ replace ensure_parent_dir -> Result<()> with Ok(())
+@@ -11,21 +11,17 @@
+ 
+ #[derive(QueryableByName)]
+ struct ConfigRow {
+     #[diesel(sql_type = Text)]
+     config_json: String,
+ }
+ 
+ pub fn ensure_parent_dir(path: &str) -> Result<()> {
+-    let path = Path::new(path);
+-    if let Some(parent) = path.parent() {
+-        std::fs::create_dir_all(parent).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn open_conn(db_path: &str) -> Result<SqliteConnection> {
+     let mut conn = SqliteConnection::establish(db_path)
+         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+     Ok(conn)
+ }

@@ -1,0 +1,32 @@
+--- src/ui.rs
++++ replace load_markdown_source -> Result<String, String> with Ok(String::new())
+@@ -364,28 +364,17 @@
+ }
+ 
+ fn is_url_source(value: &str) -> bool {
+     let trimmed = value.trim();
+     trimmed.starts_with("http://") || trimmed.starts_with("https://")
+ }
+ 
+ async fn load_markdown_source(source: &str) -> Result<String, String> {
+-    let trimmed = source.trim();
+-    if trimmed.is_empty() {
+-        return Ok(String::new());
+-    }
+-    if is_url_source(trimmed) {
+-        let response = reqwest::get(trimmed).await.map_err(|err| err.to_string())?;
+-        if !response.status().is_success() {
+-            return Err(format!("Failed to fetch {trimmed}"));
+-        }
+-        return response.text().await.map_err(|err| err.to_string());
+-    }
+-    Err("Only URL markdown sources are supported for external loading.".to_string())
++    Ok(String::new()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn save_markdown_source_to_store(
+     db_path: String,
+     target: &'static str,
+     source: crate::config::MarkdownSource,
+ ) -> Result<(), String> {
+     let mut config = crate::config::Config::from_store(&db_path).map_err(|err| err.to_string())?;

@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace == with != in ToolSandboxConfig::is_capability_allowed
+@@ -67,17 +67,17 @@
+     pub capabilities: CapabilityPolicy,
+ }
+ 
+ impl ToolSandboxConfig {
+     pub fn is_capability_allowed(&self, capability: &str) -> bool {
+         self.capabilities
+             .allow
+             .iter()
+-            .any(|allowed| allowed == capability)
++            .any(|allowed| allowed != /* ~ changed by cargo-mutants ~ */ capability)
+     }
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ pub struct SandboxSettings {
+     #[serde(default)]
+     pub tools: HashMap<String, ToolSandboxConfig>,
+ }

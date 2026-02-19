@@ -1,45 +1,97 @@
 use crate::error::{ButterflyBotError, Result};
+use crate::security::cocoon_store;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::rngs::SysRng;
 use rand::TryRng;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock, RwLock};
 
-const SERVICE: &str = "butterfly-bot";
-
-fn keyring_backend_unavailable(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("dbus")
-        || message.contains("secret service")
-        || message.contains("keyring")
-        || message.contains("message recipient disconnected")
-        || message.contains("no such interface")
-        || message.contains("service unknown")
-        || message.contains("backend not available")
-        || message.contains("platform secure storage failure")
-        || message.contains("keychain")
-        || message.contains("user interaction is not allowed")
+pub trait SecretProvider: Send + Sync {
+    fn set_secret(
+        &self,
+        name: &str,
+        value: &str,
+        allow_backend_unavailable: bool,
+    ) -> Result<()>;
+    fn get_secret(&self, name: &str) -> Result<Option<String>>;
 }
 
-fn env_token() -> Option<String> {
-    std::env::var("BUTTERFLY_BOT_TOKEN").ok().and_then(|token| {
-        let trimmed = token.trim().to_string();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed)
-        }
-    })
+struct CocoonFileSecretProvider;
+
+impl CocoonFileSecretProvider {
+    fn passphrase(&self) -> Result<String> {
+        crate::security::tpm_provider::resolve_dek_passphrase()
+    }
+
+    fn secret_path(&self, name: &str) -> PathBuf {
+        let sanitized = name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        crate::runtime_paths::app_root()
+            .join("secrets")
+            .join(format!("{sanitized}.cocoon"))
+    }
 }
 
-fn keyring_disabled() -> bool {
-    std::env::var("BUTTERFLY_BOT_DISABLE_KEYRING")
-        .ok()
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
+impl SecretProvider for CocoonFileSecretProvider {
+    fn set_secret(
+        &self,
+        name: &str,
+        value: &str,
+        _allow_backend_unavailable: bool,
+    ) -> Result<()> {
+        let passphrase = self.passphrase()?;
+        crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
+            cocoon_store::persist_secret(&self.secret_path(name), sensitive_passphrase, value)
         })
-        .unwrap_or(false)
+    }
+
+    fn get_secret(&self, name: &str) -> Result<Option<String>> {
+        let passphrase = self.passphrase()?;
+        crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
+            cocoon_store::load_secret(&self.secret_path(name), sensitive_passphrase)
+        })
+    }
+}
+
+fn build_default_provider() -> Arc<dyn SecretProvider> {
+    Arc::new(CocoonFileSecretProvider)
+}
+
+static SECRET_PROVIDER: OnceLock<RwLock<Arc<dyn SecretProvider>>> = OnceLock::new();
+
+fn provider_lock() -> &'static RwLock<Arc<dyn SecretProvider>> {
+    SECRET_PROVIDER.get_or_init(|| RwLock::new(build_default_provider()))
+}
+
+fn active_provider() -> Arc<dyn SecretProvider> {
+    match provider_lock().read() {
+        Ok(guard) => Arc::clone(&guard),
+        Err(poisoned) => Arc::clone(poisoned.get_ref()),
+    }
+}
+
+#[cfg(test)]
+fn set_secret_provider_for_tests(provider: Arc<dyn SecretProvider>) {
+    match provider_lock().write() {
+        Ok(mut guard) => *guard = provider,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = provider;
+        }
+    }
+}
+
+#[cfg(test)]
+fn reset_secret_provider_for_tests() {
+    set_secret_provider_for_tests(build_default_provider());
 }
 
 pub fn set_secret(name: &str, value: &str) -> Result<()> {
@@ -51,52 +103,17 @@ pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
 }
 
 fn set_secret_internal(name: &str, value: &str, allow_backend_unavailable: bool) -> Result<()> {
-    if keyring_disabled() {
-        if allow_backend_unavailable {
-            return Ok(());
-        }
-        return Err(ButterflyBotError::Runtime(
-            "keyring disabled by BUTTERFLY_BOT_DISABLE_KEYRING".to_string(),
-        ));
-    }
-    let entry = keyring::Entry::new(SERVICE, name)
-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-    if let Err(err) = entry.set_password(value) {
-        if allow_backend_unavailable && keyring_backend_unavailable(&err.to_string()) {
-            return Ok(());
-        }
-        return Err(ButterflyBotError::Runtime(err.to_string()));
-    }
-    Ok(())
+    active_provider().set_secret(name, value, allow_backend_unavailable)
 }
 
 pub fn get_secret(name: &str) -> Result<Option<String>> {
-    if keyring_disabled() {
-        return Ok(None);
-    }
-    let entry = keyring::Entry::new(SERVICE, name)
-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => {
-            if keyring_backend_unavailable(&err.to_string()) {
-                return Ok(None);
-            }
-            Err(ButterflyBotError::Runtime(err.to_string()))
-        }
-    }
+    active_provider().get_secret(name)
 }
 
 pub fn ensure_daemon_auth_token() -> Result<String> {
-    if let Some(token) = env_token() {
-        return Ok(token);
-    }
-
     if let Some(token) = get_secret("daemon_auth_token")? {
         let trimmed = token.trim().to_string();
         if !trimmed.is_empty() {
-            std::env::set_var("BUTTERFLY_BOT_TOKEN", &trimmed);
             return Ok(trimmed);
         }
     }
@@ -106,7 +123,164 @@ pub fn ensure_daemon_auth_token() -> Result<String> {
     rng.try_fill_bytes(&mut bytes)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     let generated = URL_SAFE_NO_PAD.encode(bytes);
-    let _ = set_secret("daemon_auth_token", &generated);
-    std::env::set_var("BUTTERFLY_BOT_TOKEN", &generated);
+    set_secret_required("daemon_auth_token", &generated)?;
     Ok(generated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    fn test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct MockSecretProvider {
+        values: Mutex<HashMap<String, String>>,
+        set_calls: AtomicUsize,
+    }
+
+    impl MockSecretProvider {
+        fn new() -> Self {
+            Self {
+                values: Mutex::new(HashMap::new()),
+                set_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn set_call_count(&self) -> usize {
+            self.set_calls.load(Ordering::Relaxed)
+        }
+    }
+
+    impl SecretProvider for MockSecretProvider {
+        fn set_secret(
+            &self,
+            name: &str,
+            value: &str,
+            _allow_backend_unavailable: bool,
+        ) -> Result<()> {
+            self.set_calls.fetch_add(1, Ordering::Relaxed);
+            let mut guard = self
+                .values
+                .lock()
+                .map_err(|_| ButterflyBotError::Runtime("mock mutex poisoned".to_string()))?;
+            guard.insert(name.to_string(), value.to_string());
+            Ok(())
+        }
+
+        fn get_secret(&self, name: &str) -> Result<Option<String>> {
+            let guard = self
+                .values
+                .lock()
+                .map_err(|_| ButterflyBotError::Runtime("mock mutex poisoned".to_string()))?;
+            Ok(guard.get(name).cloned())
+        }
+    }
+
+    #[test]
+    fn secret_provider_roundtrip_through_public_api() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        let mock = Arc::new(MockSecretProvider::new());
+        set_secret_provider_for_tests(mock.clone());
+
+        set_secret("phase_a_test", "value-123").unwrap();
+        let loaded = get_secret("phase_a_test").unwrap();
+
+        assert_eq!(loaded.as_deref(), Some("value-123"));
+        assert_eq!(mock.set_call_count(), 1);
+
+        reset_secret_provider_for_tests();
+    }
+
+    #[test]
+    fn ensure_daemon_auth_token_uses_provider_and_env_cache() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(true));
+        let mock = Arc::new(MockSecretProvider::new());
+        set_secret_provider_for_tests(mock.clone());
+
+        let first = ensure_daemon_auth_token().unwrap();
+        let second = ensure_daemon_auth_token().unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.len() >= 40);
+        assert_eq!(mock.set_call_count(), 1);
+
+        reset_secret_provider_for_tests();
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
+    #[test]
+    fn cocoon_provider_roundtrip() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(true));
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(Some(
+            "vault-test-dek-passphrase".to_string(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+
+        crate::runtime_paths::set_app_root_override_for_tests(Some(temp.path().to_path_buf()));
+        set_secret_provider_for_tests(Arc::new(CocoonFileSecretProvider));
+
+        set_secret("cocoon_secret", "encrypted-value").unwrap();
+        let loaded = get_secret("cocoon_secret").unwrap();
+
+        assert_eq!(loaded.as_deref(), Some("encrypted-value"));
+        assert!(
+            temp.path()
+                .join("secrets")
+                .join("cocoon_secret.cocoon")
+                .exists()
+        );
+
+        reset_secret_provider_for_tests();
+        crate::runtime_paths::set_app_root_override_for_tests(None);
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(None);
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
+    #[test]
+    fn cocoon_provider_generates_master_key_when_missing() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(true));
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(Some(
+            "vault-test-dek-passphrase-2".to_string(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+
+        crate::runtime_paths::set_app_root_override_for_tests(Some(temp.path().to_path_buf()));
+        set_secret_provider_for_tests(Arc::new(CocoonFileSecretProvider));
+
+        set_secret("cocoon_secret_master_key", "value").unwrap();
+        let loaded = get_secret("cocoon_secret_master_key").unwrap();
+        assert_eq!(loaded.as_deref(), Some("value"));
+
+        reset_secret_provider_for_tests();
+        crate::runtime_paths::set_app_root_override_for_tests(None);
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(None);
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
+    #[test]
+    fn cocoon_provider_fails_fast_without_tpm() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(false));
+        let temp = tempfile::tempdir().unwrap();
+
+        crate::runtime_paths::set_app_root_override_for_tests(Some(temp.path().to_path_buf()));
+        set_secret_provider_for_tests(Arc::new(CocoonFileSecretProvider));
+
+        let err = set_secret("no_tpm", "value").unwrap_err();
+        assert!(format!("{err}").contains("TPM is required"));
+
+        reset_secret_provider_for_tests();
+        crate::runtime_paths::set_app_root_override_for_tests(None);
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
 }

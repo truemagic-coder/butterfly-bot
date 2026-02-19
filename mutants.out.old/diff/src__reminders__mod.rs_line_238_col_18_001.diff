@@ -1,0 +1,21 @@
+--- src/reminders/mod.rs
++++ replace > with < in ReminderStore::due_reminders
+@@ -230,17 +230,17 @@
+     ) -> Result<Vec<ReminderItem>> {
+         let mut conn = self.conn().await?;
+         let mut query = reminders::table
+             .filter(reminders::user_id.eq(user_id))
+             .filter(reminders::completed_at.is_null())
+             .filter(reminders::due_at.le(now))
+             .filter(reminders::fired_at.is_null())
+             .into_boxed();
+-        if limit > 0 {
++        if limit < /* ~ changed by cargo-mutants ~ */ 0 {
+             query = query.limit(limit as i64);
+         }
+         let rows: Vec<ReminderRow> = query
+             .order(reminders::due_at.asc())
+             .load(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+ 

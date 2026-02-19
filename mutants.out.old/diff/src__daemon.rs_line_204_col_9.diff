@@ -1,0 +1,164 @@
+--- src/daemon.rs
++++ replace <impl ScheduledJob for WakeupJob>::run -> Result<()> with Ok(())
+@@ -196,160 +196,17 @@
+         "wakeup"
+     }
+ 
+     fn interval(&self) -> Duration {
+         self.interval
+     }
+ 
+     async fn run(&self) -> Result<()> {
+-        let now = now_ts();
+-        let dynamic_source = Config::from_store(&self.db_path)
+-            .ok()
+-            .map(|cfg| cfg.heartbeat_source)
+-            .unwrap_or_else(|| self.heartbeat_source.clone());
+-        let prompt_source = Config::from_store(&self.db_path)
+-            .ok()
+-            .map(|cfg| cfg.prompt_source);
+-
+-        match load_markdown_content(&dynamic_source).await {
+-            Ok(markdown) => {
+-                let agent = self.agent.read().await.clone();
+-                agent.set_heartbeat_markdown(markdown.clone()).await;
+-                let status = if markdown
+-                    .as_ref()
+-                    .map(|m| !m.trim().is_empty())
+-                    .unwrap_or(false)
+-                {
+-                    "ok"
+-                } else {
+-                    "empty"
+-                };
+-                let event = UiEvent {
+-                    event_type: "wakeup".to_string(),
+-                    user_id: "system".to_string(),
+-                    tool: "heartbeat".to_string(),
+-                    status: status.to_string(),
+-                    payload: json!({"source": dynamic_source}),
+-                    timestamp: now_ts(),
+-                };
+-                let _ = self.ui_event_tx.send(event);
+-            }
+-            Err(err) => {
+-                let event = UiEvent {
+-                    event_type: "wakeup".to_string(),
+-                    user_id: "system".to_string(),
+-                    tool: "heartbeat".to_string(),
+-                    status: "error".to_string(),
+-                    payload: json!({"source": dynamic_source, "error": err.to_string()}),
+-                    timestamp: now_ts(),
+-                };
+-                let _ = self.ui_event_tx.send(event);
+-            }
+-        }
+-
+-        if let Some(source) = &prompt_source {
+-            match load_markdown_content(source).await {
+-                Ok(markdown) => {
+-                    let agent = self.agent.read().await.clone();
+-                    agent.set_prompt_markdown(markdown.clone()).await;
+-                    let status = if markdown
+-                        .as_ref()
+-                        .map(|m| !m.trim().is_empty())
+-                        .unwrap_or(false)
+-                    {
+-                        "ok"
+-                    } else {
+-                        "empty"
+-                    };
+-                    let event = UiEvent {
+-                        event_type: "wakeup".to_string(),
+-                        user_id: "system".to_string(),
+-                        tool: "prompt".to_string(),
+-                        status: status.to_string(),
+-                        payload: json!({"source": source}),
+-                        timestamp: now_ts(),
+-                    };
+-                    let _ = self.ui_event_tx.send(event);
+-                }
+-                Err(err) => {
+-                    let event = UiEvent {
+-                        event_type: "wakeup".to_string(),
+-                        user_id: "system".to_string(),
+-                        tool: "prompt".to_string(),
+-                        status: "error".to_string(),
+-                        payload: json!({"source": source, "error": err.to_string()}),
+-                        timestamp: now_ts(),
+-                    };
+-                    let _ = self.ui_event_tx.send(event);
+-                }
+-            }
+-        }
+-
+-        // Autonomous heartbeat processing
+-        {
+-            let agent = self.agent.read().await.clone();
+-            let ui_event_tx = self.ui_event_tx.clone();
+-            tokio::spawn(async move {
+-                run_autonomy_tick(agent, ui_event_tx, "system".to_string(), "wakeup").await;
+-            });
+-        }
+-
+-        let tasks = self.store.list_due(now, 32).await?;
+-        for task in tasks {
+-            let agent = self.agent.read().await.clone();
+-            let run_at = now_ts();
+-            let next_run_at = run_at + task.interval_minutes.max(1) * 60;
+-            let _ = self.store.mark_run(task.id, run_at, next_run_at).await;
+-
+-            let options = ProcessOptions {
+-                prompt: None,
+-                images: Vec::new(),
+-                output_format: OutputFormat::Text,
+-                image_detail: "auto".to_string(),
+-                json_schema: None,
+-            };
+-            let input = format!("Wakeup task '{}': {}", task.name, task.prompt);
+-            let result = agent
+-                .process(&task.user_id, UserInput::Text(input), options)
+-                .await;
+-
+-            let (status, payload): (String, Value) = match result {
+-                Ok(ProcessResult::Text(text)) => (
+-                    "ok".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "output": text}),
+-                ),
+-                Ok(other) => (
+-                    "ok".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "output": format!("{other:?}")}),
+-                ),
+-                Err(err) => (
+-                    "error".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "error": err.to_string()}),
+-                ),
+-            };
+-
+-            let event = UiEvent {
+-                event_type: "wakeup".to_string(),
+-                user_id: task.user_id.clone(),
+-                tool: "wakeup".to_string(),
+-                status: status.clone(),
+-                payload: payload.clone(),
+-                timestamp: run_at,
+-            };
+-            let _ = self.ui_event_tx.send(event);
+-            let _ = write_wakeup_audit_log(
+-                self.audit_log_path.as_deref(),
+-                run_at,
+-                &task,
+-                status.as_str(),
+-                payload.clone(),
+-            );
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Serialize)]
+ struct HealthResponse {
+     status: String,
+ }
+ 

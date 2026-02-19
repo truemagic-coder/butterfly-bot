@@ -1,0 +1,166 @@
+--- src/daemon.rs
++++ replace run_with_shutdown -> Result<()> with Ok(())
+@@ -1654,162 +1654,17 @@
+     port: u16,
+     db_path: &str,
+     token: &str,
+     shutdown: F,
+ ) -> Result<()>
+ where
+     F: Future<Output = ()> + Send + 'static,
+ {
+-    crate::security::hardening::run_startup_self_check()?;
+-
+-    let wasm_dir = crate::wasm_bundle::ensure_bundled_wasm_tools()?;
+-    tracing::info!(
+-        wasm_dir = %wasm_dir.to_string_lossy(),
+-        "Ensured bundled WASM tool modules"
+-    );
+-
+-    if Config::from_store(db_path).is_err() {
+-        tracing::warn!("No config in store; writing default config for {}", db_path);
+-        let default_config = Config::convention_defaults(db_path);
+-        config_store::save_config(db_path, &default_config)?;
+-    }
+-
+-    let config = Config::from_store(db_path).ok();
+-
+-    // ── Log which context/heartbeat source the daemon sees ──
+-    if let Some(cfg) = &config {
+-        tracing::info!(
+-            "Daemon config: prompt_source={:?}, heartbeat_source={:?}",
+-            cfg.prompt_source,
+-            cfg.heartbeat_source
+-        );
+-    } else {
+-        tracing::error!("Daemon could not load any config from store!");
+-    }
+-
+-    let tick_seconds = config
+-        .as_ref()
+-        .and_then(|cfg| cfg.brains.as_ref())
+-        .and_then(|brains| brains.get("settings"))
+-        .and_then(|settings| settings.get("tick_seconds"))
+-        .and_then(|value| value.as_u64())
+-        .unwrap_or(60);
+-
+-    let (ui_event_tx, _) = broadcast::channel(256);
+-    if let Some(path) = ui_event_log_path(config.as_ref()) {
+-        let mut rx = ui_event_tx.subscribe();
+-        let path = path.clone();
+-        tokio::spawn(async move {
+-            loop {
+-                match rx.recv().await {
+-                    Ok(event) => {
+-                        let _ = write_ui_event_log(&path, &event);
+-                    }
+-                    Err(broadcast::error::RecvError::Lagged(_)) => {
+-                        continue;
+-                    }
+-                    Err(broadcast::error::RecvError::Closed) => break,
+-                }
+-            }
+-        });
+-    }
+-    let agent = Arc::new(RwLock::new(Arc::new(
+-        ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?,
+-    )));
+-    let reminder_db_path = config
+-        .as_ref()
+-        .and_then(|cfg| serde_json::to_value(cfg).ok())
+-        .and_then(|value| resolve_reminder_db_path(&value))
+-        .unwrap_or_else(|| db_path.to_string());
+-    let reminder_store = Arc::new(ReminderStore::new(reminder_db_path).await?);
+-    let task_store = Arc::new(TaskStore::new(db_path).await?);
+-    let wakeup_store = Arc::new(WakeupStore::new(db_path).await?);
+-    let mut scheduler = Scheduler::new();
+-    scheduler.register_job(Arc::new(BrainTickJob {
+-        agent: agent.clone(),
+-        interval: Duration::from_secs(tick_seconds.max(1)),
+-    }));
+-    let wakeup_poll_seconds = config
+-        .as_ref()
+-        .and_then(|cfg| cfg.tools.as_ref())
+-        .and_then(|tools| tools.get("wakeup"))
+-        .and_then(|wakeup| wakeup.get("poll_seconds"))
+-        .and_then(|value| value.as_u64())
+-        .unwrap_or(60);
+-    let autonomy_cooldown_seconds = config
+-        .as_ref()
+-        .and_then(|cfg| cfg.tools.as_ref())
+-        .and_then(|tools| {
+-            tools
+-                .get("settings")
+-                .and_then(|settings| settings.get("autonomy_cooldown_seconds"))
+-                .and_then(|value| value.as_u64())
+-                .or_else(|| {
+-                    tools
+-                        .get("wakeup")
+-                        .and_then(|wakeup| wakeup.get("autonomy_cooldown_seconds"))
+-                        .and_then(|value| value.as_u64())
+-                })
+-        })
+-        .unwrap_or(60);
+-    set_autonomy_cooldown_seconds(autonomy_cooldown_seconds);
+-    scheduler.register_job(Arc::new(WakeupJob {
+-        agent: agent.clone(),
+-        store: wakeup_store.clone(),
+-        interval: Duration::from_secs(wakeup_poll_seconds.max(1)),
+-        ui_event_tx: ui_event_tx.clone(),
+-        audit_log_path: wakeup_audit_log_path(config.as_ref()),
+-        heartbeat_source: config
+-            .as_ref()
+-            .map(|cfg| cfg.heartbeat_source.clone())
+-            .unwrap_or_else(crate::config::MarkdownSource::default_heartbeat),
+-        db_path: db_path.to_string(),
+-    }));
+-    let tasks_poll_seconds = config
+-        .as_ref()
+-        .and_then(|cfg| cfg.tools.as_ref())
+-        .and_then(|tools| tools.get("tasks"))
+-        .and_then(|tasks| tasks.get("poll_seconds"))
+-        .and_then(|value| value.as_u64())
+-        .unwrap_or(60);
+-    scheduler.register_job(Arc::new(ScheduledTasksJob {
+-        agent: agent.clone(),
+-        store: task_store.clone(),
+-        interval: Duration::from_secs(tasks_poll_seconds.max(1)),
+-        ui_event_tx: ui_event_tx.clone(),
+-        audit_log_path: tasks_audit_log_path(config.as_ref()),
+-    }));
+-    scheduler.start();
+-
+-    let state = AppState {
+-        agent,
+-        reminder_store,
+-        signer_service: SignerService::default(),
+-        token: token.to_string(),
+-        ui_event_tx,
+-        db_path: db_path.to_string(),
+-    };
+-    let app = build_router(state);
+-
+-    let addr = format!("{host}:{port}");
+-    let listener = tokio::net::TcpListener::bind(&addr)
+-        .await
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    let shutdown = async move {
+-        shutdown.await;
+-        scheduler.stop().await;
+-    };
+-
+-    axum::serve(listener, app)
+-        .with_graceful_shutdown(shutdown)
+-        .await
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn run_autonomy_tick(
+     agent: Arc<crate::client::ButterflyBot>,
+     ui_event_tx: broadcast::Sender<UiEvent>,
+     user_id: String,
+     source: &str,
+ ) {

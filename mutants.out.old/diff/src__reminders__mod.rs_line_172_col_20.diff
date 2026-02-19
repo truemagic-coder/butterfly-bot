@@ -1,0 +1,21 @@
+--- src/reminders/mod.rs
++++ replace > with == in ReminderStore::complete_reminder
+@@ -164,17 +164,17 @@
+             reminders::table
+                 .filter(reminders::user_id.eq(user_id))
+                 .filter(reminders::id.eq(id)),
+         )
+         .set(reminders::completed_at.eq(Some(now)))
+         .execute(&mut conn)
+         .await
+         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(updated > 0)
++        Ok(updated == /* ~ changed by cargo-mutants ~ */ 0)
+     }
+ 
+     pub async fn delete_reminder(&self, user_id: &str, id: i32) -> Result<bool> {
+         let mut conn = self.conn().await?;
+         let deleted = diesel::delete(
+             reminders::table
+                 .filter(reminders::user_id.eq(user_id))
+                 .filter(reminders::id.eq(id)),

@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace > with < in WasmRuntime::execute_sync
+@@ -748,17 +748,17 @@
+             .map_err(|_| {
+                 ButterflyBotError::Runtime(format!(
+                     "WASM module missing `{entrypoint}(i32,i32)->i64` export"
+                 ))
+             })?;
+ 
+         let input = serde_json::to_vec(&params)
+             .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+-        if input.len() > Self::MAX_INPUT_BYTES {
++        if input.len() < /* ~ changed by cargo-mutants ~ */ Self::MAX_INPUT_BYTES {
+             return Err(ButterflyBotError::Runtime(format!(
+                 "WASM tool input too large: {} bytes (max {})",
+                 input.len(),
+                 Self::MAX_INPUT_BYTES
+             )));
+         }
+ 
+         let input_len = i32::try_from(input.len()).map_err(|_| {

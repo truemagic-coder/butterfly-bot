@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace + with - in app_view
+@@ -1321,17 +1321,17 @@
+                                 if line.starts_with("data:") {
+                                     line = line.trim_start_matches("data:").trim().to_string();
+                                     if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                                         let title = value
+                                             .get("title")
+                                             .and_then(|v| v.as_str())
+                                             .unwrap_or("Reminder");
+                                         let id = next_id();
+-                                        next_id.set(id + 1);
++                                        next_id.set(id - /* ~ changed by cargo-mutants ~ */ 1);
+                                         let timestamp = value
+                                             .get("due_at")
+                                             .and_then(|v| v.as_i64())
+                                             .unwrap_or_else(now_unix_ts);
+                                         push_bounded_message(
+                                             &mut messages.write(),
+                                             ChatMessage::new(
+                                                 id,

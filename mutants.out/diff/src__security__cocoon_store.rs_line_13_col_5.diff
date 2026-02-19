@@ -1,0 +1,26 @@
+--- src/security/cocoon_store.rs
++++ replace wrap_envelope -> Vec<u8> with vec![]
+@@ -5,22 +5,17 @@
+ 
+ use crate::error::{ButterflyBotError, Result};
+ 
+ const BLOB_MAGIC: &[u8; 4] = b"BBC1";
+ const BLOB_VERSION: u8 = 1;
+ const CIPHER_CHA_CHA20_POLY1305: u8 = 1;
+ 
+ fn wrap_envelope(payload: &[u8]) -> Vec<u8> {
+-    let mut out = Vec::with_capacity(6 + payload.len());
+-    out.extend_from_slice(BLOB_MAGIC);
+-    out.push(BLOB_VERSION);
+-    out.push(CIPHER_CHA_CHA20_POLY1305);
+-    out.extend_from_slice(payload);
+-    out
++    vec![] /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn unwrap_envelope(raw: Vec<u8>, path: &Path) -> Result<Vec<u8>> {
+     if raw.len() < 6 {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has invalid envelope length",
+             path.to_string_lossy()
+         )));

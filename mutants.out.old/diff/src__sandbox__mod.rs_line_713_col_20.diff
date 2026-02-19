@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ delete ! in WasmRuntime::execute_sync
+@@ -705,17 +705,17 @@
+ 
+         let _timeout_guard = if timeout_ms > 0 {
+             store.set_epoch_deadline(1);
+             let done = Arc::new(AtomicBool::new(false));
+             let done_for_thread = done.clone();
+             let engine_for_thread = engine.clone();
+             std::thread::spawn(move || {
+                 std::thread::sleep(Duration::from_millis(timeout_ms));
+-                if !done_for_thread.load(Ordering::Relaxed) {
++                if  /* ~ changed by cargo-mutants ~ */done_for_thread.load(Ordering::Relaxed) {
+                     engine_for_thread.increment_epoch();
+                 }
+             });
+             Some(TimeoutCompletion { done })
+         } else {
+             None
+         };
+ 

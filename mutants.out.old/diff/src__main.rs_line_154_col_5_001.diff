@@ -1,0 +1,27 @@
+--- src/main.rs
++++ replace uses_local_ollama -> bool with false
+@@ -146,23 +146,17 @@
+ 
+ #[cfg(not(test))]
+ fn ollama_available() -> bool {
+     Command::new("ollama").arg("--version").status().is_ok()
+ }
+ 
+ #[cfg(not(test))]
+ fn uses_local_ollama(config: &Config) -> bool {
+-    let Some(openai) = &config.openai else {
+-        return false;
+-    };
+-    let Some(base_url) = &openai.base_url else {
+-        return false;
+-    };
+-    is_ollama_local(base_url)
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn ensure_ollama_models(config: &Config) -> Result<()> {
+     if !uses_local_ollama(config) {
+         return Ok(());
+     }
+     let Some(openai) = &config.openai else {

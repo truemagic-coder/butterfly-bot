@@ -1,0 +1,36 @@
+--- src/reminders/mod.rs
++++ replace ReminderStore::peek_due_reminders -> Result<Vec<ReminderItem>> with Ok(vec![Default::default()])
+@@ -264,32 +264,17 @@
+     }
+ 
+     pub async fn peek_due_reminders(
+         &self,
+         user_id: &str,
+         now: i64,
+         limit: usize,
+     ) -> Result<Vec<ReminderItem>> {
+-        let mut conn = self.conn().await?;
+-        let mut query = reminders::table
+-            .filter(reminders::user_id.eq(user_id))
+-            .filter(reminders::completed_at.is_null())
+-            .filter(reminders::due_at.le(now))
+-            .filter(reminders::fired_at.is_null())
+-            .into_boxed();
+-        if limit > 0 {
+-            query = query.limit(limit as i64);
+-        }
+-        let rows: Vec<ReminderRow> = query
+-            .order(reminders::due_at.asc())
+-            .load(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(rows.into_iter().map(map_row).collect())
++        Ok(vec![Default::default()]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     async fn conn(&self) -> Result<SqlitePooledConn<'_>> {
+         let mut conn = self
+             .pool
+             .get()
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

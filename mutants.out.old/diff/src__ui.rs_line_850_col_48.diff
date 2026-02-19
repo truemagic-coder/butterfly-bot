@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -842,17 +842,17 @@
+                                         }
+                                     };
+                                 let Some(chunk) = next_chunk else {
+                                     break;
+                                 };
+                                 match chunk {
+                                     Ok(bytes) => {
+                                         if let Ok(text_chunk) = std::str::from_utf8(&bytes) {
+-                                            if !text_chunk.is_empty() {
++                                            if  /* ~ changed by cargo-mutants ~ */text_chunk.is_empty() {
+                                                 let mut list = messages.write();
+                                                 if let Some(last) = list
+                                                     .iter_mut()
+                                                     .rev()
+                                                     .find(|msg| msg.id == bot_message_id)
+                                                 {
+                                                     last.append_text(text_chunk);
+                                                 }

@@ -1,0 +1,61 @@
+--- src/planning/mod.rs
++++ replace PlanStore::update_plan -> Result<PlanItem> with Ok(Default::default())
+@@ -140,57 +140,17 @@
+     pub async fn update_plan(
+         &self,
+         id: i32,
+         title: Option<&str>,
+         goal: Option<&str>,
+         steps: Option<&Value>,
+         status: Option<&str>,
+     ) -> Result<PlanItem> {
+-        let now = now_ts();
+-        let mut conn = self.conn().await?;
+-
+-        if let Some(title) = title {
+-            diesel::update(plans::table.filter(plans::id.eq(id)))
+-                .set((plans::title.eq(title), plans::updated_at.eq(now)))
+-                .execute(&mut conn)
+-                .await
+-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        }
+-        if let Some(goal) = goal {
+-            diesel::update(plans::table.filter(plans::id.eq(id)))
+-                .set((plans::goal.eq(goal), plans::updated_at.eq(now)))
+-                .execute(&mut conn)
+-                .await
+-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        }
+-        if let Some(steps) = steps {
+-            diesel::update(plans::table.filter(plans::id.eq(id)))
+-                .set((
+-                    plans::steps_json.eq(Some(steps.to_string())),
+-                    plans::updated_at.eq(now),
+-                ))
+-                .execute(&mut conn)
+-                .await
+-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        }
+-        if let Some(status) = status {
+-            diesel::update(plans::table.filter(plans::id.eq(id)))
+-                .set((plans::status.eq(status), plans::updated_at.eq(now)))
+-                .execute(&mut conn)
+-                .await
+-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        }
+-
+-        let row: PlanRow = plans::table
+-            .filter(plans::id.eq(id))
+-            .first(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(map_row(row))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn delete_plan(&self, id: i32) -> Result<bool> {
+         let mut conn = self.conn().await?;
+         let count = diesel::delete(plans::table.filter(plans::id.eq(id)))
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

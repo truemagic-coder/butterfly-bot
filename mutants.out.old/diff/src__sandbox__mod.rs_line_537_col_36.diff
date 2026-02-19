@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace == with != in WasmRuntime::resolve_module_path
+@@ -529,17 +529,17 @@
+             .filter(|v| !v.is_empty())
+             .map(|configured| {
+                 let configured_path = configured.to_string();
+                 let configured_file = Path::new(configured)
+                     .file_name()
+                     .and_then(|name| name.to_str())
+                     .unwrap_or_default();
+ 
+-                if configured_file == "butterfly_bot_wasm_tool.wasm" {
++                if configured_file != /* ~ changed by cargo-mutants ~ */ "butterfly_bot_wasm_tool.wasm" {
+                     return default_path.clone();
+                 }
+ 
+                 if Path::new(&configured_path).exists() {
+                     configured_path
+                 } else if Path::new(&default_path).exists() {
+                     default_path.clone()
+                 } else {

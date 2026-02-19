@@ -1,0 +1,28 @@
+--- src/sandbox/mod.rs
++++ replace WasmRuntime::resolve_entrypoint -> String with "xyzzy".into()
+@@ -545,24 +545,17 @@
+                 } else {
+                     configured_path
+                 }
+             })
+             .unwrap_or(default_path)
+     }
+ 
+     fn resolve_entrypoint(config: &ToolSandboxConfig) -> String {
+-        config
+-            .wasm
+-            .entrypoint
+-            .as_deref()
+-            .map(str::trim)
+-            .filter(|v| !v.is_empty())
+-            .unwrap_or("execute")
+-            .to_string()
++        "xyzzy".into() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn resolve_fuel_limit(config: &ToolSandboxConfig) -> Option<u64> {
+         config.wasm.fuel.filter(|limit| *limit > 0)
+     }
+ 
+     pub fn validate_module_binary(tool_name: &str, config: &ToolSandboxConfig) -> Result<()> {
+         let module_path = Self::resolve_module_path(tool_name, config);

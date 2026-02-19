@@ -1,0 +1,40 @@
+--- src/main.rs
++++ replace pull_ollama_model -> Result<()> with Ok(())
+@@ -244,36 +244,17 @@
+             models.push(name.to_string());
+         }
+     }
+     Ok(models)
+ }
+ 
+ #[cfg(not(test))]
+ fn pull_ollama_model(model: &str) -> Result<()> {
+-    let status = Command::new("ollama")
+-        .arg("pull")
+-        .arg(model)
+-        .status()
+-        .map_err(|e| {
+-            if e.kind() == ErrorKind::NotFound {
+-                butterfly_bot::error::ButterflyBotError::Runtime(
+-                    "ollama binary not found in runtime environment".to_string(),
+-                )
+-            } else {
+-                butterfly_bot::error::ButterflyBotError::Runtime(e.to_string())
+-            }
+-        })?;
+-    if status.success() {
+-        Ok(())
+-    } else {
+-        Err(butterfly_bot::error::ButterflyBotError::Runtime(format!(
+-            "Failed to pull model '{model}'"
+-        )))
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn split_model_name(model: &str) -> (String, Option<String>) {
+     let mut parts = model.rsplitn(2, ':');
+     let tag = parts.next().map(|v| v.to_string());
+     let base = parts.next();
+     match base {

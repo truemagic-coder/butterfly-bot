@@ -1,0 +1,47 @@
+--- src/reminders/mod.rs
++++ replace ensure_reminders_table -> Result<()> with Ok(())
+@@ -362,43 +362,17 @@
+         Ok::<_, ButterflyBotError>(())
+     })
+     .await
+     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+     Ok(())
+ }
+ 
+ async fn ensure_reminders_table(database_url: &str) -> Result<()> {
+-    let database_url = database_url.to_string();
+-    tokio::task::spawn_blocking(move || {
+-        let mut conn = SqliteConnection::establish(&database_url)
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+-
+-        let check = diesel::connection::SimpleConnection::batch_execute(
+-            &mut conn,
+-            "SELECT 1 FROM reminders LIMIT 1",
+-        );
+-        if let Err(err) = check {
+-            let message = err.to_string();
+-            if message.contains("no such table") {
+-                conn.run_pending_migrations(MIGRATIONS)
+-                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-                diesel::connection::SimpleConnection::batch_execute(&mut conn, REMINDERS_UP_SQL)
+-                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-            } else {
+-                return Err(ButterflyBotError::Runtime(message));
+-            }
+-        }
+-
+-        Ok::<_, ButterflyBotError>(())
+-    })
+-    .await
+-    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))??;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn resolve_reminder_db_path(config: &serde_json::Value) -> Option<String> {
+     let tool_path = config
+         .get("tools")
+         .and_then(|v| v.get("reminders"))
+         .and_then(|v| v.get("sqlite_path"))
+         .and_then(|v| v.as_str())

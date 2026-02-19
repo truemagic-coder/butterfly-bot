@@ -1,0 +1,21 @@
+--- src/config.rs
++++ replace default_prompt_source -> MarkdownSource with Default::default()
+@@ -126,17 +126,17 @@
+     }
+ }
+ 
+ fn default_heartbeat_source() -> MarkdownSource {
+     MarkdownSource::default_heartbeat()
+ }
+ 
+ fn default_prompt_source() -> MarkdownSource {
+-    MarkdownSource::default_prompt()
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn deserialize_heartbeat_source<'de, D>(
+     deserializer: D,
+ ) -> std::result::Result<MarkdownSource, D::Error>
+ where
+     D: Deserializer<'de>,
+ {

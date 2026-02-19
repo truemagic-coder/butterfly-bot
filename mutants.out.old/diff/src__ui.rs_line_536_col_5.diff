@@ -1,0 +1,25 @@
+--- src/ui.rs
++++ replace ui_launch_config -> UiLaunchConfig with Default::default()
+@@ -528,21 +528,17 @@
+         Err(poisoned) => {
+             let mut guard = poisoned.into_inner();
+             *guard = config;
+         }
+     }
+ }
+ 
+ fn ui_launch_config() -> UiLaunchConfig {
+-    let lock = ui_launch_config_lock();
+-    match lock.lock() {
+-        Ok(guard) => guard.clone(),
+-        Err(poisoned) => poisoned.into_inner().clone(),
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn launch_ui_with_config(config: UiLaunchConfig) {
+     set_ui_launch_config(config);
+     force_dbusrs();
+     launch(app_view);
+ }
+ 

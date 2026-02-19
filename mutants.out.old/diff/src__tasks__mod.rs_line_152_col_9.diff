@@ -1,0 +1,38 @@
+--- src/tasks/mod.rs
++++ replace TaskStore::list_tasks -> Result<Vec<ScheduledTask>> with Ok(vec![])
+@@ -144,34 +144,17 @@
+     }
+ 
+     pub async fn list_tasks(
+         &self,
+         user_id: &str,
+         status: TaskStatus,
+         limit: usize,
+     ) -> Result<Vec<ScheduledTask>> {
+-        let mut conn = self.conn().await?;
+-        let mut query = scheduled_tasks::table
+-            .filter(scheduled_tasks::user_id.eq(user_id))
+-            .into_boxed();
+-
+-        match status {
+-            TaskStatus::Enabled => query = query.filter(scheduled_tasks::enabled.eq(true)),
+-            TaskStatus::Disabled => query = query.filter(scheduled_tasks::enabled.eq(false)),
+-            TaskStatus::All => {}
+-        }
+-
+-        let rows: Vec<TaskRow> = query
+-            .order(scheduled_tasks::next_run_at.asc())
+-            .limit(limit as i64)
+-            .load(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(rows.into_iter().map(map_row).collect())
++        Ok(vec![]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn set_enabled(&self, id: i32, enabled: bool) -> Result<ScheduledTask> {
+         let now = now_ts();
+         let mut conn = self.conn().await?;
+         diesel::update(scheduled_tasks::table.filter(scheduled_tasks::id.eq(id)))
+             .set((
+                 scheduled_tasks::enabled.eq(enabled),

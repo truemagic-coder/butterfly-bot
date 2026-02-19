@@ -1,0 +1,21 @@
+--- src/config.rs
++++ replace || with && in MarkdownSource::from_legacy_string
+@@ -55,17 +55,17 @@
+         match self {
+             Self::Url { .. } => None,
+             Self::Database { markdown } => Some(markdown.as_str()),
+         }
+     }
+ 
+     fn from_legacy_string(value: String) -> Self {
+         let trimmed = value.trim();
+-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
++        if trimmed.starts_with("http://") && /* ~ changed by cargo-mutants ~ */ trimmed.starts_with("https://") {
+             return Self::Url {
+                 url: trimmed.to_string(),
+             };
+         }
+         let markdown = fs::read_to_string(trimmed).unwrap_or_default();
+         Self::Database { markdown }
+     }
+ 

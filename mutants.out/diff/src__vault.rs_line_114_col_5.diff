@@ -1,0 +1,34 @@
+--- src/vault.rs
++++ replace ensure_daemon_auth_token -> Result<String> with Ok(String::new())
+@@ -106,30 +106,17 @@
+     active_provider().set_secret(name, value, allow_backend_unavailable)
+ }
+ 
+ pub fn get_secret(name: &str) -> Result<Option<String>> {
+     active_provider().get_secret(name)
+ }
+ 
+ pub fn ensure_daemon_auth_token() -> Result<String> {
+-    if let Some(token) = get_secret("daemon_auth_token")? {
+-        let trimmed = token.trim().to_string();
+-        if !trimmed.is_empty() {
+-            return Ok(trimmed);
+-        }
+-    }
+-
+-    let mut bytes = [0u8; 32];
+-    let mut rng = SysRng;
+-    rng.try_fill_bytes(&mut bytes)
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    let generated = URL_SAFE_NO_PAD.encode(bytes);
+-    set_secret_required("daemon_auth_token", &generated)?;
+-    Ok(generated)
++    Ok(String::new()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use std::collections::HashMap;
+     use std::sync::atomic::{AtomicUsize, Ordering};
+     use std::sync::{Mutex, OnceLock};

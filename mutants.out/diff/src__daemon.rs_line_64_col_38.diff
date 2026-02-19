@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace - with + in try_begin_autonomy_tick
+@@ -56,17 +56,17 @@
+ 
+ fn try_begin_autonomy_tick(now_ts: i64) -> Option<i64> {
+     loop {
+         let cooldown = AUTONOMY_COOLDOWN_SECS.load(Ordering::Relaxed).max(1);
+         let last = AUTONOMY_LAST_RUN_TS.load(Ordering::Relaxed);
+         if last > 0 {
+             let elapsed = now_ts.saturating_sub(last);
+             if elapsed < cooldown {
+-                return Some(cooldown - elapsed);
++                return Some(cooldown + /* ~ changed by cargo-mutants ~ */ elapsed);
+             }
+         }
+ 
+         if AUTONOMY_LAST_RUN_TS
+             .compare_exchange(last, now_ts, Ordering::SeqCst, Ordering::SeqCst)
+             .is_ok()
+         {
+             return None;

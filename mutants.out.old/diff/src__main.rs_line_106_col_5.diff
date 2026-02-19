@@ -1,0 +1,24 @@
+--- src/main.rs
++++ replace ensure_ollama_installed -> Result<()> with Ok(())
+@@ -98,20 +98,17 @@
+             config_store::save_config(db_path, &config)?;
+             Ok(config)
+         }
+     }
+ }
+ 
+ #[cfg(not(test))]
+ fn ensure_ollama_installed(config: &Config) -> Result<()> {
+-    if !uses_local_ollama(config) {
+-        return Ok(());
+-    }
+-    install_ollama_if_missing()
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ #[cfg(any(target_os = "linux", target_os = "macos"))]
+ fn install_ollama_if_missing() -> Result<()> {
+     if ollama_available() {
+         return Ok(());
+     }

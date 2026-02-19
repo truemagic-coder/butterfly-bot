@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace + with * in app_view
+@@ -1225,17 +1225,17 @@
+ 
+                 let mut list = messages.write();
+                 if !list.is_empty() {
+                     return;
+                 }
+ 
+                 for (role, text, timestamp) in parsed {
+                     let id = next_id();
+-                    next_id.set(id + 1);
++                    next_id.set(id * /* ~ changed by cargo-mutants ~ */ 1);
+                     push_bounded_message(
+                         &mut list,
+                         ChatMessage::new(id, role, text, timestamp.unwrap_or_else(now_unix_ts)),
+                         MAX_CHAT_MESSAGES,
+                     );
+                 }
+ 
+                 drop(list);

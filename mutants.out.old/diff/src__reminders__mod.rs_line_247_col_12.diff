@@ -1,0 +1,21 @@
+--- src/reminders/mod.rs
++++ delete ! in ReminderStore::due_reminders
+@@ -239,17 +239,17 @@
+             query = query.limit(limit as i64);
+         }
+         let rows: Vec<ReminderRow> = query
+             .order(reminders::due_at.asc())
+             .load(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+ 
+-        if !rows.is_empty() {
++        if  /* ~ changed by cargo-mutants ~ */rows.is_empty() {
+             let ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
+             diesel::update(
+                 reminders::table
+                     .filter(reminders::user_id.eq(user_id))
+                     .filter(reminders::id.eq_any(&ids)),
+             )
+             .set((
+                 reminders::fired_at.eq(Some(now)),

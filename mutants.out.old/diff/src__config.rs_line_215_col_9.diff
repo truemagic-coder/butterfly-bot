@@ -1,0 +1,44 @@
+--- src/config.rs
++++ replace Config::convention_defaults -> Self with Default::default()
+@@ -207,40 +207,17 @@
+                     });
+                 }
+             }
+         }
+         self
+     }
+ 
+     pub fn convention_defaults(db_path: &str) -> Self {
+-        let model = "ministral-3:14b".to_string();
+-        Self {
+-            openai: Some(OpenAiConfig {
+-                api_key: None,
+-                model: Some(model.clone()),
+-                base_url: Some("http://localhost:11434/v1".to_string()),
+-            }),
+-            heartbeat_source: default_heartbeat_source(),
+-            prompt_source: default_prompt_source(),
+-            memory: Some(MemoryConfig {
+-                enabled: Some(true),
+-                sqlite_path: Some(db_path.to_string()),
+-                summary_model: Some(model),
+-                embedding_model: Some("embeddinggemma:latest".to_string()),
+-                rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+-                openai: None,
+-                context_embed_enabled: Some(false),
+-                summary_threshold: None,
+-                retention_days: None,
+-            }),
+-            tools: Some(Value::Object(Map::new())),
+-            brains: None,
+-        }
+-        .apply_security_defaults()
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn from_store(db_path: &str) -> Result<Self> {
+         match crate::config_store::load_config(db_path) {
+             Ok(config) => Ok(config.apply_security_defaults()),
+             Err(store_err) => {
+                 if let Some(secret) = crate::vault::get_secret("app_config_json")? {
+                     if !secret.trim().is_empty() {

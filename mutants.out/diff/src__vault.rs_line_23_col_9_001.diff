@@ -1,0 +1,21 @@
+--- src/vault.rs
++++ replace CocoonFileSecretProvider::passphrase -> Result<String> with Ok("xyzzy".into())
+@@ -15,17 +15,17 @@
+     ) -> Result<()>;
+     fn get_secret(&self, name: &str) -> Result<Option<String>>;
+ }
+ 
+ struct CocoonFileSecretProvider;
+ 
+ impl CocoonFileSecretProvider {
+     fn passphrase(&self) -> Result<String> {
+-        crate::security::tpm_provider::resolve_dek_passphrase()
++        Ok("xyzzy".into()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn secret_path(&self, name: &str) -> PathBuf {
+         let sanitized = name
+             .chars()
+             .map(|ch| {
+                 if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
+                     ch

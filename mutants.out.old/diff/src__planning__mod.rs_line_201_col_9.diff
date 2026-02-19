@@ -1,0 +1,27 @@
+--- src/planning/mod.rs
++++ replace PlanStore::conn -> Result<SqlitePooledConn<'_>> with Ok(Default::default())
+@@ -193,23 +193,17 @@
+         let count = diesel::delete(plans::table.filter(plans::id.eq(id)))
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+         Ok(count > 0)
+     }
+ 
+     async fn conn(&self) -> Result<SqlitePooledConn<'_>> {
+-        let mut conn = self
+-            .pool
+-            .get()
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        crate::db::apply_sqlcipher_key_async(&mut conn).await?;
+-        Ok(conn)
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub fn resolve_plan_db_path(config: &serde_json::Value) -> Option<String> {
+     config
+         .get("tools")
+         .and_then(|v| v.get("planning"))
+         .and_then(|v| v.get("sqlite_path"))

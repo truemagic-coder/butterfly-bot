@@ -1,0 +1,82 @@
+--- src/daemon.rs
++++ replace <impl ScheduledJob for ScheduledTasksJob>::run -> Result<()> with Ok(())
+@@ -120,78 +120,17 @@
+         "scheduled_tasks"
+     }
+ 
+     fn interval(&self) -> Duration {
+         self.interval
+     }
+ 
+     async fn run(&self) -> Result<()> {
+-        let now = now_ts();
+-        let tasks = self.store.list_due(now, 32).await?;
+-        for task in tasks {
+-            let agent = self.agent.read().await.clone();
+-            let run_at = now_ts();
+-            let next_run_at = if let Some(interval) = task.interval_minutes {
+-                run_at + interval.max(1) * 60
+-            } else {
+-                run_at
+-            };
+-
+-            if task.interval_minutes.is_some() {
+-                let _ = self.store.mark_run(task.id, run_at, next_run_at).await;
+-            } else {
+-                let _ = self.store.complete_one_shot(task.id).await;
+-            }
+-
+-            let options = ProcessOptions {
+-                prompt: None,
+-                images: Vec::new(),
+-                output_format: OutputFormat::Text,
+-                image_detail: "auto".to_string(),
+-                json_schema: None,
+-            };
+-            let input = format!("Scheduled task '{}': {}", task.name, task.prompt);
+-            let result = agent
+-                .process(&task.user_id, UserInput::Text(input), options)
+-                .await;
+-
+-            let (status, payload): (String, serde_json::Value) = match result {
+-                Ok(ProcessResult::Text(text)) => (
+-                    "ok".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "output": text}),
+-                ),
+-                Ok(other) => (
+-                    "ok".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "output": format!("{other:?}")}),
+-                ),
+-                Err(err) => (
+-                    "error".to_string(),
+-                    json!({"task_id": task.id, "name": task.name, "error": err.to_string()}),
+-                ),
+-            };
+-
+-            let event = UiEvent {
+-                event_type: "tasks".to_string(),
+-                user_id: task.user_id.clone(),
+-                tool: "tasks".to_string(),
+-                status: status.clone(),
+-                payload: payload.clone(),
+-                timestamp: run_at,
+-            };
+-            let _ = self.ui_event_tx.send(event);
+-            let _ = write_tasks_audit_log(
+-                self.audit_log_path.as_deref(),
+-                run_at,
+-                &task,
+-                status.as_str(),
+-                payload,
+-            );
+-        }
+-        Ok(())
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[async_trait::async_trait]
+ impl ScheduledJob for WakeupJob {
+     fn name(&self) -> &str {
+         "wakeup"
+     }

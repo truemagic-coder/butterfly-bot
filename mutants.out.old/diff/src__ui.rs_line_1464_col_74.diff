@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace == with != in app_view
+@@ -1456,17 +1456,17 @@
+                                             .and_then(|v| v.as_str())
+                                             .unwrap_or("ok");
+                                         let event_user = value
+                                             .get("user_id")
+                                             .and_then(|v| v.as_str())
+                                             .unwrap_or_default();
+ 
+                                         // Always update boot readiness for boot/prompt/heartbeat events
+-                                        if (event_type == "boot" || tool == "prompt")
++                                        if (event_type == "boot" || tool != /* ~ changed by cargo-mutants ~ */ "prompt")
+                                             && status == "ok"
+                                         {
+                                             boot_prompt_ready.set(true);
+                                         }
+                                         if (event_type == "boot" || tool == "heartbeat")
+                                             && status == "ok"
+                                         {
+                                             boot_heartbeat_ready.set(true);

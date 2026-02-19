@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ delete ! in WasmRuntime::resolve_module_path
+@@ -521,17 +521,17 @@
+ 
+     fn resolve_module_path(tool_name: &str, config: &ToolSandboxConfig) -> String {
+         let default_path = Self::default_module_path(tool_name);
+         config
+             .wasm
+             .module
+             .as_deref()
+             .map(str::trim)
+-            .filter(|v| !v.is_empty())
++            .filter(|v|  /* ~ changed by cargo-mutants ~ */v.is_empty())
+             .map(|configured| {
+                 let configured_path = configured.to_string();
+                 let configured_file = Path::new(configured)
+                     .file_name()
+                     .and_then(|name| name.to_str())
+                     .unwrap_or_default();
+ 
+                 if configured_file == "butterfly_bot_wasm_tool.wasm" {

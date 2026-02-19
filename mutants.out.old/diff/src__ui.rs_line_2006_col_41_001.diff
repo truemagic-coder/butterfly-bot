@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace match guard !secret.trim().is_empty() with false in app_view
+@@ -1998,17 +1998,17 @@
+ 
+                 search_default_deny.set(default_deny);
+                 if !allowlist.is_empty() {
+                     search_network_allow.set(allowlist.join(", "));
+                 }
+                 network_allow_form.set(allowlist);
+ 
+                 match crate::vault::get_secret("github_pat") {
+-                    Ok(Some(secret)) if !secret.trim().is_empty() => {
++                    Ok(Some(secret)) if false /* ~ changed by cargo-mutants ~ */ => {
+                         github_pat_input.set(secret);
+                     }
+                     Ok(_) => github_pat_input.set(String::new()),
+                     Err(err) => {
+                         settings_error.set(format!("Vault error: {err}"));
+                         tools_loaded.set(true);
+                         return;
+                     }

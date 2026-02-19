@@ -1,0 +1,22 @@
+--- src/client.rs
++++ replace ButterflyBot::set_prompt_markdown with ()
+@@ -89,18 +89,17 @@
+     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
+         let agent_service = self.query_service.agent_service();
+         agent_service
+             .set_heartbeat_markdown(heartbeat_markdown)
+             .await;
+     }
+ 
+     pub async fn set_prompt_markdown(&self, prompt_markdown: Option<String>) {
+-        let agent_service = self.query_service.agent_service();
+-        agent_service.set_prompt_markdown(prompt_markdown).await;
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn register_tool(&self, tool: Arc<dyn Tool>) -> Result<bool> {
+         let agent_service = self.query_service.agent_service();
+         let registry = agent_service.tool_registry.clone();
+         if !registry.register_tool(tool.clone()).await {
+             return Ok(false);
+         }

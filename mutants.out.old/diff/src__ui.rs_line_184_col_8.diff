@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in run_chat_history_request
+@@ -176,17 +176,17 @@
+     let client = reqwest::Client::new();
+     let url = format!(
+         "{}/chat_history?user_id={}&limit={}",
+         daemon_url.trim_end_matches('/'),
+         user_id,
+         limit
+     );
+     let mut request = client.get(url);
+-    if !token.trim().is_empty() {
++    if  /* ~ changed by cargo-mutants ~ */token.trim().is_empty() {
+         request = request.header("authorization", format!("Bearer {token}"));
+     }
+     let response = request.send().await.map_err(|err| err.to_string())?;
+     if !response.status().is_success() {
+         let status = response.status();
+         let text = response
+             .text()
+             .await

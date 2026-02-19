@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace ButterflyBot::preload_context -> Result<()> with Ok(())
+@@ -78,17 +78,17 @@
+         limit: usize,
+     ) -> Result<Vec<String>> {
+         self.query_service
+             .search_memory(user_id, query, limit)
+             .await
+     }
+ 
+     pub async fn preload_context(&self, user_id: &str) -> Result<()> {
+-        self.query_service.preload_context(user_id).await
++        Ok(()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn set_heartbeat_markdown(&self, heartbeat_markdown: Option<String>) {
+         let agent_service = self.query_service.agent_service();
+         agent_service
+             .set_heartbeat_markdown(heartbeat_markdown)
+             .await;
+     }

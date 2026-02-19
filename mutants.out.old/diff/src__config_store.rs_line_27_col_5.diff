@@ -1,0 +1,24 @@
+--- src/config_store.rs
++++ replace open_conn -> Result<SqliteConnection> with Ok(Default::default())
+@@ -19,20 +19,17 @@
+     let path = Path::new(path);
+     if let Some(parent) = path.parent() {
+         std::fs::create_dir_all(parent).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     }
+     Ok(())
+ }
+ 
+ fn open_conn(db_path: &str) -> Result<SqliteConnection> {
+-    let mut conn = SqliteConnection::establish(db_path)
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+-    Ok(conn)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn ensure_table(conn: &mut SqliteConnection) -> Result<()> {
+     diesel::sql_query(
+         "CREATE TABLE IF NOT EXISTS app_config (
+             id INTEGER PRIMARY KEY,
+             config_json TEXT NOT NULL,
+             updated_at INTEGER NOT NULL

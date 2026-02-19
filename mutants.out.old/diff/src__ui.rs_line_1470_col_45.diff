@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace && with || in app_view
+@@ -1462,17 +1462,17 @@
+ 
+                                         // Always update boot readiness for boot/prompt/heartbeat events
+                                         if (event_type == "boot" || tool == "prompt")
+                                             && status == "ok"
+                                         {
+                                             boot_prompt_ready.set(true);
+                                         }
+                                         if (event_type == "boot" || tool == "heartbeat")
+-                                            && status == "ok"
++                                            || /* ~ changed by cargo-mutants ~ */ status == "ok"
+                                         {
+                                             boot_heartbeat_ready.set(true);
+                                         }
+                                         if *boot_prompt_ready.read() && *boot_heartbeat_ready.read()
+                                         {
+                                             boot_ready.set(true);
+                                             boot_status.set("Prompt + heartbeat ready".to_string());
+                                         }

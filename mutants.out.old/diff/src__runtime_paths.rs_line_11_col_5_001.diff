@@ -1,0 +1,25 @@
+--- src/runtime_paths.rs
++++ replace app_root_override -> Option<PathBuf> with Some(Default::default())
+@@ -3,21 +3,17 @@
+ use std::sync::{OnceLock, RwLock};
+ 
+ fn app_root_override_lock() -> &'static RwLock<Option<PathBuf>> {
+     static OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+     OVERRIDE.get_or_init(|| RwLock::new(None))
+ }
+ 
+ fn app_root_override() -> Option<PathBuf> {
+-    let lock = app_root_override_lock();
+-    match lock.read() {
+-        Ok(guard) => guard.clone(),
+-        Err(poisoned) => poisoned.into_inner().clone(),
+-    }
++    Some(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ pub(crate) fn set_app_root_override_for_tests(path: Option<PathBuf>) {
+     let lock = app_root_override_lock();
+     match lock.write() {
+         Ok(mut guard) => *guard = path,
+         Err(poisoned) => {

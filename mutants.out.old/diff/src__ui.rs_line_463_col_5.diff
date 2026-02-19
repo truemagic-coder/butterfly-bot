@@ -1,0 +1,23 @@
+--- src/ui.rs
++++ replace scroll_activity_after_render with ()
+@@ -455,19 +455,17 @@
+     scroll_chat_to_bottom().await;
+ }
+ 
+ async fn scroll_activity_to_bottom() {
+     let _ = eval("const el = document.getElementById('activity-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
+ }
+ 
+ async fn scroll_activity_after_render() {
+-    scroll_activity_to_bottom().await;
+-    sleep(Duration::from_millis(16)).await;
+-    scroll_activity_to_bottom().await;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[allow(dead_code)]
+ fn highlight_json_html(input: &str) -> String {
+     static SYNTAX_SET: once_cell::sync::Lazy<SyntaxSet> =
+         once_cell::sync::Lazy::new(SyntaxSet::load_defaults_newlines);
+     static THEMES: once_cell::sync::Lazy<ThemeSet> =
+         once_cell::sync::Lazy::new(ThemeSet::load_defaults);

@@ -1,0 +1,28 @@
+--- src/sandbox/mod.rs
++++ delete match arm "reminders" in SandboxSettings::default_capabilities_for_tool
+@@ -123,24 +123,17 @@
+             ],
+             "tasks" => vec![
+                 "kv.sqlite.tasks.schedule",
+                 "kv.sqlite.tasks.list",
+                 "kv.sqlite.tasks.enable",
+                 "kv.sqlite.tasks.disable",
+                 "kv.sqlite.tasks.delete",
+             ],
+-            "reminders" => vec![
+-                "kv.sqlite.reminders.create",
+-                "kv.sqlite.reminders.list",
+-                "kv.sqlite.reminders.complete",
+-                "kv.sqlite.reminders.delete",
+-                "kv.sqlite.reminders.snooze",
+-                "kv.sqlite.reminders.clear",
+-            ],
++             /* ~ changed by cargo-mutants ~ */
+             "planning" => vec![
+                 "kv.sqlite.planning.create",
+                 "kv.sqlite.planning.list",
+                 "kv.sqlite.planning.get",
+                 "kv.sqlite.planning.update",
+                 "kv.sqlite.planning.delete",
+             ],
+             "wakeup" => vec![

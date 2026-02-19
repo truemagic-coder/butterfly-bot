@@ -1,0 +1,17 @@
+--- src/tasks/mod.rs
++++ replace now_ts -> i64 with 0
+@@ -330,13 +330,10 @@
+         created_at: row.created_at,
+         updated_at: row.updated_at,
+         last_run_at: row.last_run_at,
+         next_run_at: row.next_run_at,
+     }
+ }
+ 
+ fn now_ts() -> i64 {
+-    SystemTime::now()
+-        .duration_since(UNIX_EPOCH)
+-        .unwrap_or_default()
+-        .as_secs() as i64
++    0 /* ~ changed by cargo-mutants ~ */
+ }

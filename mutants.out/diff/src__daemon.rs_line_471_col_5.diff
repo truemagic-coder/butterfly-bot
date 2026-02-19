@@ -1,0 +1,39 @@
+--- src/daemon.rs
++++ replace build_router -> Router with Default::default()
+@@ -463,35 +463,17 @@
+ #[derive(Serialize)]
+ struct FactoryResetConfigResponse {
+     status: String,
+     message: String,
+     config: Value,
+ }
+ 
+ pub fn build_router(state: AppState) -> Router {
+-    Router::new()
+-        .route("/health", get(health))
+-        .route("/doctor", post(doctor))
+-        .route("/security_audit", post(security_audit))
+-        .route("/process_text", post(process_text))
+-        .route("/process_text_stream", post(process_text_stream))
+-        .route("/chat_history", get(chat_history))
+-        .route("/clear_user_history", post(clear_user_history))
+-        .route("/memory_search", post(memory_search))
+-        .route("/preload_boot", post(preload_boot))
+-        .route("/reminder_stream", get(reminder_stream))
+-        .route("/ui_events", get(ui_events))
+-        .route("/factory_reset_config", post(factory_reset_config))
+-        .route("/reload_config", post(reload_config))
+-        .route("/signer/preview", post(signer_preview))
+-        .route("/signer/approve", post(signer_approve))
+-        .route("/signer/sign", post(signer_sign))
+-        .route("/signer/deny", post(signer_deny))
+-        .with_state(state)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn signer_preview(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Json(intent): Json<SigningIntent>,
+ ) -> impl IntoResponse {
+     if let Err(err) = authorize(&headers, &state.token) {

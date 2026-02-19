@@ -1,0 +1,33 @@
+--- src/config_store.rs
++++ replace load_config -> Result<Config> with Ok(Default::default())
+@@ -39,29 +39,17 @@
+         )",
+     )
+     .execute(conn)
+     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     Ok(())
+ }
+ 
+ pub fn load_config(db_path: &str) -> Result<Config> {
+-    ensure_parent_dir(db_path)?;
+-    let mut conn = open_conn(db_path)?;
+-    ensure_table(&mut conn)?;
+-
+-    let row: ConfigRow = diesel::sql_query("SELECT config_json FROM app_config WHERE id = 1")
+-        .get_result(&mut conn)
+-        .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+-
+-    let value: Value = serde_json::from_str(&row.config_json)
+-        .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+-    let config: Config =
+-        serde_json::from_value(value).map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+-    Ok(config)
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn save_config(db_path: &str, config: &Config) -> Result<()> {
+     ensure_parent_dir(db_path)?;
+     let mut conn = open_conn(db_path)?;
+     ensure_table(&mut conn)?;
+ 
+     let ts = SystemTime::now()

@@ -1,0 +1,63 @@
+--- src/config.rs
++++ replace MarkdownSource::from_json_value -> std::result::Result<Self, String> with Ok(Default::default())
+@@ -65,59 +65,17 @@
+                 url: trimmed.to_string(),
+             };
+         }
+         let markdown = fs::read_to_string(trimmed).unwrap_or_default();
+         Self::Database { markdown }
+     }
+ 
+     fn from_json_value(value: Value) -> std::result::Result<Self, String> {
+-        match value {
+-            Value::String(raw) => Ok(Self::from_legacy_string(raw)),
+-            Value::Object(map) => {
+-                if let Some(kind) = map.get("type").and_then(|v| v.as_str()) {
+-                    match kind {
+-                        "url" => {
+-                            let url = map
+-                                .get("url")
+-                                .and_then(|v| v.as_str())
+-                                .ok_or_else(|| "url source requires `url`".to_string())?;
+-                            Ok(Self::Url {
+-                                url: url.to_string(),
+-                            })
+-                        }
+-                        "database" => {
+-                            let markdown = map
+-                                .get("markdown")
+-                                .and_then(|v| v.as_str())
+-                                .unwrap_or_default();
+-                            Ok(Self::Database {
+-                                markdown: markdown.to_string(),
+-                            })
+-                        }
+-                        other => Err(format!("unsupported markdown source type: {other}")),
+-                    }
+-                } else if let Some(url) = map.get("url").and_then(|v| v.as_str()) {
+-                    Ok(Self::Url {
+-                        url: url.to_string(),
+-                    })
+-                } else if let Some(markdown) = map.get("markdown").and_then(|v| v.as_str()) {
+-                    Ok(Self::Database {
+-                        markdown: markdown.to_string(),
+-                    })
+-                } else {
+-                    Err(
+-                        "markdown source object must include `type` or (`url`/`markdown`)"
+-                            .to_string(),
+-                    )
+-                }
+-            }
+-            Value::Null => Err("markdown source cannot be null".to_string()),
+-            other => Err(format!("invalid markdown source: {other}")),
+-        }
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl<'de> Deserialize<'de> for MarkdownSource {
+     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+     where
+         D: Deserializer<'de>,
+     {

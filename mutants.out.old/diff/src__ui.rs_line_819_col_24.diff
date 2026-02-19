@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -811,17 +811,17 @@
+                     prompt: None,
+                 };
+ 
+                 let make_request = |client: &reqwest::Client,
+                                     url: &str,
+                                     token: &str,
+                                     body: &ProcessTextRequest| {
+                     let mut request = client.post(url);
+-                    if !token.trim().is_empty() {
++                    if  /* ~ changed by cargo-mutants ~ */token.trim().is_empty() {
+                         request = request.header("authorization", format!("Bearer {token}"));
+                     }
+                     request.json(body)
+                 };
+ 
+                 match make_request(&client, &url, &token, &body).send().await {
+                     Ok(response) => {
+                         let mut messages = messages.clone();

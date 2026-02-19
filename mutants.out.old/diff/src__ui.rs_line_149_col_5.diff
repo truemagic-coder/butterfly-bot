@@ -1,0 +1,39 @@
+--- src/ui.rs
++++ replace run_factory_reset_config_request -> Result<FactoryResetConfigResponse, String> with Ok(Default::default())
+@@ -141,35 +141,17 @@
+         .map_err(|err| err.to_string())
+ }
+ 
+ #[allow(dead_code)]
+ async fn run_factory_reset_config_request(
+     daemon_url: String,
+     token: String,
+ ) -> Result<FactoryResetConfigResponse, String> {
+-    let client = reqwest::Client::new();
+-    let url = format!("{}/factory_reset_config", daemon_url.trim_end_matches('/'));
+-    let mut request = client.post(url);
+-    if !token.trim().is_empty() {
+-        request = request.header("authorization", format!("Bearer {token}"));
+-    }
+-    let response = request.send().await.map_err(|err| err.to_string())?;
+-    if !response.status().is_success() {
+-        let status = response.status();
+-        let text = response
+-            .text()
+-            .await
+-            .unwrap_or_else(|_| "Unable to read response body".to_string());
+-        return Err(format!("HTTP {status}: {text}"));
+-    }
+-    response
+-        .json::<FactoryResetConfigResponse>()
+-        .await
+-        .map_err(|err| err.to_string())
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn run_chat_history_request(
+     daemon_url: String,
+     token: String,
+     user_id: String,
+     limit: usize,
+ ) -> Result<Vec<String>, String> {

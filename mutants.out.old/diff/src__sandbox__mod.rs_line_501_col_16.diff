@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ delete ! in WasmRuntime::candidate_wasm_roots
+@@ -493,17 +493,17 @@
+                 }
+             }
+         }
+ 
+         roots.push(PathBuf::from(".").join("wasm"));
+ 
+         let mut deduped = Vec::new();
+         for root in roots {
+-            if !deduped.contains(&root) {
++            if  /* ~ changed by cargo-mutants ~ */deduped.contains(&root) {
+                 deduped.push(root);
+             }
+         }
+         deduped
+     }
+ 
+     fn default_module_path(tool_name: &str) -> String {
+         let file_name = Self::module_filename(tool_name);

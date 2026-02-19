@@ -1,0 +1,27 @@
+--- src/main.rs
++++ replace split_model_name -> (String, Option<String>) with (String::new(), Some(String::new()))
+@@ -268,23 +268,17 @@
+         Err(butterfly_bot::error::ButterflyBotError::Runtime(format!(
+             "Failed to pull model '{model}'"
+         )))
+     }
+ }
+ 
+ #[cfg(not(test))]
+ fn split_model_name(model: &str) -> (String, Option<String>) {
+-    let mut parts = model.rsplitn(2, ':');
+-    let tag = parts.next().map(|v| v.to_string());
+-    let base = parts.next();
+-    match base {
+-        Some(base) if !base.is_empty() => (base.to_string(), tag),
+-        _ => (model.to_string(), None),
+-    }
++    (String::new(), Some(String::new())) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn model_matches(required: &str, installed: &str) -> bool {
+     let (req_base, req_tag) = split_model_name(required);
+     let (ins_base, ins_tag) = split_model_name(installed);
+     if req_base != ins_base {
+         return false;

@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace > with == in WasmRuntime::execute_sync
+@@ -677,17 +677,17 @@
+             )));
+         }
+ 
+         let entrypoint = Self::resolve_entrypoint(config);
+         let timeout_ms = config.wasm.timeout_ms.unwrap_or(0);
+         let fuel_limit = Self::resolve_fuel_limit(config);
+ 
+         let mut wasm_config = wasmtime::Config::new();
+-        if timeout_ms > 0 {
++        if timeout_ms == /* ~ changed by cargo-mutants ~ */ 0 {
+             wasm_config.epoch_interruption(true);
+         }
+         if fuel_limit.is_some() {
+             wasm_config.consume_fuel(true);
+         }
+ 
+         let engine = Engine::new(&wasm_config).map_err(|e| {
+             ButterflyBotError::Runtime(format!("Failed to initialize wasm engine: {e}"))

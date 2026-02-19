@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in ensure_ollama_models
+@@ -157,17 +157,17 @@
+     let Some(base_url) = &openai.base_url else {
+         return false;
+     };
+     is_ollama_local(base_url)
+ }
+ 
+ #[cfg(not(test))]
+ fn ensure_ollama_models(config: &Config) -> Result<()> {
+-    if !uses_local_ollama(config) {
++    if  /* ~ changed by cargo-mutants ~ */uses_local_ollama(config) {
+         return Ok(());
+     }
+     let Some(openai) = &config.openai else {
+         return Ok(());
+     };
+ 
+     let mut required = Vec::new();
+     if let Some(model) = &openai.model {

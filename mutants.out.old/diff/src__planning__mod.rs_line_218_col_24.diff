@@ -1,0 +1,21 @@
+--- src/planning/mod.rs
++++ delete ! in resolve_plan_db_path
+@@ -210,17 +210,17 @@
+ 
+ pub fn resolve_plan_db_path(config: &serde_json::Value) -> Option<String> {
+     config
+         .get("tools")
+         .and_then(|v| v.get("planning"))
+         .and_then(|v| v.get("sqlite_path"))
+         .and_then(|v| v.as_str())
+         .map(|v| v.trim().to_string())
+-        .filter(|path| !path.is_empty())
++        .filter(|path|  /* ~ changed by cargo-mutants ~ */path.is_empty())
+ }
+ 
+ pub fn default_plan_db_path() -> String {
+     crate::runtime_paths::default_db_path()
+ }
+ 
+ fn ensure_parent_dir(path: &str) -> Result<()> {
+     let path = Path::new(path);

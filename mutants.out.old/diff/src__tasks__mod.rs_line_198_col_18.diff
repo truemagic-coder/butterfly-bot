@@ -1,0 +1,21 @@
+--- src/tasks/mod.rs
++++ replace > with == in TaskStore::delete_task
+@@ -190,17 +190,17 @@
+     }
+ 
+     pub async fn delete_task(&self, id: i32) -> Result<bool> {
+         let mut conn = self.conn().await?;
+         let count = diesel::delete(scheduled_tasks::table.filter(scheduled_tasks::id.eq(id)))
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(count > 0)
++        Ok(count == /* ~ changed by cargo-mutants ~ */ 0)
+     }
+ 
+     pub async fn list_due(&self, now: i64, limit: usize) -> Result<Vec<ScheduledTask>> {
+         let mut conn = self.conn().await?;
+         let rows: Vec<TaskRow> = scheduled_tasks::table
+             .filter(scheduled_tasks::enabled.eq(true))
+             .filter(scheduled_tasks::next_run_at.le(now))
+             .order(scheduled_tasks::next_run_at.asc())

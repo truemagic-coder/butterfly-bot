@@ -1,0 +1,36 @@
+--- src/config.rs
++++ replace Config::from_store -> Result<Self> with Ok(Default::default())
+@@ -234,32 +234,17 @@
+             }),
+             tools: Some(Value::Object(Map::new())),
+             brains: None,
+         }
+         .apply_security_defaults()
+     }
+ 
+     pub fn from_store(db_path: &str) -> Result<Self> {
+-        match crate::config_store::load_config(db_path) {
+-            Ok(config) => Ok(config.apply_security_defaults()),
+-            Err(store_err) => {
+-                if let Some(secret) = crate::vault::get_secret("app_config_json")? {
+-                    if !secret.trim().is_empty() {
+-                        let value: Value = serde_json::from_str(&secret)
+-                            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+-                        let config: Config = serde_json::from_value(value)
+-                            .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
+-                        return Ok(config.apply_security_defaults());
+-                    }
+-                }
+-
+-                Err(store_err)
+-            }
+-        }
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn resolve_vault(mut self) -> Result<Self> {
+         if let Some(openai) = &mut self.openai {
+             if openai.api_key.is_none() {
+                 if let Some(secret) = crate::vault::get_secret("openai_api_key")? {
+                     openai.api_key = Some(secret);
+                 }

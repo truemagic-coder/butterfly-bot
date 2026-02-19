@@ -87,7 +87,7 @@ impl QueryService {
         let mut md5_hasher = Md5::new();
         md5_hasher.update(context_markdown.as_bytes());
         let md5_hash = format!("{:x}", md5_hasher.finalize());
-        if let Ok(Some(stored)) = vault::get_secret("context_md5") {
+        if let Some(stored) = vault::get_secret("context_md5")? {
             if stored == md5_hash {
                 let mut guard = self.context_cache.write().await;
                 if guard.is_none() {
@@ -112,7 +112,7 @@ impl QueryService {
                 .append_message(user_id, "context", &content)
                 .await?;
             *guard = Some(hash);
-            let _ = vault::set_secret("context_md5", &md5_hash);
+            vault::set_secret("context_md5", &md5_hash)?;
             info!(
                 "ensure_context_in_memory: imported context into memory (elapsed {:?})",
                 started.elapsed()

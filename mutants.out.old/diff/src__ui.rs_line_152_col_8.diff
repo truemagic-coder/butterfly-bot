@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in run_factory_reset_config_request
+@@ -144,17 +144,17 @@
+ #[allow(dead_code)]
+ async fn run_factory_reset_config_request(
+     daemon_url: String,
+     token: String,
+ ) -> Result<FactoryResetConfigResponse, String> {
+     let client = reqwest::Client::new();
+     let url = format!("{}/factory_reset_config", daemon_url.trim_end_matches('/'));
+     let mut request = client.post(url);
+-    if !token.trim().is_empty() {
++    if  /* ~ changed by cargo-mutants ~ */token.trim().is_empty() {
+         request = request.header("authorization", format!("Bearer {token}"));
+     }
+     let response = request.send().await.map_err(|err| err.to_string())?;
+     if !response.status().is_success() {
+         let status = response.status();
+         let text = response
+             .text()
+             .await

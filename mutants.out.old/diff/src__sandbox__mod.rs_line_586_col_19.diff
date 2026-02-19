@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace != with == in WasmRuntime::validate_module_binary
+@@ -578,17 +578,17 @@
+             .map_err(|e| ButterflyBotError::Runtime(format!("Failed to open wasm module: {e}")))?;
+         let mut header = [0u8; 4];
+         file.read_exact(&mut header).map_err(|e| {
+             ButterflyBotError::Runtime(format!(
+                 "Failed to read wasm module header for tool '{tool_name}' ({module_path}): {e}"
+             ))
+         })?;
+ 
+-        if header != Self::WASM_MAGIC {
++        if header == /* ~ changed by cargo-mutants ~ */ Self::WASM_MAGIC {
+             return Err(ButterflyBotError::Runtime(format!(
+                 "Invalid wasm module for tool '{tool_name}' at {module_path}: missing wasm magic header"
+             )));
+         }
+ 
+         let mut tail = Vec::new();
+         file.read_to_end(&mut tail).map_err(|e| {
+             ButterflyBotError::Runtime(format!(

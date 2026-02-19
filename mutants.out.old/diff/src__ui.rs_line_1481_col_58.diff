@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace && with || in app_view
+@@ -1473,17 +1473,17 @@
+                                         }
+                                         if *boot_prompt_ready.read() && *boot_heartbeat_ready.read()
+                                         {
+                                             boot_ready.set(true);
+                                             boot_status.set("Prompt + heartbeat ready".to_string());
+                                         }
+ 
+                                         let show_success = false;
+-                                        if !show_success && (status == "success" || status == "ok")
++                                        if !show_success || /* ~ changed by cargo-mutants ~ */ (status == "success" || status == "ok")
+                                         {
+                                             if event_type == "tool" {
+                                                 if event_user == "system" {
+                                                     continue;
+                                                 }
+                                                 if let Some(payload) = value.get("payload") {
+                                                     if payload.get("error").is_none()
+                                                         && is_empty_list_result(payload)

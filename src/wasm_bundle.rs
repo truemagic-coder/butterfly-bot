@@ -40,14 +40,6 @@ const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
     ),
 ];
 
-fn env_wasm_dir() -> Option<PathBuf> {
-    std::env::var("BUTTERFLY_BOT_WASM_DIR")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 fn write_module_if_needed(root: &Path, file_name: &str, content: &[u8]) -> Result<()> {
     let path = root.join(file_name);
 
@@ -100,12 +92,6 @@ fn provision_into_dir(wasm_dir: &Path) -> Result<()> {
 }
 
 pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
-    if let Some(wasm_dir) = env_wasm_dir() {
-        provision_into_dir(&wasm_dir)?;
-        std::env::set_var("BUTTERFLY_BOT_WASM_DIR", &wasm_dir);
-        return Ok(wasm_dir);
-    }
-
     let mut tried = Vec::new();
     let mut last_err = None;
     let candidates = crate::runtime_paths::default_wasm_dir_candidates();
@@ -114,7 +100,6 @@ pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
         tried.push(wasm_dir.to_string_lossy().to_string());
         match provision_into_dir(&wasm_dir) {
             Ok(()) => {
-                std::env::set_var("BUTTERFLY_BOT_WASM_DIR", &wasm_dir);
                 return Ok(wasm_dir);
             }
             Err(err) => {

@@ -1,0 +1,24 @@
+--- src/ui.rs
++++ replace now_unix_ts -> i64 with 1
+@@ -279,20 +279,17 @@
+     list.push(message);
+     if list.len() > max_len {
+         let overflow = list.len() - max_len;
+         list.drain(0..overflow);
+     }
+ }
+ 
+ fn now_unix_ts() -> i64 {
+-    std::time::SystemTime::now()
+-        .duration_since(std::time::UNIX_EPOCH)
+-        .unwrap_or_default()
+-        .as_secs() as i64
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn format_local_time(ts: i64) -> String {
+     let dt = OffsetDateTime::from_unix_timestamp(ts)
+         .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH + time::Duration::seconds(ts.max(0)));
+     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+     let local = dt.to_offset(local_offset);
+     local

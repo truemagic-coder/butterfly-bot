@@ -1,0 +1,21 @@
+--- src/security/cocoon_store.rs
++++ replace != with == in unwrap_envelope
+@@ -38,17 +38,17 @@
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has unsupported envelope version {}",
+             path.to_string_lossy(),
+             version
+         )));
+     }
+ 
+     let cipher = raw[5];
+-    if cipher != CIPHER_CHA_CHA20_POLY1305 {
++    if cipher == /* ~ changed by cargo-mutants ~ */ CIPHER_CHA_CHA20_POLY1305 {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has unsupported cipher id {}",
+             path.to_string_lossy(),
+             cipher
+         )));
+     }
+ 
+     Ok(raw[6..].to_vec())

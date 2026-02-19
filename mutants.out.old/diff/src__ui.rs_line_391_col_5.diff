@@ -1,0 +1,40 @@
+--- src/ui.rs
++++ replace save_markdown_source_to_store -> Result<(), String> with Ok(())
+@@ -383,36 +383,17 @@
+     Err("Only URL markdown sources are supported for external loading.".to_string())
+ }
+ 
+ async fn save_markdown_source_to_store(
+     db_path: String,
+     target: &'static str,
+     source: crate::config::MarkdownSource,
+ ) -> Result<(), String> {
+-    let mut config = crate::config::Config::from_store(&db_path).map_err(|err| err.to_string())?;
+-    match target {
+-        "heartbeat" => config.heartbeat_source = source,
+-        "prompt" => config.prompt_source = source,
+-        _ => return Err("Unknown markdown source target".to_string()),
+-    }
+-
+-    let pretty = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
+-
+-    let db_path_for_save = db_path.clone();
+-    let config_for_save = config.clone();
+-    let save_result = tokio::task::spawn_blocking(move || {
+-        crate::config_store::save_config(&db_path_for_save, &config_for_save)
+-    })
+-    .await
+-    .map_err(|err| err.to_string())?;
+-
+-    save_result.map_err(|err| err.to_string())?;
+-    crate::vault::set_secret("app_config_json", &pretty).map_err(|err| err.to_string())?;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn markdown_to_html(input: &str) -> String {
+     let mut options = Options::empty();
+     options.insert(Options::ENABLE_TABLES);
+     options.insert(Options::ENABLE_STRIKETHROUGH);
+     options.insert(Options::ENABLE_TASKLISTS);
+     options.insert(Options::ENABLE_FOOTNOTES);

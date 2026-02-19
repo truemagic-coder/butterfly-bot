@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace + with * in app_view
+@@ -766,17 +766,17 @@
+ 
+                 let user_message_id = {
+                     let id = next_id();
+                     next_id.set(id + 1);
+                     id
+                 };
+                 let bot_message_id = {
+                     let id = next_id();
+-                    next_id.set(id + 1);
++                    next_id.set(id * /* ~ changed by cargo-mutants ~ */ 1);
+                     id
+                 };
+                 let timestamp = now_unix_ts();
+ 
+                 {
+                     let mut list = messages.write();
+                     push_bounded_message(
+                         &mut list,

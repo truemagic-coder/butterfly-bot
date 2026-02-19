@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in pull_ollama_model
+@@ -249,17 +249,17 @@
+ 
+ #[cfg(not(test))]
+ fn pull_ollama_model(model: &str) -> Result<()> {
+     let status = Command::new("ollama")
+         .arg("pull")
+         .arg(model)
+         .status()
+         .map_err(|e| {
+-            if e.kind() == ErrorKind::NotFound {
++            if e.kind() != /* ~ changed by cargo-mutants ~ */ ErrorKind::NotFound {
+                 butterfly_bot::error::ButterflyBotError::Runtime(
+                     "ollama binary not found in runtime environment".to_string(),
+                 )
+             } else {
+                 butterfly_bot::error::ButterflyBotError::Runtime(e.to_string())
+             }
+         })?;
+     if status.success() {

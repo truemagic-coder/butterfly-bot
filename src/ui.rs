@@ -14,7 +14,6 @@ use pulldown_cmark::{html, Options, Parser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::env;
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use syntect::easy::HighlightLines;
@@ -497,25 +496,62 @@ fn highlight_json_html(input: &str) -> String {
 }
 
 pub fn launch_ui() {
+    launch_ui_with_config(UiLaunchConfig::default());
+}
+
+#[derive(Clone)]
+pub struct UiLaunchConfig {
+    pub db_path: String,
+    pub daemon_url: String,
+    pub user_id: String,
+}
+
+impl Default for UiLaunchConfig {
+    fn default() -> Self {
+        Self {
+            db_path: crate::runtime_paths::default_db_path(),
+            daemon_url: "http://127.0.0.1:7878".to_string(),
+            user_id: "user".to_string(),
+        }
+    }
+}
+
+fn ui_launch_config_lock() -> &'static Mutex<UiLaunchConfig> {
+    static CONFIG: OnceLock<Mutex<UiLaunchConfig>> = OnceLock::new();
+    CONFIG.get_or_init(|| Mutex::new(UiLaunchConfig::default()))
+}
+
+fn set_ui_launch_config(config: UiLaunchConfig) {
+    let lock = ui_launch_config_lock();
+    match lock.lock() {
+        Ok(mut guard) => *guard = config,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = config;
+        }
+    }
+}
+
+fn ui_launch_config() -> UiLaunchConfig {
+    let lock = ui_launch_config_lock();
+    match lock.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
+pub fn launch_ui_with_config(config: UiLaunchConfig) {
+    set_ui_launch_config(config);
     force_dbusrs();
     launch(app_view);
 }
 
 fn stream_timeout_duration() -> Duration {
-    let default_secs = 180u64;
-    let value = std::env::var("BUTTERFLY_BOT_STREAM_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v > 0);
-    Duration::from_secs(value.unwrap_or(default_secs))
+    Duration::from_secs(180)
 }
 
 #[cfg(target_os = "linux")]
-fn force_dbusrs() {
-    if std::env::var("DBUSRS").is_err() {
-        std::env::set_var("DBUSRS", "1");
-    }
-}
+fn force_dbusrs() {}
 
 #[cfg(not(target_os = "linux"))]
 fn force_dbusrs() {}
@@ -531,10 +567,6 @@ fn daemon_control() -> &'static Mutex<Option<DaemonControl>> {
 }
 
 fn start_local_daemon() -> Result<(), String> {
-    if env::var("BUTTERFLY_BOT_DISABLE_DAEMON").is_ok() {
-        return Err("Daemon disabled by BUTTERFLY_BOT_DISABLE_DAEMON".to_string());
-    }
-
     let control = daemon_control();
     let mut guard = control
         .lock()
@@ -543,11 +575,10 @@ fn start_local_daemon() -> Result<(), String> {
         return Ok(());
     }
 
-    let daemon_url =
-        env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
+    let config = ui_launch_config();
+    let daemon_url = config.daemon_url;
     let (host, port) = parse_daemon_address(&daemon_url);
-    let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
+    let db_path = config.db_path;
     let token = env_auth_token();
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -622,16 +653,11 @@ fn parse_daemon_address(daemon: &str) -> (String, u16) {
 }
 
 fn app_view() -> Element {
-    let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
-    let daemon_url = use_signal(|| {
-        let raw = env::var("BUTTERFLY_BOT_DAEMON")
-            .unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
-        normalize_daemon_url(&raw)
-    });
+    let launch_config = ui_launch_config();
+    let db_path = launch_config.db_path;
+    let daemon_url = use_signal(|| normalize_daemon_url(&launch_config.daemon_url));
     let token = use_signal(env_auth_token);
-    let user_id =
-        use_signal(|| env::var("BUTTERFLY_BOT_USER_ID").unwrap_or_else(|_| "user".to_string()));
+    let user_id = use_signal(|| launch_config.user_id.clone());
     let input = use_signal(String::new);
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
@@ -1266,9 +1292,7 @@ fn app_view() -> Element {
                     let response = match request.send().await {
                         Ok(resp) => resp,
                         Err(_) => {
-                            if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                                || cfg!(debug_assertions)
-                            {
+                            if cfg!(debug_assertions) {
                                 eprintln!("Reminder stream request failed (daemon unreachable?)");
                             }
                             sleep(Duration::from_secs(2)).await;
@@ -1276,9 +1300,7 @@ fn app_view() -> Element {
                         }
                     };
                     if !response.status().is_success() {
-                        if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                            || cfg!(debug_assertions)
-                        {
+                        if cfg!(debug_assertions) {
                             eprintln!("Reminder stream error: HTTP {}", response.status());
                         }
                         sleep(Duration::from_secs(2)).await;
@@ -1455,9 +1477,7 @@ fn app_view() -> Element {
                                             boot_status.set("Prompt + heartbeat ready".to_string());
                                         }
 
-                                        let show_success =
-                                            std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS")
-                                                .is_ok();
+                                        let show_success = false;
                                         if !show_success && (status == "success" || status == "ok")
                                         {
                                             if event_type == "tool" {
@@ -1644,6 +1664,8 @@ fn app_view() -> Element {
                     }
                     Err(err) => {
                         settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
                     }
                 }
 
@@ -1985,7 +2007,11 @@ fn app_view() -> Element {
                         github_pat_input.set(secret);
                     }
                     Ok(_) => github_pat_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 match crate::vault::get_secret("zapier_token") {
@@ -1993,7 +2019,11 @@ fn app_view() -> Element {
                         zapier_token_input.set(secret);
                     }
                     Ok(_) => zapier_token_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 match crate::vault::get_secret("coding_openai_api_key") {
@@ -2001,7 +2031,11 @@ fn app_view() -> Element {
                         coding_api_key_input.set(secret);
                     }
                     Ok(_) => coding_api_key_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 let provider_name = search_provider();
@@ -2028,7 +2062,9 @@ fn app_view() -> Element {
                         search_api_key_status.set("Not set".to_string());
                     }
                     Err(err) => {
-                        search_api_key_status.set(format!("Vault error: {err}"));
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
                     }
                 }
 
@@ -3397,11 +3433,20 @@ fn app_view() -> Element {
                                                     _ => "search_internet_openai_api_key",
                                                 };
                                                 let mut search_api_key_input = search_api_key_input.clone();
+                                                let mut search_api_key_status = search_api_key_status.clone();
                                                 match crate::vault::get_secret(secret_name) {
                                                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                                                         search_api_key_input.set(secret);
+                                                        search_api_key_status.set("Stored in vault".to_string());
                                                     }
-                                                    _ => search_api_key_input.set(String::new()),
+                                                    Ok(_) => {
+                                                        search_api_key_input.set(String::new());
+                                                        search_api_key_status.set("Not set".to_string());
+                                                    }
+                                                    Err(err) => {
+                                                        search_api_key_input.set(String::new());
+                                                        search_api_key_status.set(format!("Vault error: {err}"));
+                                                    }
                                                 }
                                             },
                                             option {

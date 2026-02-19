@@ -58,6 +58,19 @@ lru = "0.16.3"
 rmcp = { version = "0.16.0", features = ["client", "transport-streamable-http-client-reqwest", "reqwest"] }
 libsqlite3-sys = { version = "0.35", features = ["bundled-sqlcipher"] }
 wasmtime = "41.0.3"
+cocoon = "0.4"
+directories = "6.0.0"
+chacha20poly1305 = "0.10"
+libc = "0.2.182"
+rust-fsm = "0.8"
+zeroize = "1.8"
+x402-rs = "0.12.5"
+bs58 = "0.5"
+ed25519-dalek = "2.2"
+solana-sdk = "4.0.1"
+solana-system-interface = { version = "3.1.0", features = ["wincode"] }
+solana-compute-budget-interface = "3.0.0"
+wincode = "0.4.4"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6", features = ["sync-secret-service"] }

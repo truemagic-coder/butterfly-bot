@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace & with ^ in WasmRuntime::split_ptr_len
+@@ -621,17 +621,17 @@
+         }
+ 
+         Ok(())
+     }
+ 
+     fn split_ptr_len(packed: i64) -> Result<(i32, i32)> {
+         let raw = packed as u64;
+         let ptr = (raw >> 32) as u32;
+-        let len = (raw & 0xFFFF_FFFF) as u32;
++        let len = (raw ^ /* ~ changed by cargo-mutants ~ */ 0xFFFF_FFFF) as u32;
+         let ptr = i32::try_from(ptr).map_err(|_| {
+             ButterflyBotError::Runtime("Invalid output pointer from wasm".to_string())
+         })?;
+         let len = i32::try_from(len).map_err(|_| {
+             ButterflyBotError::Runtime("Invalid output length from wasm".to_string())
+         })?;
+         Ok((ptr, len))
+     }

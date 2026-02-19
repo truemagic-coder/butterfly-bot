@@ -1,0 +1,31 @@
+--- src/sandbox/mod.rs
++++ replace SandboxSettings::execution_plan -> ExecutionPlan with Default::default()
+@@ -92,27 +92,17 @@
+ 
+         match candidate {
+             Some(value) => serde_json::from_value(value).unwrap_or_default(),
+             None => SandboxSettings::default(),
+         }
+     }
+ 
+     pub fn execution_plan(&self, tool_name: &str) -> ExecutionPlan {
+-        let mut tool_config = self.tools.get(tool_name).cloned().unwrap_or_default();
+-        if tool_config.capabilities.allow.is_empty() {
+-            tool_config.capabilities.allow = Self::default_capabilities_for_tool(tool_name);
+-        }
+-        let reason = "wasm_only_policy".to_string();
+-
+-        ExecutionPlan {
+-            runtime: ToolRuntime::Wasm,
+-            reason,
+-            tool_config,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn default_capabilities_for_tool(tool_name: &str) -> Vec<String> {
+         match tool_name {
+             "todo" => vec![
+                 "kv.sqlite.todo.create",
+                 "kv.sqlite.todo.create_many",
+                 "kv.sqlite.todo.list",

@@ -1,0 +1,21 @@
+--- src/todo/mod.rs
++++ delete match arm Some("completed") in TodoStatus::from_option
+@@ -64,17 +64,17 @@
+     Open,
+     Completed,
+     All,
+ }
+ 
+ impl TodoStatus {
+     pub fn from_option(value: Option<&str>) -> Self {
+         match value {
+-            Some("completed") => Self::Completed,
++             /* ~ changed by cargo-mutants ~ */
+             Some("open") => Self::Open,
+             _ => Self::All,
+         }
+     }
+ }
+ 
+ pub struct TodoStore {
+     pool: SqlitePool,

@@ -1,0 +1,33 @@
+--- src/db.rs
++++ replace apply_sqlcipher_key_async -> Result<()> with Ok(())
+@@ -71,29 +71,17 @@
+     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     tune_sqlcipher_log_level_sync(conn);
+     Ok(())
+ }
+ 
+ pub async fn apply_sqlcipher_key_async(
+     conn: &mut SyncConnectionWrapper<SqliteConnection>,
+ ) -> Result<()> {
+-    diesel_async::RunQueryDsl::execute(diesel::sql_query("PRAGMA busy_timeout = 5000"), conn)
+-        .await
+-        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    let key = get_sqlcipher_key()?;
+-    let escaped_key = key.replace('\'', "''");
+-    diesel_async::RunQueryDsl::execute(
+-        diesel::sql_query(format!("PRAGMA key = '{escaped_key}'")),
+-        conn,
+-    )
+-    .await
+-    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    tune_sqlcipher_log_level_async(conn).await;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use std::sync::{Mutex, OnceLock};
+ 
+     fn env_test_lock() -> &'static Mutex<()> {

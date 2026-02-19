@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in ensure_ollama_models
+@@ -199,17 +199,17 @@
+     let installed = match list_ollama_models() {
+         Ok(models) => models,
+         Err(err) => {
+             tracing::warn!("Skipping Ollama model ensure: {err}");
+             return Ok(());
+         }
+     };
+     for model in required {
+-        if !installed.iter().any(|name| model_matches(&model, name)) {
++        if  /* ~ changed by cargo-mutants ~ */installed.iter().any(|name| model_matches(&model, name)) {
+             println!("Loading Ollama model '{model}'...");
+             if let Err(err) = pull_ollama_model(&model) {
+                 tracing::warn!("Could not load Ollama model '{model}': {err}");
+             }
+         }
+     }
+ 
+     Ok(())

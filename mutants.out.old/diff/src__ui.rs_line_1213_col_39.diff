@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace || with && in app_view
+@@ -1205,17 +1205,17 @@
+ 
+             spawn(async move {
+                 let history =
+                     match run_chat_history_request(daemon_url(), token(), user_id(), 40).await {
+                         Ok(history) => history,
+                         Err(_) => return,
+                     };
+ 
+-                if history.is_empty() || !messages.read().is_empty() {
++                if history.is_empty() && /* ~ changed by cargo-mutants ~ */ !messages.read().is_empty() {
+                     return;
+                 }
+ 
+                 let parsed = history
+                     .into_iter()
+                     .filter_map(|line| parse_history_entry(&line))
+                     .collect::<Vec<_>>();
+ 

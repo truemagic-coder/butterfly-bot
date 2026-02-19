@@ -1,0 +1,25 @@
+--- src/security/tpm_provider.rs
++++ replace debug_tpm_available_override -> Option<bool> with None
+@@ -50,21 +50,17 @@
+             let mut guard = poisoned.into_inner();
+             *guard = value;
+         }
+     }
+ }
+ 
+ #[cfg(all(debug_assertions, not(test)))]
+ fn debug_tpm_available_override() -> Option<bool> {
+-    let lock = debug_available_override_lock();
+-    match lock.read() {
+-        Ok(guard) => *guard,
+-        Err(poisoned) => *poisoned.into_inner(),
+-    }
++    None /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(all(debug_assertions, not(test)))]
+ fn debug_dek_override() -> Option<String> {
+     let lock = debug_dek_override_lock();
+     match lock.read() {
+         Ok(guard) => guard.clone(),
+         Err(poisoned) => poisoned.into_inner().clone(),

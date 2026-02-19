@@ -1,0 +1,111 @@
+--- src/daemon.rs
++++ replace run_autonomy_tick with ()
+@@ -1808,107 +1808,17 @@
+ }
+ 
+ async fn run_autonomy_tick(
+     agent: Arc<crate::client::ButterflyBot>,
+     ui_event_tx: broadcast::Sender<UiEvent>,
+     user_id: String,
+     source: &str,
+ ) {
+-    let run_at = now_ts();
+-    if let Some(remaining) = try_begin_autonomy_tick(run_at) {
+-        let _ = ui_event_tx.send(UiEvent {
+-            event_type: "autonomy".to_string(),
+-            user_id,
+-            tool: "heartbeat".to_string(),
+-            status: "skipped".to_string(),
+-            payload: json!({
+-                "source": source,
+-                "reason": "cooldown",
+-                "cooldown_remaining_seconds": remaining,
+-            }),
+-            timestamp: run_at,
+-        });
+-        return;
+-    }
+-
+-    let _ = ui_event_tx.send(UiEvent {
+-        event_type: "autonomy".to_string(),
+-        user_id: user_id.clone(),
+-        tool: "heartbeat".to_string(),
+-        status: "started".to_string(),
+-        payload: json!({"source": source}),
+-        timestamp: run_at,
+-    });
+-
+-    let options = ProcessOptions {
+-        prompt: Some(
+-            "AUTONOMY MODE: Heartbeat tick.\n\
+-    Run autonomous checks/actions as needed using tools.\n\
+-    Output requirements:\n\
+-    - Return ONLY one short final status line (max 120 chars).\n\
+-    - Do NOT include Thought, Plan, Action, Observation, Summary, or Reasoning sections.\n\
+-    - Do NOT dump tool call details.\n\
+-    - Good outputs: 'No-op', 'Processed 2 due tasks', 'Updated plans/todos; no urgent actions'."
+-                .to_string(),
+-        ),
+-        images: Vec::new(),
+-        output_format: OutputFormat::Text,
+-        image_detail: "auto".to_string(),
+-        json_schema: None,
+-    };
+-    let result = tokio::time::timeout(Duration::from_secs(120), async {
+-        agent
+-            .process(
+-                &user_id,
+-                UserInput::Text("Autonomous heartbeat tick".to_string()),
+-                options,
+-            )
+-            .await
+-    })
+-    .await;
+-
+-    let (status, payload): (String, serde_json::Value) = match result {
+-        Ok(Ok(ProcessResult::Text(text))) => {
+-            let trimmed = text.trim();
+-            let status = if trimmed.is_empty()
+-                || trimmed.eq_ignore_ascii_case("no-op")
+-                || trimmed.eq_ignore_ascii_case("noop")
+-            {
+-                "no-op"
+-            } else {
+-                "ok"
+-            };
+-            (
+-                status.to_string(),
+-                json!({"output": text, "source": source}),
+-            )
+-        }
+-        Ok(Ok(_)) => (
+-            "error".to_string(),
+-            json!({"error": "Unexpected non-text response", "source": source}),
+-        ),
+-        Ok(Err(err)) => (
+-            "error".to_string(),
+-            json!({"error": err.to_string(), "source": source}),
+-        ),
+-        Err(_) => (
+-            "error".to_string(),
+-            json!({"error": "autonomy timeout", "source": source}),
+-        ),
+-    };
+-
+-    let _ = ui_event_tx.send(UiEvent {
+-        event_type: "autonomy".to_string(),
+-        user_id,
+-        tool: "heartbeat".to_string(),
+-        status,
+-        payload,
+-        timestamp: now_ts(),
+-    });
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn now_ts() -> i64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_secs() as i64
+ }

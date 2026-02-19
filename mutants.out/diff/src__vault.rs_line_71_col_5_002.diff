@@ -1,0 +1,21 @@
+--- src/vault.rs
++++ replace provider_lock -> &'static RwLock<Arc<dyn SecretProvider>> with Box::leak(Box::new(RwLock::new(Arc::new(Default::default()))))
+@@ -63,17 +63,17 @@
+ 
+ fn build_default_provider() -> Arc<dyn SecretProvider> {
+     Arc::new(CocoonFileSecretProvider)
+ }
+ 
+ static SECRET_PROVIDER: OnceLock<RwLock<Arc<dyn SecretProvider>>> = OnceLock::new();
+ 
+ fn provider_lock() -> &'static RwLock<Arc<dyn SecretProvider>> {
+-    SECRET_PROVIDER.get_or_init(|| RwLock::new(build_default_provider()))
++    Box::leak(Box::new(RwLock::new(Arc::new(Default::default())))) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn active_provider() -> Arc<dyn SecretProvider> {
+     match provider_lock().read() {
+         Ok(guard) => Arc::clone(&guard),
+         Err(poisoned) => Arc::clone(poisoned.get_ref()),
+     }
+ }

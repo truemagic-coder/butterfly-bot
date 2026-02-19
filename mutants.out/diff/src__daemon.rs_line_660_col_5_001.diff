@@ -1,0 +1,26 @@
+--- src/daemon.rs
++++ replace severity_rank -> u8 with 1
+@@ -652,22 +652,17 @@
+         status: status.to_string(),
+         message,
+         fix_hint: fix_hint.map(str::to_string),
+         auto_fixable,
+     }
+ }
+ 
+ fn severity_rank(severity: &str) -> u8 {
+-    match severity {
+-        "critical" => 4,
+-        "high" => 3,
+-        "medium" => 2,
+-        _ => 1,
+-    }
++    1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn highest_severity(findings: &[SecurityAuditFinding]) -> String {
+     findings
+         .iter()
+         .filter(|finding| finding.status != "pass")
+         .max_by_key(|finding| severity_rank(&finding.severity))
+         .map(|finding| finding.severity.clone())

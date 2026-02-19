@@ -1,0 +1,19 @@
+--- src/sandbox/mod.rs
++++ replace WasmRuntime::execute -> Result<Value> with Ok(Default::default())
+@@ -807,15 +807,11 @@
+     }
+ 
+     pub async fn execute(
+         &self,
+         tool_name: &str,
+         config: &ToolSandboxConfig,
+         params: Value,
+     ) -> Result<Value> {
+-        let tool_name = tool_name.to_string();
+-        let config = config.clone();
+-        tokio::task::spawn_blocking(move || Self::execute_sync(&tool_name, &config, params))
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(format!("WASM task join error: {e}")))?
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ }

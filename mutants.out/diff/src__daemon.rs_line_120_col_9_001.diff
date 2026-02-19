@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace <impl ScheduledJob for ScheduledTasksJob>::name -> &str with "xyzzy"
+@@ -112,17 +112,17 @@
+     interval: Duration,
+     ui_event_tx: broadcast::Sender<UiEvent>,
+     audit_log_path: Option<String>,
+ }
+ 
+ #[async_trait::async_trait]
+ impl ScheduledJob for ScheduledTasksJob {
+     fn name(&self) -> &str {
+-        "scheduled_tasks"
++        "xyzzy" /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn interval(&self) -> Duration {
+         self.interval
+     }
+ 
+     async fn run(&self) -> Result<()> {
+         let now = now_ts();

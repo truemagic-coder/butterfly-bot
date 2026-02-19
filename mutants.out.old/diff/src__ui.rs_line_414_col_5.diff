@@ -1,0 +1,30 @@
+--- src/ui.rs
++++ replace markdown_to_html -> String with String::new()
+@@ -406,26 +406,17 @@
+     .map_err(|err| err.to_string())?;
+ 
+     save_result.map_err(|err| err.to_string())?;
+     crate::vault::set_secret("app_config_json", &pretty).map_err(|err| err.to_string())?;
+     Ok(())
+ }
+ 
+ fn markdown_to_html(input: &str) -> String {
+-    let mut options = Options::empty();
+-    options.insert(Options::ENABLE_TABLES);
+-    options.insert(Options::ENABLE_STRIKETHROUGH);
+-    options.insert(Options::ENABLE_TASKLISTS);
+-    options.insert(Options::ENABLE_FOOTNOTES);
+-    options.insert(Options::ENABLE_SMART_PUNCTUATION);
+-    let parser = Parser::new_ext(input, options);
+-    let mut output = String::new();
+-    html::push_html(&mut output, parser);
+-    output
++    String::new() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn is_empty_list_result(payload: &Value) -> bool {
+     let action = payload
+         .get("args")
+         .and_then(|args| args.get("action"))
+         .and_then(|value| value.as_str())
+         .unwrap_or_default();

@@ -1,0 +1,33 @@
+--- src/ui.rs
++++ replace parse_daemon_address -> (String, u16) with ("xyzzy".into(), 0)
+@@ -632,29 +632,17 @@
+     } else {
+         ("http://", trimmed)
+     };
+     let host_port = rest.split('/').next().unwrap_or("127.0.0.1:7878");
+     format!("{scheme}{host_port}")
+ }
+ 
+ fn parse_daemon_address(daemon: &str) -> (String, u16) {
+-    let trimmed = daemon.trim();
+-    let without_scheme = trimmed
+-        .strip_prefix("http://")
+-        .or_else(|| trimmed.strip_prefix("https://"))
+-        .unwrap_or(trimmed);
+-    let host_port = without_scheme.split('/').next().unwrap_or("127.0.0.1:7878");
+-    let mut parts = host_port.splitn(2, ':');
+-    let host = parts.next().unwrap_or("127.0.0.1");
+-    let port = parts
+-        .next()
+-        .and_then(|value| value.parse::<u16>().ok())
+-        .unwrap_or(7878);
+-    (host.to_string(), port)
++    ("xyzzy".into(), 0) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn app_view() -> Element {
+     let launch_config = ui_launch_config();
+     let db_path = launch_config.db_path;
+     let daemon_url = use_signal(|| normalize_daemon_url(&launch_config.daemon_url));
+     let token = use_signal(env_auth_token);
+     let user_id = use_signal(|| launch_config.user_id.clone());

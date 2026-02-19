@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace || with && in run_autonomy_tick
+@@ -1865,17 +1865,17 @@
+             .await
+     })
+     .await;
+ 
+     let (status, payload): (String, serde_json::Value) = match result {
+         Ok(Ok(ProcessResult::Text(text))) => {
+             let trimmed = text.trim();
+             let status = if trimmed.is_empty()
+-                || trimmed.eq_ignore_ascii_case("no-op")
++                && /* ~ changed by cargo-mutants ~ */ trimmed.eq_ignore_ascii_case("no-op")
+                 || trimmed.eq_ignore_ascii_case("noop")
+             {
+                 "no-op"
+             } else {
+                 "ok"
+             };
+             (
+                 status.to_string(),

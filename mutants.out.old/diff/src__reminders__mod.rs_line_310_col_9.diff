@@ -1,0 +1,23 @@
+--- src/reminders/mod.rs
++++ replace ReminderStatus::from_option -> Self with Default::default()
+@@ -302,19 +302,17 @@
+ pub enum ReminderStatus {
+     Open,
+     Completed,
+     All,
+ }
+ 
+ impl ReminderStatus {
+     pub fn from_option(value: Option<&str>) -> Self {
+-        value
+-            .and_then(|raw| raw.parse().ok())
+-            .unwrap_or(ReminderStatus::Open)
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ impl std::str::FromStr for ReminderStatus {
+     type Err = ();
+ 
+     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+         Ok(match value {

@@ -1,0 +1,30 @@
+--- src/config_store.rs
++++ replace ensure_table -> Result<()> with Ok(())
+@@ -26,26 +26,17 @@
+ fn open_conn(db_path: &str) -> Result<SqliteConnection> {
+     let mut conn = SqliteConnection::establish(db_path)
+         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+     Ok(conn)
+ }
+ 
+ fn ensure_table(conn: &mut SqliteConnection) -> Result<()> {
+-    diesel::sql_query(
+-        "CREATE TABLE IF NOT EXISTS app_config (
+-            id INTEGER PRIMARY KEY,
+-            config_json TEXT NOT NULL,
+-            updated_at INTEGER NOT NULL
+-        )",
+-    )
+-    .execute(conn)
+-    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn load_config(db_path: &str) -> Result<Config> {
+     ensure_parent_dir(db_path)?;
+     let mut conn = open_conn(db_path)?;
+     ensure_table(&mut conn)?;
+ 
+     let row: ConfigRow = diesel::sql_query("SELECT config_json FROM app_config WHERE id = 1")

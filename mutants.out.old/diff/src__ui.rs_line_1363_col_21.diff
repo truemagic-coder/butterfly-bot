@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete match arm UiTab::Chat in app_view
+@@ -1355,17 +1355,17 @@
+     }
+ 
+     {
+         let active_tab = active_tab.clone();
+         use_effect(move || {
+             let tab = *active_tab.read();
+             spawn(async move {
+                 match tab {
+-                    UiTab::Chat => scroll_chat_after_render().await,
++                     /* ~ changed by cargo-mutants ~ */
+                     UiTab::Activity => scroll_activity_after_render().await,
+                     _ => {}
+                 }
+             });
+         });
+     }
+ 
+     {

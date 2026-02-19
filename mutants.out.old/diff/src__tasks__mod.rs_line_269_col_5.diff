@@ -1,0 +1,25 @@
+--- src/tasks/mod.rs
++++ replace ensure_parent_dir -> Result<()> with Ok(())
+@@ -261,21 +261,17 @@
+         .filter(|path| !path.is_empty())
+ }
+ 
+ pub fn default_task_db_path() -> String {
+     crate::runtime_paths::default_db_path()
+ }
+ 
+ fn ensure_parent_dir(path: &str) -> Result<()> {
+-    let path = Path::new(path);
+-    if let Some(parent) = path.parent() {
+-        std::fs::create_dir_all(parent).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-    }
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn run_migrations(database_url: &str) -> Result<()> {
+     let database_url = database_url.to_string();
+     tokio::task::spawn_blocking(move || {
+         let mut conn = SqliteConnection::establish(&database_url)
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+         crate::db::apply_sqlcipher_key_sync(&mut conn)?;

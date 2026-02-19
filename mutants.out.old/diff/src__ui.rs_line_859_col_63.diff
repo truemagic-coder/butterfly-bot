@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace += with -= in app_view
+@@ -851,17 +851,17 @@
+                                                 let mut list = messages.write();
+                                                 if let Some(last) = list
+                                                     .iter_mut()
+                                                     .rev()
+                                                     .find(|msg| msg.id == bot_message_id)
+                                                 {
+                                                     last.append_text(text_chunk);
+                                                 }
+-                                                chunk_counter += 1;
++                                                chunk_counter -= /* ~ changed by cargo-mutants ~ */ 1;
+                                             }
+                                         }
+                                         if chunk_counter > 0 && chunk_counter.is_multiple_of(8) {
+                                             scroll_chat_to_bottom().await;
+                                         }
+                                     }
+                                     Err(err) => {
+                                         error.set(format!("Stream error: {err}"));

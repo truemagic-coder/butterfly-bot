@@ -1,0 +1,24 @@
+--- src/daemon.rs
++++ replace now_ts -> i64 with -1
+@@ -1902,20 +1902,17 @@
+         tool: "heartbeat".to_string(),
+         status,
+         payload,
+         timestamp: now_ts(),
+     });
+ }
+ 
+ fn now_ts() -> i64 {
+-    SystemTime::now()
+-        .duration_since(UNIX_EPOCH)
+-        .unwrap_or_default()
+-        .as_secs() as i64
++    -1 /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn wakeup_audit_log_path(config: Option<&Config>) -> Option<String> {
+     let path = config
+         .and_then(|cfg| cfg.tools.as_ref())
+         .and_then(|tools| tools.get("wakeup"))
+         .and_then(|wakeup| wakeup.get("audit_log_path"))
+         .and_then(|value| value.as_str())

@@ -1,0 +1,39 @@
+--- src/ui.rs
++++ replace is_empty_list_result -> bool with false
+@@ -419,35 +419,17 @@
+     options.insert(Options::ENABLE_SMART_PUNCTUATION);
+     let parser = Parser::new_ext(input, options);
+     let mut output = String::new();
+     html::push_html(&mut output, parser);
+     output
+ }
+ 
+ fn is_empty_list_result(payload: &Value) -> bool {
+-    let action = payload
+-        .get("args")
+-        .and_then(|args| args.get("action"))
+-        .and_then(|value| value.as_str())
+-        .unwrap_or_default();
+-    if action != "list" {
+-        return false;
+-    }
+-
+-    let result = payload.get("result").unwrap_or(&Value::Null);
+-    ["reminders", "items", "tasks", "plans", "todos", "results"]
+-        .iter()
+-        .any(|key| {
+-            result
+-                .get(*key)
+-                .and_then(|value| value.as_array())
+-                .map(|items| items.is_empty())
+-                .unwrap_or(false)
+-        })
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn scroll_chat_to_bottom() {
+     let _ = eval("const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
+ }
+ 
+ async fn scroll_chat_after_render() {
+     scroll_chat_to_bottom().await;

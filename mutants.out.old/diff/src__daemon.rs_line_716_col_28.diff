@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ delete ! in run_security_audit_checks
+@@ -708,17 +708,17 @@
+                 None,
+                 false,
+             ));
+ 
+             let has_inline_api_key = config
+                 .openai
+                 .as_ref()
+                 .and_then(|openai| openai.api_key.as_ref())
+-                .map(|key| !key.trim().is_empty())
++                .map(|key|  /* ~ changed by cargo-mutants ~ */key.trim().is_empty())
+                 .unwrap_or(false)
+                 || config
+                     .memory
+                     .as_ref()
+                     .and_then(|memory| memory.openai.as_ref())
+                     .and_then(|openai| openai.api_key.as_ref())
+                     .map(|key| !key.trim().is_empty())
+                     .unwrap_or(false);

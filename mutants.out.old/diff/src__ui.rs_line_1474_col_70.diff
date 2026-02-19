@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace && with || in app_view
+@@ -1466,17 +1466,17 @@
+                                         {
+                                             boot_prompt_ready.set(true);
+                                         }
+                                         if (event_type == "boot" || tool == "heartbeat")
+                                             && status == "ok"
+                                         {
+                                             boot_heartbeat_ready.set(true);
+                                         }
+-                                        if *boot_prompt_ready.read() && *boot_heartbeat_ready.read()
++                                        if *boot_prompt_ready.read() || /* ~ changed by cargo-mutants ~ */ *boot_heartbeat_ready.read()
+                                         {
+                                             boot_ready.set(true);
+                                             boot_status.set("Prompt + heartbeat ready".to_string());
+                                         }
+ 
+                                         let show_success = false;
+                                         if !show_success && (status == "success" || status == "ok")
+                                         {

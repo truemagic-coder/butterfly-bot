@@ -1,0 +1,21 @@
+--- src/runtime_paths.rs
++++ replace app_root -> PathBuf with Default::default()
+@@ -35,17 +35,17 @@
+     if let Some(base_dirs) = BaseDirs::new() {
+         return base_dirs.data_local_dir().join("butterfly-bot");
+     }
+ 
+     std::env::temp_dir().join("butterfly-bot")
+ }
+ 
+ pub fn app_root() -> PathBuf {
+-    app_root_override().unwrap_or_else(platform_app_root)
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ pub fn default_db_path() -> String {
+     app_root()
+         .join("data")
+         .join("butterfly-bot.db")
+         .to_string_lossy()
+         .to_string()

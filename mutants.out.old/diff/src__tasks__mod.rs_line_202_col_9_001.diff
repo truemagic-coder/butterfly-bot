@@ -1,0 +1,30 @@
+--- src/tasks/mod.rs
++++ replace TaskStore::list_due -> Result<Vec<ScheduledTask>> with Ok(vec![Default::default()])
+@@ -194,26 +194,17 @@
+         let count = diesel::delete(scheduled_tasks::table.filter(scheduled_tasks::id.eq(id)))
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+         Ok(count > 0)
+     }
+ 
+     pub async fn list_due(&self, now: i64, limit: usize) -> Result<Vec<ScheduledTask>> {
+-        let mut conn = self.conn().await?;
+-        let rows: Vec<TaskRow> = scheduled_tasks::table
+-            .filter(scheduled_tasks::enabled.eq(true))
+-            .filter(scheduled_tasks::next_run_at.le(now))
+-            .order(scheduled_tasks::next_run_at.asc())
+-            .limit(limit as i64)
+-            .load(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(rows.into_iter().map(map_row).collect())
++        Ok(vec![Default::default()]) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn mark_run(&self, id: i32, last_run_at: i64, next_run_at: i64) -> Result<()> {
+         let now = now_ts();
+         let mut conn = self.conn().await?;
+         diesel::update(scheduled_tasks::table.filter(scheduled_tasks::id.eq(id)))
+             .set((
+                 scheduled_tasks::last_run_at.eq(Some(last_run_at)),

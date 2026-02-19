@@ -1,0 +1,76 @@
+--- src/daemon.rs
++++ replace check_provider_health -> Result<DoctorCheck> with Ok(Default::default())
+@@ -981,72 +981,17 @@
+             Some("Retry diagnostics; if persistent, inspect runtime logs."),
+         )),
+     }
+ 
+     checks
+ }
+ 
+ async fn check_provider_health(config: &Config) -> Result<DoctorCheck> {
+-    let provider = config.openai.clone().or_else(|| {
+-        config
+-            .memory
+-            .as_ref()
+-            .and_then(|memory| memory.openai.clone())
+-    });
+-
+-    let Some(provider) = provider else {
+-        return Ok(doctor_check(
+-            "provider_health",
+-            "warn",
+-            "No provider config found in openai or memory.openai.".to_string(),
+-            Some("Set provider base_url/model in Config tab."),
+-        ));
+-    };
+-
+-    let base_url = provider.base_url.unwrap_or_default();
+-    if base_url.trim().is_empty() {
+-        return Ok(doctor_check(
+-            "provider_health",
+-            "fail",
+-            "Provider base_url is empty.".to_string(),
+-            Some("Set openai.base_url (or memory.openai.base_url)."),
+-        ));
+-    }
+-
+-    let models_url = format!("{}/models", base_url.trim_end_matches('/'));
+-    let client = reqwest::Client::new();
+-    let result = tokio::time::timeout(Duration::from_secs(3), client.get(&models_url).send()).await;
+-
+-    match result {
+-        Ok(Ok(response)) if response.status().is_success() => Ok(doctor_check(
+-            "provider_health",
+-            "pass",
+-            format!("Provider responded successfully at {models_url}"),
+-            None,
+-        )),
+-        Ok(Ok(response)) => Ok(doctor_check(
+-            "provider_health",
+-            "warn",
+-            format!("Provider reachable but returned HTTP {}", response.status()),
+-            Some("Check provider auth/token and model availability."),
+-        )),
+-        Ok(Err(err)) => Ok(doctor_check(
+-            "provider_health",
+-            "fail",
+-            format!("Provider request failed: {err}"),
+-            Some("Check base_url/network and that provider service is running."),
+-        )),
+-        Err(_) => Ok(doctor_check(
+-            "provider_health",
+-            "fail",
+-            "Provider request timed out after 3s.".to_string(),
+-            Some("Check provider responsiveness and network routing."),
+-        )),
+-    }
++    Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn process_text(
+     State(state): State<AppState>,
+     headers: HeaderMap,
+     Json(payload): Json<ProcessTextRequest>,
+ ) -> impl IntoResponse {
+     if let Err(err) = authorize(&headers, &state.token) {

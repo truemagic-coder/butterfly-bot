@@ -1,0 +1,46 @@
+--- src/scheduler/mod.rs
++++ replace Scheduler::start with ()
+@@ -25,42 +25,17 @@
+         self.jobs.push(job);
+     }
+ 
+     pub fn is_running(&self) -> bool {
+         self.stop.is_some()
+     }
+ 
+     pub fn start(&mut self) {
+-        if self.stop.is_some() {
+-            return;
+-        }
+-        let (tx, rx) = watch::channel(false);
+-        self.stop = Some(tx);
+-
+-        for job in &self.jobs {
+-            let job = Arc::clone(job);
+-            let mut tick = tokio::time::interval(job.interval());
+-            let mut rx = rx.clone();
+-            let handle = tokio::spawn(async move {
+-                loop {
+-                    tokio::select! {
+-                        _ = tick.tick() => {
+-                            let _ = job.run().await;
+-                        }
+-                        _ = rx.changed() => {
+-                            if *rx.borrow() {
+-                                break;
+-                            }
+-                        }
+-                    }
+-                }
+-            });
+-            self.handles.push(handle);
+-        }
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn stop(&mut self) {
+         if let Some(tx) = self.stop.take() {
+             let _ = tx.send(true);
+         }
+         let handles = std::mem::take(&mut self.handles);
+         for handle in handles {

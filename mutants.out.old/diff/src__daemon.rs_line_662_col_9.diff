@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ delete match arm "high" in severity_rank
+@@ -654,17 +654,17 @@
+         fix_hint: fix_hint.map(str::to_string),
+         auto_fixable,
+     }
+ }
+ 
+ fn severity_rank(severity: &str) -> u8 {
+     match severity {
+         "critical" => 4,
+-        "high" => 3,
++         /* ~ changed by cargo-mutants ~ */
+         "medium" => 2,
+         _ => 1,
+     }
+ }
+ 
+ fn highest_severity(findings: &[SecurityAuditFinding]) -> String {
+     findings
+         .iter()

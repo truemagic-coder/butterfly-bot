@@ -1,0 +1,25 @@
+--- src/ui.rs
++++ replace push_bounded_message with ()
+@@ -271,21 +271,17 @@
+ }
+ 
+ const HISTORY_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
+     format_description!("[year]-[month]-[day] [hour]:[minute]");
+ const MAX_CHAT_MESSAGES: usize = 400;
+ const MAX_ACTIVITY_MESSAGES: usize = 600;
+ 
+ fn push_bounded_message(list: &mut Vec<ChatMessage>, message: ChatMessage, max_len: usize) {
+-    list.push(message);
+-    if list.len() > max_len {
+-        let overflow = list.len() - max_len;
+-        list.drain(0..overflow);
+-    }
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn now_unix_ts() -> i64 {
+     std::time::SystemTime::now()
+         .duration_since(std::time::UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_secs() as i64
+ }

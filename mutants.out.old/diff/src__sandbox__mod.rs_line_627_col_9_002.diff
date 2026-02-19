@@ -1,0 +1,30 @@
+--- src/sandbox/mod.rs
++++ replace WasmRuntime::split_ptr_len -> Result<(i32, i32)> with Ok((0, -1))
+@@ -619,26 +619,17 @@
+                 )));
+             }
+         }
+ 
+         Ok(())
+     }
+ 
+     fn split_ptr_len(packed: i64) -> Result<(i32, i32)> {
+-        let raw = packed as u64;
+-        let ptr = (raw >> 32) as u32;
+-        let len = (raw & 0xFFFF_FFFF) as u32;
+-        let ptr = i32::try_from(ptr).map_err(|_| {
+-            ButterflyBotError::Runtime("Invalid output pointer from wasm".to_string())
+-        })?;
+-        let len = i32::try_from(len).map_err(|_| {
+-            ButterflyBotError::Runtime("Invalid output length from wasm".to_string())
+-        })?;
+-        Ok((ptr, len))
++        Ok((0, -1)) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     fn ensure_range(memory: &Memory, store: &Store<()>, ptr: i32, len: i32) -> Result<()> {
+         if ptr < 0 || len < 0 {
+             return Err(ButterflyBotError::Runtime(
+                 "Negative pointer/length from wasm".to_string(),
+             ));
+         }

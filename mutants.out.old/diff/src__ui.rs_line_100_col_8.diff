@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in run_doctor_request
+@@ -92,17 +92,17 @@
+     message: String,
+     config: Value,
+ }
+ 
+ async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
+     let client = reqwest::Client::new();
+     let url = format!("{}/doctor", daemon_url.trim_end_matches('/'));
+     let mut request = client.post(url);
+-    if !token.trim().is_empty() {
++    if  /* ~ changed by cargo-mutants ~ */token.trim().is_empty() {
+         request = request.header("authorization", format!("Bearer {token}"));
+     }
+     let response = request.send().await.map_err(|err| err.to_string())?;
+     if !response.status().is_success() {
+         let status = response.status();
+         let text = response
+             .text()
+             .await

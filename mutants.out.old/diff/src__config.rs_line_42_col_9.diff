@@ -1,0 +1,23 @@
+--- src/config.rs
++++ replace MarkdownSource::default_prompt -> Self with Default::default()
+@@ -34,19 +34,17 @@
+ impl MarkdownSource {
+     pub fn default_heartbeat() -> Self {
+         Self::Database {
+             markdown: "# Heartbeat\n\nStay proactive, grounded, and transparent. Prefer clear next steps and avoid over-claiming.".to_string(),
+         }
+     }
+ 
+     pub fn default_prompt() -> Self {
+-        Self::Database {
+-            markdown: "# Prompt\n\nAnswer directly, include concrete actions, and keep responses practical.".to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn as_url(&self) -> Option<&str> {
+         match self {
+             Self::Url { url } => Some(url.as_str()),
+             Self::Database { .. } => None,
+         }
+     }

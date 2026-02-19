@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace == with != in app_view
+@@ -1511,17 +1511,17 @@
+                                         };
+                                         let mut text = format!("{prefix} {tool}: {status}");
+                                         if let Some(payload) = value.get("payload") {
+                                             if let Some(error) =
+                                                 payload.get("error").and_then(|v| v.as_str())
+                                             {
+                                                 text.push_str(&format!(" — {error}"));
+                                             } else if event_type == "autonomy" {
+-                                                if status == "skipped" {
++                                                if status != /* ~ changed by cargo-mutants ~ */ "skipped" {
+                                                     if let Some(reason) = payload
+                                                         .get("reason")
+                                                         .and_then(|v| v.as_str())
+                                                     {
+                                                         text.push_str(&format!(" — {reason}"));
+                                                     }
+                                                     if let Some(remaining) = payload
+                                                         .get("cooldown_remaining_seconds")

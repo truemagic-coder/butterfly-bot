@@ -1,0 +1,38 @@
+--- src/todo/mod.rs
++++ replace TodoStore::set_completed -> Result<TodoItem> with Ok(Default::default())
+@@ -162,34 +162,17 @@
+             .limit(limit as i64)
+             .load(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+         Ok(rows.into_iter().map(map_row).collect())
+     }
+ 
+     pub async fn set_completed(&self, id: i32, completed: bool) -> Result<TodoItem> {
+-        let now = now_ts();
+-        let completed_at = if completed { Some(now) } else { None };
+-        let mut conn = self.conn().await?;
+-        diesel::update(todo_items::table.filter(todo_items::id.eq(id)))
+-            .set((
+-                todo_items::completed_at.eq(completed_at),
+-                todo_items::updated_at.eq(now),
+-            ))
+-            .execute(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-
+-        let row: TodoRow = todo_items::table
+-            .filter(todo_items::id.eq(id))
+-            .first(&mut conn)
+-            .await
+-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+-        Ok(map_row(row))
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn delete_item(&self, id: i32) -> Result<bool> {
+         let mut conn = self.conn().await?;
+         let count = diesel::delete(todo_items::table.filter(todo_items::id.eq(id)))
+             .execute(&mut conn)
+             .await
+             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;

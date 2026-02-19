@@ -1,0 +1,25 @@
+--- src/todo/mod.rs
++++ replace TodoStatus::from_option -> Self with Default::default()
+@@ -63,21 +63,17 @@
+ pub enum TodoStatus {
+     Open,
+     Completed,
+     All,
+ }
+ 
+ impl TodoStatus {
+     pub fn from_option(value: Option<&str>) -> Self {
+-        match value {
+-            Some("completed") => Self::Completed,
+-            Some("open") => Self::Open,
+-            _ => Self::All,
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ pub struct TodoStore {
+     pool: SqlitePool,
+ }
+ 
+ impl TodoStore {

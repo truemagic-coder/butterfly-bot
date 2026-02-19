@@ -1,0 +1,24 @@
+--- src/sandbox/mod.rs
++++ replace ToolSandboxConfig::is_capability_allowed -> bool with false
+@@ -64,20 +64,17 @@
+     #[serde(default)]
+     pub network: NetworkPolicy,
+     #[serde(default)]
+     pub capabilities: CapabilityPolicy,
+ }
+ 
+ impl ToolSandboxConfig {
+     pub fn is_capability_allowed(&self, capability: &str) -> bool {
+-        self.capabilities
+-            .allow
+-            .iter()
+-            .any(|allowed| allowed == capability)
++        false /* ~ changed by cargo-mutants ~ */
+     }
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+ pub struct SandboxSettings {
+     #[serde(default)]
+     pub tools: HashMap<String, ToolSandboxConfig>,
+ }

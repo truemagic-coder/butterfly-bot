@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace ollama_available -> bool with false
+@@ -141,17 +141,17 @@
+ #[cfg(not(test))]
+ #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+ fn install_ollama_if_missing() -> Result<()> {
+     Ok(())
+ }
+ 
+ #[cfg(not(test))]
+ fn ollama_available() -> bool {
+-    Command::new("ollama").arg("--version").status().is_ok()
++    false /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn uses_local_ollama(config: &Config) -> bool {
+     let Some(openai) = &config.openai else {
+         return false;
+     };
+     let Some(base_url) = &openai.base_url else {

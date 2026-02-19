@@ -1,0 +1,21 @@
+--- src/vault.rs
++++ replace || with && in CocoonFileSecretProvider::secret_path
+@@ -22,17 +22,17 @@
+     fn passphrase(&self) -> Result<String> {
+         crate::security::tpm_provider::resolve_dek_passphrase()
+     }
+ 
+     fn secret_path(&self, name: &str) -> PathBuf {
+         let sanitized = name
+             .chars()
+             .map(|ch| {
+-                if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.') {
++                if ch.is_ascii_alphanumeric() && /* ~ changed by cargo-mutants ~ */ matches!(ch, '_' | '-' | '.') {
+                     ch
+                 } else {
+                     '_'
+                 }
+             })
+             .collect::<String>();
+         crate::runtime_paths::app_root()
+             .join("secrets")

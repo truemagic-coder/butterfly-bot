@@ -1,0 +1,21 @@
+--- src/scheduler/mod.rs
++++ replace Scheduler::register_job with ()
+@@ -17,17 +17,17 @@
+         Self {
+             jobs: Vec::new(),
+             handles: Vec::new(),
+             stop: None,
+         }
+     }
+ 
+     pub fn register_job(&mut self, job: Arc<dyn ScheduledJob>) {
+-        self.jobs.push(job);
++        () /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn is_running(&self) -> bool {
+         self.stop.is_some()
+     }
+ 
+     pub fn start(&mut self) {
+         if self.stop.is_some() {

@@ -1,0 +1,23 @@
+--- src/config.rs
++++ replace MarkdownSource::default_heartbeat -> Self with Default::default()
+@@ -28,19 +28,17 @@
+ #[serde(tag = "type", rename_all = "snake_case")]
+ pub enum MarkdownSource {
+     Url { url: String },
+     Database { markdown: String },
+ }
+ 
+ impl MarkdownSource {
+     pub fn default_heartbeat() -> Self {
+-        Self::Database {
+-            markdown: "# Heartbeat\n\nStay proactive, grounded, and transparent. Prefer clear next steps and avoid over-claiming.".to_string(),
+-        }
++        Default::default() /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub fn default_prompt() -> Self {
+         Self::Database {
+             markdown: "# Prompt\n\nAnswer directly, include concrete actions, and keep responses practical.".to_string(),
+         }
+     }
+ 

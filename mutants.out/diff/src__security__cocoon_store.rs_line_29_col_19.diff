@@ -1,0 +1,21 @@
+--- src/security/cocoon_store.rs
++++ replace != with == in unwrap_envelope
+@@ -21,17 +21,17 @@
+ fn unwrap_envelope(raw: Vec<u8>, path: &Path) -> Result<Vec<u8>> {
+     if raw.len() < 6 {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has invalid envelope length",
+             path.to_string_lossy()
+         )));
+     }
+ 
+-    if &raw[0..4] != BLOB_MAGIC {
++    if &raw[0..4] == /* ~ changed by cargo-mutants ~ */ BLOB_MAGIC {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has invalid envelope magic",
+             path.to_string_lossy()
+         )));
+     }
+ 
+     let version = raw[4];
+     if version != BLOB_VERSION {

@@ -1,0 +1,21 @@
+--- src/security/cocoon_store.rs
++++ replace != with == in unwrap_envelope
+@@ -29,17 +29,17 @@
+     if &raw[0..4] != BLOB_MAGIC {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has invalid envelope magic",
+             path.to_string_lossy()
+         )));
+     }
+ 
+     let version = raw[4];
+-    if version != BLOB_VERSION {
++    if version == /* ~ changed by cargo-mutants ~ */ BLOB_VERSION {
+         return Err(ButterflyBotError::SecurityStorage(format!(
+             "encrypted secret {} has unsupported envelope version {}",
+             path.to_string_lossy(),
+             version
+         )));
+     }
+ 
+     let cipher = raw[5];

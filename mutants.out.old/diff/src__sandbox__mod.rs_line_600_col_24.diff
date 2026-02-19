@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace == with != in WasmRuntime::validate_module_binary
+@@ -592,17 +592,17 @@
+         let mut tail = Vec::new();
+         file.read_to_end(&mut tail).map_err(|e| {
+             ButterflyBotError::Runtime(format!(
+                 "Failed to inspect wasm module body for tool '{tool_name}' ({module_path}): {e}"
+             ))
+         })?;
+         if tail
+             .windows("stub responses".len())
+-            .any(|w| w == b"stub responses")
++            .any(|w| w != /* ~ changed by cargo-mutants ~ */ b"stub responses")
+             || tail
+                 .windows("\"stub\":true".len())
+                 .any(|w| w == b"\"stub\":true")
+         {
+             return Err(ButterflyBotError::Runtime(format!(
+                 "WASM module for tool '{tool_name}' at {module_path} is a placeholder stub. Build/install a real WASM implementation before starting the daemon."
+             )));
+         }

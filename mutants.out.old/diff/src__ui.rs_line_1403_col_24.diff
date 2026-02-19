@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -1395,17 +1395,17 @@
+                 let token = token;
+                 let user_id = user_id;
+                 let mut activity_messages = activity_messages;
+                 let mut next_id = next_id;
+ 
+                 ui_events_listening.set(true);
+                 let client = reqwest::Client::new();
+                 loop {
+-                    if !*daemon_running.read() {
++                    if  /* ~ changed by cargo-mutants ~ */*daemon_running.read() {
+                         ui_events_listening.set(false);
+                         sleep(Duration::from_secs(1)).await;
+                         continue;
+                     }
+                     ui_events_listening.set(true);
+                     let url = format!(
+                         "{}/ui_events?user_id={}",
+                         daemon_url().trim_end_matches('/'),

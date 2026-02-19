@@ -1,0 +1,21 @@
+--- src/tasks/mod.rs
++++ delete match arm Some("disabled") in TaskStatus::from_option
+@@ -73,17 +73,17 @@
+     Disabled,
+     All,
+ }
+ 
+ impl TaskStatus {
+     pub fn from_option(value: Option<&str>) -> Self {
+         match value {
+             Some("enabled") => Self::Enabled,
+-            Some("disabled") => Self::Disabled,
++             /* ~ changed by cargo-mutants ~ */
+             _ => Self::All,
+         }
+     }
+ }
+ 
+ pub struct TaskStore {
+     pool: SqlitePool,
+ }

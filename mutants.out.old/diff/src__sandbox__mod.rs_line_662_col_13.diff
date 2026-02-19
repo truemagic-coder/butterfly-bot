@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace && with || in WasmRuntime::execute_sync
+@@ -654,17 +654,17 @@
+         }
+         Ok(())
+     }
+ 
+     fn execute_sync(tool_name: &str, config: &ToolSandboxConfig, params: Value) -> Result<Value> {
+         let mut module_path = Self::resolve_module_path(tool_name, config);
+ 
+         if !Path::new(&module_path).exists()
+-            && (module_path.starts_with("./wasm/") || module_path.starts_with("wasm/"))
++            || /* ~ changed by cargo-mutants ~ */ (module_path.starts_with("./wasm/") || module_path.starts_with("wasm/"))
+         {
+             if let Ok(wasm_dir) = crate::wasm_bundle::ensure_bundled_wasm_tools() {
+                 let candidate = wasm_dir.join(Self::module_filename(tool_name));
+                 if candidate.exists() {
+                     module_path = candidate.to_string_lossy().to_string();
+                 }
+             }
+         }

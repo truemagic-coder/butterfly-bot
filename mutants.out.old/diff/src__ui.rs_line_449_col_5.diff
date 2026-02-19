@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace scroll_chat_to_bottom with ()
+@@ -441,17 +441,17 @@
+                 .get(*key)
+                 .and_then(|value| value.as_array())
+                 .map(|items| items.is_empty())
+                 .unwrap_or(false)
+         })
+ }
+ 
+ async fn scroll_chat_to_bottom() {
+-    let _ = eval("const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ async fn scroll_chat_after_render() {
+     scroll_chat_to_bottom().await;
+     sleep(Duration::from_millis(16)).await;
+     scroll_chat_to_bottom().await;
+ }
+ 

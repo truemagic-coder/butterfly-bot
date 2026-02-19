@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace != with == in highest_severity
+@@ -663,17 +663,17 @@
+         "medium" => 2,
+         _ => 1,
+     }
+ }
+ 
+ fn highest_severity(findings: &[SecurityAuditFinding]) -> String {
+     findings
+         .iter()
+-        .filter(|finding| finding.status != "pass")
++        .filter(|finding| finding.status == /* ~ changed by cargo-mutants ~ */ "pass")
+         .max_by_key(|finding| severity_rank(&finding.severity))
+         .map(|finding| finding.severity.clone())
+         .unwrap_or_else(|| "low".to_string())
+ }
+ 
+ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding> {
+     let mut findings = Vec::new();
+ 

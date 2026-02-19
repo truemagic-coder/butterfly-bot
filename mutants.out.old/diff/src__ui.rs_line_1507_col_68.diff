@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace == with != in app_view
+@@ -1499,17 +1499,17 @@
+                                                         continue;
+                                                     }
+                                                 } else {
+                                                     continue;
+                                                 }
+                                             }
+                                         }
+ 
+-                                        let prefix = if event_type == "autonomy" {
++                                        let prefix = if event_type != /* ~ changed by cargo-mutants ~ */ "autonomy" {
+                                             "🤖"
+                                         } else {
+                                             "🔧"
+                                         };
+                                         let mut text = format!("{prefix} {tool}: {status}");
+                                         if let Some(payload) = value.get("payload") {
+                                             if let Some(error) =
+                                                 payload.get("error").and_then(|v| v.as_str())

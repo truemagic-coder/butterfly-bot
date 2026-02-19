@@ -1,0 +1,24 @@
+--- src/vault.rs
++++ replace active_provider -> Arc<dyn SecretProvider> with Arc::new(Default::default())
+@@ -67,20 +67,17 @@
+ 
+ static SECRET_PROVIDER: OnceLock<RwLock<Arc<dyn SecretProvider>>> = OnceLock::new();
+ 
+ fn provider_lock() -> &'static RwLock<Arc<dyn SecretProvider>> {
+     SECRET_PROVIDER.get_or_init(|| RwLock::new(build_default_provider()))
+ }
+ 
+ fn active_provider() -> Arc<dyn SecretProvider> {
+-    match provider_lock().read() {
+-        Ok(guard) => Arc::clone(&guard),
+-        Err(poisoned) => Arc::clone(poisoned.get_ref()),
+-    }
++    Arc::new(Default::default()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(test)]
+ fn set_secret_provider_for_tests(provider: Arc<dyn SecretProvider>) {
+     match provider_lock().write() {
+         Ok(mut guard) => *guard = provider,
+         Err(poisoned) => {
+             let mut guard = poisoned.into_inner();

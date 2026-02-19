@@ -1,0 +1,21 @@
+--- src/sandbox/mod.rs
++++ replace < with == in WasmRuntime::ensure_range
+@@ -632,17 +632,17 @@
+         })?;
+         let len = i32::try_from(len).map_err(|_| {
+             ButterflyBotError::Runtime("Invalid output length from wasm".to_string())
+         })?;
+         Ok((ptr, len))
+     }
+ 
+     fn ensure_range(memory: &Memory, store: &Store<()>, ptr: i32, len: i32) -> Result<()> {
+-        if ptr < 0 || len < 0 {
++        if ptr == /* ~ changed by cargo-mutants ~ */ 0 || len < 0 {
+             return Err(ButterflyBotError::Runtime(
+                 "Negative pointer/length from wasm".to_string(),
+             ));
+         }
+         let start = ptr as usize;
+         let size = len as usize;
+         let end = start
+             .checked_add(size)

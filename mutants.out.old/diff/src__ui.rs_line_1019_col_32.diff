@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -1011,17 +1011,17 @@
+                         } else {
+                             daemon_running.set(true);
+                             let url =
+                                 format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                             let mut request = client
+                                 .post(&url)
+                                 .json(&PreloadBootRequest { user_id: user_id() });
+                             let token_value = token();
+-                            if !token_value.trim().is_empty() {
++                            if  /* ~ changed by cargo-mutants ~ */token_value.trim().is_empty() {
+                                 request = request
+                                     .header("authorization", format!("Bearer {token_value}"));
+                             }
+                             match request.send().await {
+                                 Ok(resp) if resp.status().is_success() => {
+                                     boot_status
+                                         .set("Boot preload started in background…".to_string());
+                                 }

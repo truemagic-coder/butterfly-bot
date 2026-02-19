@@ -1,0 +1,33 @@
+--- src/ui.rs
++++ replace stop_local_daemon -> Result<(), String> with Ok(())
+@@ -603,29 +603,17 @@
+     Ok(())
+ }
+ 
+ fn env_auth_token() -> String {
+     crate::vault::ensure_daemon_auth_token().unwrap_or_default()
+ }
+ 
+ fn stop_local_daemon() -> Result<(), String> {
+-    let control = daemon_control();
+-    let mut guard = control
+-        .lock()
+-        .map_err(|_| "Daemon lock unavailable".to_string())?;
+-    if let Some(control) = guard.take() {
+-        let _ = control.shutdown.send(());
+-        thread::spawn(move || {
+-            let _ = control.thread.join();
+-        });
+-        Ok(())
+-    } else {
+-        Err("Daemon is not running".to_string())
+-    }
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn normalize_daemon_url(daemon: &str) -> String {
+     let trimmed = daemon.trim();
+     let (scheme, rest) = if let Some(value) = trimmed.strip_prefix("https://") {
+         ("https://", value)
+     } else if let Some(value) = trimmed.strip_prefix("http://") {
+         ("http://", value)

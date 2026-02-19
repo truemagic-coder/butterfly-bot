@@ -1,0 +1,28 @@
+--- src/reminders/mod.rs
++++ replace map_row -> ReminderItem with Default::default()
+@@ -321,24 +321,17 @@
+             "completed" => ReminderStatus::Completed,
+             "all" => ReminderStatus::All,
+             _ => ReminderStatus::Open,
+         })
+     }
+ }
+ 
+ fn map_row(row: ReminderRow) -> ReminderItem {
+-    ReminderItem {
+-        id: row.id,
+-        title: row.title,
+-        due_at: row.due_at,
+-        created_at: row.created_at,
+-        completed_at: row.completed_at,
+-        fired_at: row.fired_at,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ fn now_ts() -> i64 {
+     SystemTime::now()
+         .duration_since(UNIX_EPOCH)
+         .unwrap_or_default()
+         .as_secs() as i64
+ }

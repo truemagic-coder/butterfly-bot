@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace launch_ui with ()
+@@ -491,17 +491,17 @@
+             styled_line_to_highlighted_html(&ranges[..], syntect::html::IncludeBackground::No)
+                 .unwrap_or_default();
+         out.push_str(&html);
+     }
+     out
+ }
+ 
+ pub fn launch_ui() {
+-    launch_ui_with_config(UiLaunchConfig::default());
++    () /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[derive(Clone)]
+ pub struct UiLaunchConfig {
+     pub db_path: String,
+     pub daemon_url: String,
+     pub user_id: String,
+ }

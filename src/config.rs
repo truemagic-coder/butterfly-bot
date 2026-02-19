@@ -206,6 +206,41 @@ impl Config {
                         ])
                     });
                 }
+
+                let solana = settings_obj
+                    .entry("solana")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(solana_obj) = solana.as_object_mut() {
+                    solana_obj.entry("rpc").or_insert_with(|| {
+                        serde_json::json!({
+                            "provider": "quicknode",
+                            "endpoint": "",
+                            "commitment": "confirmed",
+                            "bootstrap_wallets": [
+                                {
+                                    "user_id": "user",
+                                    "actor": "agent"
+                                }
+                            ],
+                            "compute_budget": {
+                                "unit_limit": 300000,
+                                "unit_price_microlamports": 2500
+                            },
+                            "simulation": {
+                                "enabled": true,
+                                "commitment": "processed",
+                                "replace_recent_blockhash": true,
+                                "sig_verify": false,
+                                "min_context_slot": null
+                            },
+                            "send": {
+                                "skip_preflight": false,
+                                "preflight_commitment": "confirmed",
+                                "max_retries": 5
+                            }
+                        })
+                    });
+                }
             }
         }
         self
@@ -242,7 +277,7 @@ impl Config {
         match crate::config_store::load_config(db_path) {
             Ok(config) => Ok(config.apply_security_defaults()),
             Err(store_err) => {
-                if let Ok(Some(secret)) = crate::vault::get_secret("app_config_json") {
+                if let Some(secret) = crate::vault::get_secret("app_config_json")? {
                     if !secret.trim().is_empty() {
                         let value: Value = serde_json::from_str(&secret)
                             .map_err(|e| ButterflyBotError::Config(e.to_string()))?;

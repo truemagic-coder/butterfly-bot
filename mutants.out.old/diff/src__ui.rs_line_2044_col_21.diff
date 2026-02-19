@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete match arm "grok" in app_view
+@@ -2036,17 +2036,17 @@
+                         tools_loaded.set(true);
+                         return;
+                     }
+                 }
+ 
+                 let provider_name = search_provider();
+                 let secret_name = match provider_name.as_str() {
+                     "perplexity" => "search_internet_perplexity_api_key",
+-                    "grok" => "search_internet_grok_api_key",
++                     /* ~ changed by cargo-mutants ~ */
+                     _ => "search_internet_openai_api_key",
+                 };
+                 match crate::vault::get_secret(secret_name) {
+                     Ok(Some(secret)) if !secret.trim().is_empty() => {
+                         search_api_key_input.set(secret);
+                         search_api_key_status.set("Stored in vault".to_string());
+                     }
+                     Ok(_) => {

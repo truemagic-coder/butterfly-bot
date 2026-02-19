@@ -1,0 +1,71 @@
+--- src/main.rs
++++ replace ensure_ollama_models -> Result<()> with Ok(())
+@@ -157,67 +157,17 @@
+     let Some(base_url) = &openai.base_url else {
+         return false;
+     };
+     is_ollama_local(base_url)
+ }
+ 
+ #[cfg(not(test))]
+ fn ensure_ollama_models(config: &Config) -> Result<()> {
+-    if !uses_local_ollama(config) {
+-        return Ok(());
+-    }
+-    let Some(openai) = &config.openai else {
+-        return Ok(());
+-    };
+-
+-    let mut required = Vec::new();
+-    if let Some(model) = &openai.model {
+-        if !model.trim().is_empty() {
+-            required.push(model.clone());
+-        }
+-    }
+-    if let Some(memory) = &config.memory {
+-        for value in [
+-            memory.embedding_model.as_ref(),
+-            memory.rerank_model.as_ref(),
+-            memory.summary_model.as_ref(),
+-        ]
+-        .into_iter()
+-        .flatten()
+-        {
+-            if !value.trim().is_empty() {
+-                required.push(value.clone());
+-            }
+-        }
+-    }
+-
+-    required.sort();
+-    required.dedup();
+-    if required.is_empty() {
+-        return Ok(());
+-    }
+-
+-    let installed = match list_ollama_models() {
+-        Ok(models) => models,
+-        Err(err) => {
+-            tracing::warn!("Skipping Ollama model ensure: {err}");
+-            return Ok(());
+-        }
+-    };
+-    for model in required {
+-        if !installed.iter().any(|name| model_matches(&model, name)) {
+-            println!("Loading Ollama model '{model}'...");
+-            if let Err(err) = pull_ollama_model(&model) {
+-                tracing::warn!("Could not load Ollama model '{model}': {err}");
+-            }
+-        }
+-    }
+-
+-    Ok(())
++    Ok(()) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[cfg(not(test))]
+ fn is_ollama_local(base_url: &str) -> bool {
+     base_url.starts_with("http://localhost:11434") || base_url.starts_with("http://127.0.0.1:11434")
+ }
+ 
+ #[cfg(not(test))]

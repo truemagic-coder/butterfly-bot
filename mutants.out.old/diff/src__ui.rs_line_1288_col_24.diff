@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ delete ! in app_view
+@@ -1280,17 +1280,17 @@
+                     reminders_listening.set(true);
+                     let url = format!(
+                         "{}/reminder_stream?user_id={}",
+                         daemon_url().trim_end_matches('/'),
+                         user_id()
+                     );
+                     let mut request = client.get(&url);
+                     let token_value = token();
+-                    if !token_value.trim().is_empty() {
++                    if  /* ~ changed by cargo-mutants ~ */token_value.trim().is_empty() {
+                         request = request.header("authorization", format!("Bearer {token_value}"));
+                     }
+ 
+                     let response = match request.send().await {
+                         Ok(resp) => resp,
+                         Err(_) => {
+                             if cfg!(debug_assertions) {
+                                 eprintln!("Reminder stream request failed (daemon unreachable?)");

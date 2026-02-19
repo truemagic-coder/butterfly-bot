@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace || with && in preload_boot
+@@ -1298,17 +1298,17 @@
+             tool: "prompt".to_string(),
+             status: prompt_status.clone(),
+             payload: json!({"status": prompt_status}),
+             timestamp: now_ts(),
+         });
+ 
+         if (heartbeat_status == "ok"
+             || heartbeat_status == "empty"
+-            || heartbeat_status == "deferred")
++            && /* ~ changed by cargo-mutants ~ */ heartbeat_status == "deferred")
+             && (prompt_status == "ok" || prompt_status == "empty" || prompt_status == "deferred")
+         {
+             let agent = agent.clone();
+             let ui_event_tx = ui_event_tx.clone();
+             let user_id = user_id.clone();
+             tokio::spawn(async move {
+                 run_autonomy_tick(agent, ui_event_tx, user_id, "boot").await;
+             });

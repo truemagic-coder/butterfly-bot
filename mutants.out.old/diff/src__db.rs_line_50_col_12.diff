@@ -1,0 +1,21 @@
+--- src/db.rs
++++ delete ! in get_sqlcipher_key
+@@ -42,17 +42,17 @@
+     rng.try_fill_bytes(&mut bytes)
+         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+     Ok(URL_SAFE_NO_PAD.encode(bytes))
+ }
+ 
+ pub fn get_sqlcipher_key() -> Result<String> {
+     if let Some(value) = crate::vault::get_secret(DB_KEY_NAME)? {
+         let trimmed = value.trim();
+-        if !trimmed.is_empty() {
++        if  /* ~ changed by cargo-mutants ~ */trimmed.is_empty() {
+             log_sqlcipher_key_source_once("keychain");
+             return Ok(trimmed.to_string());
+         }
+     }
+ 
+     let generated = generated_db_key()?;
+     crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
+     log_sqlcipher_key_source_once("generated_keychain");

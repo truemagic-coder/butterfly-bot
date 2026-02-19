@@ -1,0 +1,21 @@
+--- src/ui.rs
++++ replace + with * in app_view
+@@ -1537,17 +1537,17 @@
+                                                 .get("output")
+                                                 .or_else(|| payload.get("response"))
+                                                 .and_then(|v| v.as_str())
+                                             {
+                                                 text.push_str(&format!(" — {output}"));
+                                             }
+                                         }
+                                         let id = next_id();
+-                                        next_id.set(id + 1);
++                                        next_id.set(id * /* ~ changed by cargo-mutants ~ */ 1);
+                                         let timestamp = value
+                                             .get("timestamp")
+                                             .and_then(|v| v.as_i64())
+                                             .unwrap_or_else(now_unix_ts);
+                                         push_bounded_message(
+                                             &mut activity_messages.write(),
+                                             ChatMessage::new(id, MessageRole::Bot, text, timestamp),
+                                             MAX_ACTIVITY_MESSAGES,

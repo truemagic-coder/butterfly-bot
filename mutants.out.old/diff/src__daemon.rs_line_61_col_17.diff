@@ -1,0 +1,21 @@
+--- src/daemon.rs
++++ replace > with == in try_begin_autonomy_tick
+@@ -53,17 +53,17 @@
+ fn set_autonomy_cooldown_seconds(seconds: u64) {
+     AUTONOMY_COOLDOWN_SECS.store(seconds.max(1) as i64, Ordering::Relaxed);
+ }
+ 
+ fn try_begin_autonomy_tick(now_ts: i64) -> Option<i64> {
+     loop {
+         let cooldown = AUTONOMY_COOLDOWN_SECS.load(Ordering::Relaxed).max(1);
+         let last = AUTONOMY_LAST_RUN_TS.load(Ordering::Relaxed);
+-        if last > 0 {
++        if last == /* ~ changed by cargo-mutants ~ */ 0 {
+             let elapsed = now_ts.saturating_sub(last);
+             if elapsed < cooldown {
+                 return Some(cooldown - elapsed);
+             }
+         }
+ 
+         if AUTONOMY_LAST_RUN_TS
+             .compare_exchange(last, now_ts, Ordering::SeqCst, Ordering::SeqCst)

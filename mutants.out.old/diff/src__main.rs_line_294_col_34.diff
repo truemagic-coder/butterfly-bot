@@ -1,0 +1,21 @@
+--- src/main.rs
++++ replace == with != in model_matches
+@@ -286,17 +286,17 @@
+ fn model_matches(required: &str, installed: &str) -> bool {
+     let (req_base, req_tag) = split_model_name(required);
+     let (ins_base, ins_tag) = split_model_name(installed);
+     if req_base != ins_base {
+         return false;
+     }
+     match (req_tag, ins_tag) {
+         (Some(req), Some(ins)) => req == ins,
+-        (Some(req), None) => req == "latest",
++        (Some(req), None) => req != /* ~ changed by cargo-mutants ~ */ "latest",
+         (None, Some(ins)) => ins == "latest",
+         (None, None) => true,
+     }
+ }
+ 
+ #[cfg(test)]
+ fn main() {}
+ 

@@ -1,0 +1,21 @@
+--- src/main.rs
++++ delete ! in list_ollama_models
+@@ -226,17 +226,17 @@
+         if e.kind() == ErrorKind::NotFound {
+             butterfly_bot::error::ButterflyBotError::Runtime(
+                 "ollama binary not found in runtime environment".to_string(),
+             )
+         } else {
+             butterfly_bot::error::ButterflyBotError::Runtime(e.to_string())
+         }
+     })?;
+-    if !output.status.success() {
++    if  /* ~ changed by cargo-mutants ~ */output.status.success() {
+         return Err(butterfly_bot::error::ButterflyBotError::Runtime(
+             String::from_utf8_lossy(&output.stderr).to_string(),
+         ));
+     }
+     let stdout = String::from_utf8_lossy(&output.stdout);
+     let mut models = Vec::new();
+     for line in stdout.lines().skip(1) {
+         let name = line.split_whitespace().next().unwrap_or("");

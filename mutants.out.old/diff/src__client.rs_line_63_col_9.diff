@@ -1,0 +1,21 @@
+--- src/client.rs
++++ replace ButterflyBot::process -> Result<ProcessResult> with Ok(Default::default())
+@@ -55,17 +55,17 @@
+     }
+ 
+     pub async fn process(
+         &self,
+         user_id: &str,
+         input: UserInput,
+         options: ProcessOptions,
+     ) -> Result<ProcessResult> {
+-        self.query_service.process(user_id, input, options).await
++        Ok(Default::default()) /* ~ changed by cargo-mutants ~ */
+     }
+ 
+     pub async fn delete_user_history(&self, user_id: &str) -> Result<()> {
+         self.query_service.delete_user_history(user_id).await
+     }
+ 
+     pub async fn get_user_history(&self, user_id: &str, limit: usize) -> Result<Vec<String>> {
+         self.query_service.get_user_history(user_id, limit).await

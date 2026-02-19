@@ -1,0 +1,21 @@
+--- src/todo/mod.rs
++++ replace + with - in TodoStore::create_item
+@@ -104,17 +104,17 @@
+         let now = now_ts();
+         let mut conn = self.conn().await?;
+         let max_pos: Option<i32> = todo_items::table
+             .filter(todo_items::user_id.eq(user_id))
+             .select(max(todo_items::position))
+             .first::<Option<i32>>(&mut conn)
+             .await
+             .unwrap_or(None);
+-        let position = max_pos.unwrap_or(0) + 1;
++        let position = max_pos.unwrap_or(0) - /* ~ changed by cargo-mutants ~ */ 1;
+ 
+         let new = NewTodo {
+             user_id,
+             title,
+             notes,
+             position,
+             created_at: now,
+             updated_at: now,
