@@ -5,7 +5,10 @@ use rand::rngs::SysRng;
 use rand::TryRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+#[cfg(test)]
+use std::path::Path;
 
 #[cfg(test)]
 use std::sync::{OnceLock, RwLock};
@@ -18,6 +21,64 @@ const TPM_KEK_NAME: &str = "tpm_kek";
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const PLATFORM_BINDING_NAME: &str = "platform_secure_binding";
 const POLICY_VERSION: u8 = 1;
+
+fn missing_tpm_policy_message() -> String {
+    let base = "TPM is required in strict mode; no TPM device found";
+
+    #[cfg(target_os = "linux")]
+    {
+        let dev_nodes = list_tpm_nodes_under(PathBuf::from("/dev"));
+        let sys_nodes = list_tpm_nodes_under(PathBuf::from("/sys/class/tpm"));
+
+        if !dev_nodes.is_empty() {
+            return format!(
+                "{base}; detected TPM-like nodes in /dev: {}",
+                dev_nodes.join(", ")
+            );
+        }
+
+        if !sys_nodes.is_empty() {
+            return format!(
+                "{base}; sysfs reports TPM entries ({}) but /dev has none. Check kernel TPM modules (e.g. tpm_crb/tpm_tis) and udev permissions.",
+                sys_nodes.join(", ")
+            );
+        }
+
+        return format!(
+            "{base}; probe found no /dev/tpm* or /sys/class/tpm/tpm*. Verify TPM/fTPM is enabled in BIOS/UEFI and Linux TPM drivers are loaded."
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        base.to_string()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn list_tpm_nodes_under(root: PathBuf) -> Vec<String> {
+    let mut nodes: Vec<(u32, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            let name = match entry.file_name().into_string() {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            if let Some(index) = DeviceTpmBackend::parse_tpm_index(&name, "tpmrm") {
+                nodes.push((index, name));
+                continue;
+            }
+
+            if let Some(index) = DeviceTpmBackend::parse_tpm_index(&name, "tpm") {
+                nodes.push((index, name));
+            }
+        }
+    }
+
+    nodes.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    nodes.into_iter().map(|(_, name)| name).collect()
+}
 
 #[cfg(all(debug_assertions, not(test)))]
 fn debug_available_override_lock() -> &'static DebugRwLock<Option<bool>> {
@@ -160,14 +221,78 @@ trait KekStore {
 struct DeviceTpmBackend;
 
 impl DeviceTpmBackend {
-    fn active_device_path(&self) -> Option<&'static Path> {
-        if Path::new("/dev/tpmrm0").exists() {
-            return Some(Path::new("/dev/tpmrm0"));
+    fn parse_tpm_index(name: &str, prefix: &str) -> Option<u32> {
+        let suffix = name.strip_prefix(prefix)?;
+        if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+            return None;
         }
-        if Path::new("/dev/tpm0").exists() {
-            return Some(Path::new("/dev/tpm0"));
+        suffix.parse::<u32>().ok()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn active_device_path(&self) -> Option<PathBuf> {
+        let mut rm_nodes: Vec<(u32, PathBuf)> = Vec::new();
+        let mut direct_nodes: Vec<(u32, PathBuf)> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir("/dev") {
+            for entry in entries.flatten() {
+                let name = match entry.file_name().into_string() {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                if let Some(index) = Self::parse_tpm_index(&name, "tpmrm") {
+                    rm_nodes.push((index, entry.path()));
+                    continue;
+                }
+                if let Some(index) = Self::parse_tpm_index(&name, "tpm") {
+                    direct_nodes.push((index, entry.path()));
+                }
+            }
         }
+
+        rm_nodes.sort_by_key(|(index, _)| *index);
+        if let Some((_, path)) = rm_nodes.into_iter().next() {
+            return Some(path);
+        }
+
+        direct_nodes.sort_by_key(|(index, _)| *index);
+        direct_nodes.into_iter().next().map(|(_, path)| path)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn active_device_path(&self) -> Option<PathBuf> {
         None
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sysfs_tpm_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        if let Ok(entries) = std::fs::read_dir("/sys/class/tpm") {
+            for entry in entries.flatten() {
+                let name = match entry.file_name().into_string() {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                if Self::parse_tpm_index(&name, "tpm").is_some() {
+                    paths.push(entry.path());
+                }
+            }
+        }
+        paths.sort();
+        paths
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sysfs_has_tpm(&self) -> bool {
+        !self.sysfs_tpm_paths().is_empty()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn sysfs_uevent_bytes(&self) -> Option<Vec<u8>> {
+        self.sysfs_tpm_paths().into_iter().find_map(|path| {
+            let uevent = path.join("device").join("uevent");
+            std::fs::read(uevent).ok()
+        })
     }
 }
 
@@ -278,7 +403,7 @@ impl TpmBackend for DeviceTpmBackend {
     fn is_present(&self) -> bool {
         #[cfg(target_os = "linux")]
         {
-            self.active_device_path().is_some()
+            self.active_device_path().is_some() || self.sysfs_has_tpm()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -287,16 +412,32 @@ impl TpmBackend for DeviceTpmBackend {
     }
 
     fn fingerprint(&self) -> Result<String> {
-        let path = self.active_device_path().ok_or_else(|| {
-            ButterflyBotError::SecurityPolicy(
-                "TPM is required in strict mode; no TPM device found".to_string(),
-            )
-        })?;
+        let path = if let Some(path) = self.active_device_path() {
+            path
+        } else {
+            #[cfg(target_os = "linux")]
+            {
+                if self.sysfs_has_tpm() {
+                    PathBuf::from("/sys/class/tpm")
+                } else {
+                    return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+            }
+        };
+
+        if path.as_os_str().is_empty() {
+            return Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()));
+        }
 
         let mut hasher = Sha256::new();
         hasher.update(path.to_string_lossy().as_bytes());
 
-        if let Ok(meta) = std::fs::metadata(path) {
+        if let Ok(meta) = std::fs::metadata(&path) {
             hasher.update(meta.len().to_le_bytes());
             if let Ok(modified) = meta.modified() {
                 if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
@@ -305,8 +446,11 @@ impl TpmBackend for DeviceTpmBackend {
             }
         }
 
-        if let Ok(uevent) = std::fs::read("/sys/class/tpm/tpm0/device/uevent") {
-            hasher.update(uevent);
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(uevent) = self.sysfs_uevent_bytes() {
+                hasher.update(uevent);
+            }
         }
 
         Ok(format!("{:x}", hasher.finalize()))
@@ -422,9 +566,7 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
     }
 
     fn missing_tpm_error() -> ButterflyBotError {
-        ButterflyBotError::SecurityPolicy(
-            "TPM is required in strict mode; no TPM device found".to_string(),
-        )
+        ButterflyBotError::SecurityPolicy(missing_tpm_policy_message())
     }
 
     fn reset_error(detail: &str) -> ButterflyBotError {
@@ -624,9 +766,7 @@ pub fn require_tpm() -> Result<()> {
             return if value {
                 Ok(())
             } else {
-                Err(ButterflyBotError::SecurityPolicy(
-                    "TPM is required in strict mode; no TPM device found".to_string(),
-                ))
+                Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()))
             };
         }
     }
@@ -637,9 +777,7 @@ pub fn require_tpm() -> Result<()> {
             return if value {
                 Ok(())
             } else {
-                Err(ButterflyBotError::SecurityPolicy(
-                    "TPM is required in strict mode; no TPM device found".to_string(),
-                ))
+                Err(ButterflyBotError::SecurityPolicy(missing_tpm_policy_message()))
             };
         }
     }
@@ -811,5 +949,18 @@ mod tests {
         let runtime_b = runtime(&backend_b, &store, temp.path());
         let err = runtime_b.unseal_dek().unwrap_err();
         assert!(format!("{err}").contains("policy mismatch"));
+    }
+
+    #[test]
+    fn parse_tpm_index_accepts_numeric_suffixes() {
+        assert_eq!(DeviceTpmBackend::parse_tpm_index("tpmrm0", "tpmrm"), Some(0));
+        assert_eq!(DeviceTpmBackend::parse_tpm_index("tpm12", "tpm"), Some(12));
+    }
+
+    #[test]
+    fn parse_tpm_index_rejects_invalid_suffixes() {
+        assert_eq!(DeviceTpmBackend::parse_tpm_index("tpm", "tpm"), None);
+        assert_eq!(DeviceTpmBackend::parse_tpm_index("tpmrmx", "tpmrm"), None);
+        assert_eq!(DeviceTpmBackend::parse_tpm_index("atpm0", "tpm"), None);
     }
 }
