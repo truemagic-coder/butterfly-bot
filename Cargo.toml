@@ -29,7 +29,7 @@ async-stream = "0.3"
 async-trait = "0.1"
 clap = { version = "4.5.59", features = ["derive", "env"] }
 futures = "0.3.32"
-async-openai = { version = "0.32.4", features = ["chat-completion", "audio", "embedding"] }
+async-openai = { version = "0.33.0", features = ["chat-completion", "audio", "embedding"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0.18"
@@ -42,7 +42,7 @@ regex = "1.12.3"
 once_cell = "1.19"
 diesel = { version = "2.2", features = ["sqlite"] }
 diesel-async = { version = "0.7.4", features = ["sqlite", "bb8", "tokio"] }
-deadpool-sqlite = { version = "0.12", features = ["rt_tokio_1"] }
+deadpool-sqlite = { version = "0.12.0", features = ["rt_tokio_1"] }
 diesel_migrations = "2.2"
 sqlite-vec = "0.1"
 reqwest = { version = "0.13.2", features = ["json", "rustls", "query", "stream"] }
@@ -78,6 +78,12 @@ notify-rust = { version = "4.12.0", features = ["d"] }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 keyring = "3.6"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+	"Win32_System_Diagnostics_Debug",
+	"Win32_System_Memory",
+] }
 
 [features]
 default = []

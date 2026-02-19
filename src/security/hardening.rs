@@ -109,7 +109,7 @@ fn verify_page_locking() -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn enforce_core_dump_protection() -> Result<bool> {
     let mut current = libc::rlimit {
         rlim_cur: 0,
@@ -149,10 +149,22 @@ fn enforce_core_dump_protection() -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn enforce_core_dump_protection() -> Result<bool> {
+    use windows_sys::Win32::System::Diagnostics::Debug::{
+        SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
+    };
+
+    let _previous = unsafe {
+        SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX)
+    };
+    Ok(true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn enforce_core_dump_protection() -> Result<bool> {
     Err(ButterflyBotError::SecurityPolicy(
-        "strict profile requires Linux core dump protection controls".to_string(),
+        "strict profile requires platform core dump protection controls".to_string(),
     ))
 }
 
@@ -175,14 +187,40 @@ fn enforce_ptrace_protection() -> Result<bool> {
     Ok(true)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn enforce_ptrace_protection() -> Result<bool> {
+    let deny_ptrace = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, 0, 0) };
+    if deny_ptrace != 0 {
+        return Err(ButterflyBotError::SecurityPolicy(
+            "failed to set ptrace protection (PT_DENY_ATTACH)".to_string(),
+        ));
+    }
+
+    Ok(true)
+}
+
+#[cfg(target_os = "windows")]
+fn enforce_ptrace_protection() -> Result<bool> {
+    use windows_sys::Win32::System::Diagnostics::Debug::IsDebuggerPresent;
+
+    let debugger_present = unsafe { IsDebuggerPresent() } != 0;
+    if debugger_present {
+        return Err(ButterflyBotError::SecurityPolicy(
+            "failed to enforce anti-debug protection (debugger present)".to_string(),
+        ));
+    }
+
+    Ok(true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn enforce_ptrace_protection() -> Result<bool> {
     Err(ButterflyBotError::SecurityPolicy(
-        "strict profile requires Linux ptrace protection controls".to_string(),
+        "strict profile requires platform ptrace protection controls".to_string(),
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn lock_bytes(value: &[u8]) -> Result<()> {
     if value.is_empty() {
         return Ok(());
@@ -196,14 +234,30 @@ fn lock_bytes(value: &[u8]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn lock_bytes(value: &[u8]) -> Result<()> {
+    use windows_sys::Win32::System::Memory::VirtualLock;
+
+    if value.is_empty() {
+        return Ok(());
+    }
+    let rc = unsafe { VirtualLock(value.as_ptr() as *const core::ffi::c_void, value.len()) };
+    if rc == 0 {
+        return Err(ButterflyBotError::SecurityPolicy(
+            "strict profile requires page locking for sensitive buffers".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn lock_bytes(_value: &[u8]) -> Result<()> {
     Err(ButterflyBotError::SecurityPolicy(
         "strict profile requires page locking on this platform".to_string(),
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn unlock_bytes(value: &[u8]) -> Result<()> {
     if value.is_empty() {
         return Ok(());
@@ -217,7 +271,23 @@ fn unlock_bytes(value: &[u8]) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+fn unlock_bytes(value: &[u8]) -> Result<()> {
+    use windows_sys::Win32::System::Memory::VirtualUnlock;
+
+    if value.is_empty() {
+        return Ok(());
+    }
+    let rc = unsafe { VirtualUnlock(value.as_ptr() as *const core::ffi::c_void, value.len()) };
+    if rc == 0 {
+        return Err(ButterflyBotError::Runtime(
+            "failed to unlock sensitive buffer".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn unlock_bytes(_value: &[u8]) -> Result<()> {
     Ok(())
 }
@@ -237,7 +307,7 @@ mod tests {
         assert_eq!(result, 14);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     #[test]
     fn startup_self_check_reports_strict_compliance() {
         let report = run_startup_self_check().unwrap();

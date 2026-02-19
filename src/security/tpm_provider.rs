@@ -15,6 +15,8 @@ use std::sync::{OnceLock as DebugOnceLock, RwLock as DebugRwLock};
 
 const SERVICE: &str = "butterfly-bot";
 const TPM_KEK_NAME: &str = "tpm_kek";
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const PLATFORM_BINDING_NAME: &str = "platform_secure_binding";
 const POLICY_VERSION: u8 = 1;
 
 #[cfg(all(debug_assertions, not(test)))]
@@ -166,6 +168,109 @@ impl DeviceTpmBackend {
             return Some(Path::new("/dev/tpm0"));
         }
         None
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct AppleSecureBackend;
+
+#[cfg(target_os = "macos")]
+impl AppleSecureBackend {
+    fn keychain_entry() -> Result<keyring::Entry> {
+        keyring::Entry::new(SERVICE, PLATFORM_BINDING_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))
+    }
+
+    fn ensure_binding_id(&self) -> Result<String> {
+        let entry = Self::keychain_entry()?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    let generated = TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                    entry
+                        .set_password(&generated)
+                        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                    Ok(generated)
+                } else {
+                    Ok(trimmed)
+                }
+            }
+            Err(keyring::Error::NoEntry) => {
+                let generated = TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                entry
+                    .set_password(&generated)
+                    .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                Ok(generated)
+            }
+            Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl TpmBackend for AppleSecureBackend {
+    fn is_present(&self) -> bool {
+        Self::keychain_entry().is_ok()
+    }
+
+    fn fingerprint(&self) -> Result<String> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"darwin-keychain-secure-backend");
+        hasher.update(self.ensure_binding_id()?.as_bytes());
+        Ok(format!("{:x}", hasher.finalize()))
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsSecureBackend;
+
+#[cfg(target_os = "windows")]
+impl WindowsSecureBackend {
+    fn keychain_entry() -> Result<keyring::Entry> {
+        keyring::Entry::new(SERVICE, PLATFORM_BINDING_NAME)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))
+    }
+
+    fn ensure_binding_id(&self) -> Result<String> {
+        let entry = Self::keychain_entry()?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim().to_string();
+                if trimmed.is_empty() {
+                    let generated =
+                        TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                    entry
+                        .set_password(&generated)
+                        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                    Ok(generated)
+                } else {
+                    Ok(trimmed)
+                }
+            }
+            Err(keyring::Error::NoEntry) => {
+                let generated = TpmRuntime::<DeviceTpmBackend, KeyringKekStore>::random_secret()?;
+                entry
+                    .set_password(&generated)
+                    .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+                Ok(generated)
+            }
+            Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl TpmBackend for WindowsSecureBackend {
+    fn is_present(&self) -> bool {
+        Self::keychain_entry().is_ok()
+    }
+
+    fn fingerprint(&self) -> Result<String> {
+        let mut hasher = Sha256::new();
+        hasher.update(b"windows-keyring-secure-backend");
+        hasher.update(self.ensure_binding_id()?.as_bytes());
+        Ok(format!("{:x}", hasher.finalize()))
     }
 }
 
@@ -468,6 +573,40 @@ fn runtime_root() -> PathBuf {
     crate::runtime_paths::app_root().join("security")
 }
 
+#[cfg(target_os = "linux")]
+fn production_runtime() -> TpmRuntime<'static, DeviceTpmBackend, KeyringKekStore> {
+    static BACKEND: DeviceTpmBackend = DeviceTpmBackend;
+    static STORE: KeyringKekStore = KeyringKekStore;
+    TpmRuntime {
+        backend: &BACKEND,
+        kek_store: &STORE,
+        security_root: runtime_root(),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn production_runtime() -> TpmRuntime<'static, AppleSecureBackend, KeyringKekStore> {
+    static BACKEND: AppleSecureBackend = AppleSecureBackend;
+    static STORE: KeyringKekStore = KeyringKekStore;
+    TpmRuntime {
+        backend: &BACKEND,
+        kek_store: &STORE,
+        security_root: runtime_root(),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn production_runtime() -> TpmRuntime<'static, WindowsSecureBackend, KeyringKekStore> {
+    static BACKEND: WindowsSecureBackend = WindowsSecureBackend;
+    static STORE: KeyringKekStore = KeyringKekStore;
+    TpmRuntime {
+        backend: &BACKEND,
+        kek_store: &STORE,
+        security_root: runtime_root(),
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn production_runtime() -> TpmRuntime<'static, DeviceTpmBackend, KeyringKekStore> {
     static BACKEND: DeviceTpmBackend = DeviceTpmBackend;
     static STORE: KeyringKekStore = KeyringKekStore;

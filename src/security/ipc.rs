@@ -110,7 +110,32 @@ pub fn enforce_same_user_peer(stream: &UnixStream) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+pub fn enforce_same_user_peer(stream: &UnixStream) -> Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+    let mut euid: libc::uid_t = 0;
+    let mut egid: libc::gid_t = 0;
+    let rc = unsafe { libc::getpeereid(fd, &mut euid as *mut _, &mut egid as *mut _) };
+
+    if rc != 0 {
+        return Err(ButterflyBotError::SecurityPolicy(
+            "DENY_UNAUTHORIZED_IPC_CALLER: peer credential lookup failed".to_string(),
+        ));
+    }
+
+    let current_uid = unsafe { libc::geteuid() };
+    if euid != current_uid {
+        return Err(ButterflyBotError::SecurityPolicy(
+            "DENY_UNAUTHORIZED_IPC_CALLER: uid mismatch".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn enforce_same_user_peer(_stream: &UnixStream) -> Result<()> {
     Ok(())
 }
