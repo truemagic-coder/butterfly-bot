@@ -5,6 +5,18 @@ use rust_fsm::*;
 use std::collections::HashSet;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Security::{
+    EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Pipes::{ImpersonateNamedPipeClient, RevertToSelf};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentThread, OpenProcessToken, OpenThreadToken,
+};
 
 state_machine! {
     ipc_session(Init)
@@ -138,6 +150,98 @@ pub fn enforce_same_user_peer(stream: &UnixStream) -> Result<()> {
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn enforce_same_user_peer(_stream: &UnixStream) -> Result<()> {
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn enforce_same_user_named_pipe_client(pipe_handle: HANDLE) -> Result<()> {
+    unsafe {
+        if ImpersonateNamedPipeClient(pipe_handle) == 0 {
+            return Err(ButterflyBotError::SecurityPolicy(
+                "DENY_UNAUTHORIZED_IPC_CALLER: client impersonation failed".to_string(),
+            ));
+        }
+
+        let mut client_token: HANDLE = 0;
+        let thread_token_opened = OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut client_token) != 0;
+        let _ = RevertToSelf();
+
+        if !thread_token_opened {
+            return Err(ButterflyBotError::SecurityPolicy(
+                "DENY_UNAUTHORIZED_IPC_CALLER: failed to open client token".to_string(),
+            ));
+        }
+
+        let mut process_token: HANDLE = 0;
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut process_token) == 0 {
+            let _ = CloseHandle(client_token);
+            return Err(ButterflyBotError::SecurityPolicy(
+                "DENY_UNAUTHORIZED_IPC_CALLER: failed to open process token".to_string(),
+            ));
+        }
+
+        let client_user_buffer = match read_token_user_buffer(client_token) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = CloseHandle(client_token);
+                let _ = CloseHandle(process_token);
+                return Err(err);
+            }
+        };
+        let process_user_buffer = match read_token_user_buffer(process_token) {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = CloseHandle(client_token);
+                let _ = CloseHandle(process_token);
+                return Err(err);
+            }
+        };
+
+        let _ = CloseHandle(client_token);
+        let _ = CloseHandle(process_token);
+
+        let client_user = &*(client_user_buffer.as_ptr() as *const TOKEN_USER);
+        let process_user = &*(process_user_buffer.as_ptr() as *const TOKEN_USER);
+        let same_sid = EqualSid(client_user.Sid, process_user.Sid) != 0;
+        if !same_sid {
+            return Err(ButterflyBotError::SecurityPolicy(
+                "DENY_UNAUTHORIZED_IPC_CALLER: user sid mismatch".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn read_token_user_buffer(token: HANDLE) -> Result<Vec<u8>> {
+    unsafe {
+        let mut required_len: u32 = 0;
+        let _ = GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required_len);
+        if required_len == 0 {
+            return Err(ButterflyBotError::SecurityPolicy(format!(
+                "DENY_UNAUTHORIZED_IPC_CALLER: token size query failed ({})",
+                GetLastError()
+            )));
+        }
+
+        let mut buffer = vec![0u8; required_len as usize];
+        let ok = GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr() as *mut _,
+            required_len,
+            &mut required_len,
+        ) != 0;
+
+        if !ok {
+            return Err(ButterflyBotError::SecurityPolicy(format!(
+                "DENY_UNAUTHORIZED_IPC_CALLER: token info query failed ({})",
+                GetLastError()
+            )));
+        }
+
+        Ok(buffer)
+    }
 }
 
 fn nonce_from_counter(counter: u64, direction: u8) -> [u8; 24] {

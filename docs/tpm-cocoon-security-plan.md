@@ -18,7 +18,7 @@ This program uses multiple layers together (not one mechanism alone):
   - Persisted secret blobs are encrypted and authenticated with Cocoon.
   - Default target cipher suite should be ChaCha20-Poly1305 (256-bit) unless platform constraints require AES-256-GCM.
 3. **Local IPC transport protection (process-to-process)**
-  - Unix socket peer auth is mandatory.
+  - OS-native local transport peer auth is mandatory (Unix socket on Linux/macOS, Named Pipe on Windows).
   - IPC payload encryption is mandatory: all signer IPC payloads must be AEAD-protected end-to-end with per-session keys.
 4. **In-memory exposure minimization**
   - Plaintext key material must be short-lived, zeroized, and never copied into plugin/WASM memory space.
@@ -326,7 +326,7 @@ Notes:
 | TPM-rooted key unseal | Yes | Yes | Yes | Signer key manager | Yes |
 | Cocoon encrypted secret blobs | Yes | Yes | Yes | Secret provider | Yes |
 | IPC payload AEAD | Yes | Yes | Yes | IPC transport | Yes |
-| Unix socket peer auth | Yes | Yes | Yes | IPC transport | Yes |
+| Local IPC peer auth (Unix socket/Named Pipe) | Yes | Yes | Yes | IPC transport | Yes |
 | Context-driven approval gate | Yes | Yes | Yes | Policy engine | Yes |
 | Autonomous signing | Yes (bounded) | No | Yes (bounded) | Policy engine | Yes |
 | Explicit user approval UI | Escalation only | Primary | Escalation + user-initiated | UX/daemon API | Yes |
@@ -549,7 +549,7 @@ Notes:
 
 ### Checklist
 
-- [ ] Define IPC channel (Unix socket) and peer authentication (SO_PEERCRED).
+- [x] Define IPC channel and peer authentication (Unix socket on Linux/macOS, Named Pipe on Windows).
 - [ ] Decide IPC confidentiality mode:
   - required: per-session AEAD-wrapped IPC payloads in all environments,
   - peer-auth only mode is disallowed.
@@ -823,7 +823,7 @@ This profile is the recommended production baseline for “local and secure” m
 | Cocoon fallback cipher | AES-256-GCM (explicit opt-in fallback) | Allow only if required by platform/policy. |
 | KDF policy | Cocoon default PBKDF2-SHA256 (100000 min) | Never allow weaker KDF params than baseline. |
 | Secret blob format | Versioned envelope with algo IDs | Required for future crypto agility/migrations. |
-| IPC auth | Unix socket peer credential checks mandatory | Reject unknown UID/GID/process identity. |
+| IPC auth | Local IPC peer credential checks mandatory | Reject unknown UID/GID/process identity. |
 | IPC confidentiality | Mandatory AEAD session wrapping | Encrypt signer IPC payloads end-to-end locally in all modes. |
 | Signer boundary | Separate local signer process required | Plugins/WASM submit intent only, never raw keys. |
 | Key cache policy | No long-lived plaintext key cache | Unwrap per operation or short bounded session only. |
@@ -992,7 +992,7 @@ Use `rust-fsm` for protocol-critical workflow states to avoid ad-hoc transition 
 
 **Checklist:**
 
-- [x] Create signer process with Unix socket transport.
+- [x] Create signer process with local transport (Unix socket on Linux/macOS, Named Pipe on Windows).
 - [x] Enforce peer identity checks for every request.
 - [x] Implement mandatory AEAD-protected IPC payload framing (session keys, nonce policy, replay defense).
 - [x] Implement intent-only API (`preview`/`approve`/`sign`/`deny`).
@@ -1269,8 +1269,8 @@ This section tracks current code alignment with strict-mode plan requirements.
 - Status: **Implemented (current scope)**
 - Delivered:
   - signer intent API (`preview`/`approve`/`sign`/`deny`) in `src/security/signer_daemon.rs`,
-  - Unix socket transport helpers with authorized request handling,
-  - Linux peer identity enforcement (`SO_PEERCRED`) in `src/security/ipc.rs`,
+  - local transport helpers with authorized request handling (Unix sockets + Windows Named Pipes),
+  - peer identity enforcement (`SO_PEERCRED` on Linux, `getpeereid` on macOS, SID/token match on Windows) in `src/security/ipc.rs`,
   - mandatory AEAD framing + replay/integrity checks,
   - daemon route wiring for signer endpoints in `src/daemon.rs`.
 - Verified by tests:

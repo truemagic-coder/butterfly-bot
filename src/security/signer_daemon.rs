@@ -11,7 +11,33 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::path::Path;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::FileSystem::{
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ,
+    FILE_GENERIC_WRITE, OPEN_EXISTING,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Pipes::{
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_ACCESS_DUPLEX, PIPE_READMODE_MESSAGE,
+    PIPE_TYPE_MESSAGE, PIPE_WAIT,
+};
 use std::sync::{Arc, Mutex};
+
+#[cfg(target_os = "windows")]
+struct HandleGuard(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for HandleGuard {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
 
 state_machine! {
     signer_flow(Received)
@@ -145,6 +171,193 @@ pub fn send_unix_request(socket_path: &Path, request: &SignerRequest) -> Result<
     let response: SignerResponse = serde_json::from_str(line.trim())
         .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
     Ok(response)
+}
+
+#[cfg(target_os = "windows")]
+pub fn serve_one_windows_request(pipe_name: &str, service: &SignerService) -> Result<()> {
+    let pipe_path = normalize_pipe_name(pipe_name);
+    let wide_path = encode_wide_with_nul(&pipe_path);
+
+    let pipe_handle = unsafe {
+        CreateNamedPipeW(
+            wide_path.as_ptr(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            1,
+            4096,
+            4096,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if pipe_handle == INVALID_HANDLE_VALUE {
+        return Err(ButterflyBotError::Runtime(format!(
+            "failed to create signer pipe {} ({})",
+            pipe_path,
+            unsafe { GetLastError() }
+        )));
+    }
+
+    let connected = unsafe { ConnectNamedPipe(pipe_handle, std::ptr::null_mut()) != 0 };
+    if !connected {
+        let err = unsafe { GetLastError() };
+        if err != ERROR_PIPE_CONNECTED {
+            unsafe {
+                CloseHandle(pipe_handle);
+            }
+            return Err(ButterflyBotError::Runtime(format!(
+                "failed to accept signer pipe client {} ({})",
+                pipe_path, err
+            )));
+        }
+    }
+
+    let handle_guard = HandleGuard(pipe_handle);
+
+    crate::security::ipc::enforce_same_user_named_pipe_client(pipe_handle)?;
+
+    let request_line = read_pipe_line(pipe_handle)?;
+    let request: SignerRequest = serde_json::from_str(request_line.trim()).map_err(|e| {
+        ButterflyBotError::Serialization(format!("failed to parse signer request: {e}"))
+    })?;
+
+    let response = service.process(request)?;
+    let payload = serde_json::to_string(&response)
+        .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+
+    write_pipe_line(pipe_handle, &payload)?;
+
+    drop(handle_guard);
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn send_windows_request(pipe_name: &str, request: &SignerRequest) -> Result<SignerResponse> {
+    let pipe_path = normalize_pipe_name(pipe_name);
+    let wide_path = encode_wide_with_nul(&pipe_path);
+
+    let pipe_handle = {
+        let mut connected = None;
+        for _ in 0..40 {
+            let handle = unsafe {
+                CreateFileW(
+                    wide_path.as_ptr(),
+                    FILE_GENERIC_READ | FILE_GENERIC_WRITE,
+                    0,
+                    std::ptr::null_mut(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    0,
+                )
+            };
+
+            if handle != INVALID_HANDLE_VALUE {
+                connected = Some(handle);
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        connected.ok_or_else(|| {
+            ButterflyBotError::Runtime(format!("failed to connect signer pipe {}", pipe_path))
+        })?
+    };
+
+    let handle_guard = HandleGuard(pipe_handle);
+
+    let payload = serde_json::to_string(request)
+        .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+    write_pipe_line(pipe_handle, &payload)?;
+    let line = read_pipe_line(pipe_handle)?;
+
+    drop(handle_guard);
+
+    let response: SignerResponse = serde_json::from_str(line.trim())
+        .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+    Ok(response)
+}
+
+#[cfg(target_os = "windows")]
+fn read_pipe_line(pipe_handle: HANDLE) -> Result<String> {
+    let mut output = Vec::new();
+    let mut chunk = [0u8; 256];
+
+    loop {
+        let mut read: u32 = 0;
+        let ok = unsafe {
+            ReadFile(
+                pipe_handle,
+                chunk.as_mut_ptr() as *mut _,
+                chunk.len() as u32,
+                &mut read,
+                std::ptr::null_mut(),
+            ) != 0
+        };
+
+        if !ok {
+            let err = unsafe { GetLastError() };
+            if output.is_empty() {
+                return Err(ButterflyBotError::Runtime(format!(
+                    "failed to read signer pipe ({})",
+                    err
+                )));
+            }
+            break;
+        }
+
+        if read == 0 {
+            break;
+        }
+
+        output.extend_from_slice(&chunk[..read as usize]);
+        if output.last() == Some(&b'\n') {
+            break;
+        }
+    }
+
+    String::from_utf8(output)
+        .map_err(|e| ButterflyBotError::Serialization(format!("invalid utf8 pipe payload: {e}")))
+}
+
+#[cfg(target_os = "windows")]
+fn write_pipe_line(pipe_handle: HANDLE, payload: &str) -> Result<()> {
+    let mut wire = payload.as_bytes().to_vec();
+    wire.push(b'\n');
+
+    let mut written: u32 = 0;
+    let ok = unsafe {
+        WriteFile(
+            pipe_handle,
+            wire.as_ptr() as *const _,
+            wire.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        ) != 0
+    };
+
+    if !ok || written != wire.len() as u32 {
+        return Err(ButterflyBotError::Runtime(format!(
+            "failed to write signer pipe ({})",
+            unsafe { GetLastError() }
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn normalize_pipe_name(pipe_name: &str) -> String {
+    if pipe_name.starts_with(r"\\.\pipe\") {
+        return pipe_name.to_string();
+    }
+    format!(r"\\.\pipe\{pipe_name}")
+}
+
+#[cfg(target_os = "windows")]
+fn encode_wide_with_nul(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 impl SignerService {
@@ -491,6 +704,30 @@ mod tests {
             &socket_path,
             &SignerRequest::Preview {
                 intent: intent("req-sock"),
+            },
+        )
+        .unwrap();
+
+        handle.join().unwrap();
+        assert!(response.status == "approved" || response.status == "await_user_approval");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_pipe_preview_roundtrip() {
+        let service = SignerService::default();
+        let pipe_name = format!("butterfly-bot-signer-{}", std::process::id());
+
+        let service_for_thread = service.clone();
+        let pipe_for_thread = pipe_name.clone();
+        let handle = std::thread::spawn(move || {
+            serve_one_windows_request(&pipe_for_thread, &service_for_thread).unwrap();
+        });
+
+        let response = send_windows_request(
+            &pipe_name,
+            &SignerRequest::Preview {
+                intent: intent("req-pipe"),
             },
         )
         .unwrap();

@@ -312,3 +312,44 @@ impl Config {
         Ok(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convention_defaults_include_solana_rpc_settings() {
+        let config = Config::convention_defaults(":memory:");
+        let tools = config.tools.expect("tools should be initialized");
+
+        let rpc = tools
+            .get("settings")
+            .and_then(|settings| settings.get("solana"))
+            .and_then(|solana| solana.get("rpc"))
+            .expect("tools.settings.solana.rpc should exist");
+
+        assert_eq!(
+            rpc.get("provider").and_then(|v| v.as_str()),
+            Some("quicknode")
+        );
+        assert_eq!(
+            rpc.get("commitment").and_then(|v| v.as_str()),
+            Some("confirmed")
+        );
+
+        let simulation = rpc
+            .get("simulation")
+            .and_then(|v| v.as_object())
+            .expect("simulation object should exist");
+        assert_eq!(simulation.get("enabled").and_then(|v| v.as_bool()), Some(true));
+
+        let send = rpc
+            .get("send")
+            .and_then(|v| v.as_object())
+            .expect("send object should exist");
+        assert_eq!(
+            send.get("skip_preflight").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
+}

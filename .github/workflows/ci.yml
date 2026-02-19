@@ -112,3 +112,6 @@ jobs:
 
       - name: Build check (workspace)
         run: cargo check --workspace --all-targets
+
+      - name: Run Windows signer Named Pipe test
+        run: cargo test security::signer_daemon::tests::windows_pipe_preview_roundtrip --lib -- --nocapture

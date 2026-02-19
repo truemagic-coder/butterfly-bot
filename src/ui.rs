@@ -699,6 +699,7 @@ fn app_view() -> Element {
     let zapier_token_input = use_signal(String::new);
     let coding_api_key_input = use_signal(String::new);
     let search_api_key_input = use_signal(String::new);
+    let solana_rpc_endpoint_input = use_signal(String::new);
     let mcp_servers_form = use_signal(Vec::<UiMcpServer>::new);
     let http_call_servers_form = use_signal(Vec::<UiHttpCallServer>::new);
     let network_allow_form = use_signal(Vec::<String>::new);
@@ -1575,6 +1576,7 @@ fn app_view() -> Element {
         let zapier_token_input = zapier_token_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
         let search_api_key_input = search_api_key_input.clone();
+        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
         let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
@@ -1620,6 +1622,7 @@ fn app_view() -> Element {
                 let mut zapier_token_input = zapier_token_input;
                 let mut coding_api_key_input = coding_api_key_input;
                 let mut search_api_key_input = search_api_key_input;
+                let mut solana_rpc_endpoint_input = solana_rpc_endpoint_input;
                 let mut mcp_servers_form = mcp_servers_form;
                 let mut http_call_servers_form = http_call_servers_form;
                 let mut network_allow_form = network_allow_form;
@@ -1708,6 +1711,16 @@ fn app_view() -> Element {
                         {
                             wakeup_poll_seconds_input.set(poll_seconds.to_string());
                         }
+                    }
+
+                    if let Some(solana_rpc_endpoint) = tools_value
+                        .get("settings")
+                        .and_then(|settings| settings.get("solana"))
+                        .and_then(|solana| solana.get("rpc"))
+                        .and_then(|rpc| rpc.get("endpoint"))
+                        .and_then(|value| value.as_str())
+                    {
+                        solana_rpc_endpoint_input.set(solana_rpc_endpoint.to_string());
                     }
 
                     if let Some(mcp_servers) = tools_value
@@ -2116,6 +2129,7 @@ fn app_view() -> Element {
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
+        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let search_provider = search_provider.clone();
         let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
@@ -2133,6 +2147,7 @@ fn app_view() -> Element {
             let github_pat_input = github_pat_input.clone();
             let zapier_token_input = zapier_token_input.clone();
             let coding_api_key_input = coding_api_key_input.clone();
+            let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
             let search_provider = search_provider.clone();
             let search_api_key_input = search_api_key_input.clone();
             let mcp_servers_form = mcp_servers_form.clone();
@@ -2256,6 +2271,8 @@ fn app_view() -> Element {
                         return;
                     }
                 };
+
+                let solana_rpc_endpoint = solana_rpc_endpoint_input().trim().to_string();
 
                 let mut config = match crate::config::Config::from_store(&db_path) {
                     Ok(value) => value,
@@ -2417,6 +2434,27 @@ fn app_view() -> Element {
                                     .collect::<Vec<_>>(),
                             ),
                         );
+                    }
+
+                    let solana_cfg = settings_obj
+                        .entry("solana")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !solana_cfg.is_object() {
+                        *solana_cfg = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(solana_obj) = solana_cfg.as_object_mut() {
+                        let rpc_cfg = solana_obj
+                            .entry("rpc")
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if !rpc_cfg.is_object() {
+                            *rpc_cfg = Value::Object(serde_json::Map::new());
+                        }
+                        if let Some(rpc_obj) = rpc_cfg.as_object_mut() {
+                            rpc_obj.insert(
+                                "endpoint".to_string(),
+                                Value::String(solana_rpc_endpoint),
+                            );
+                        }
                     }
                 }
 
@@ -3399,6 +3437,22 @@ fn app_view() -> Element {
                                             placeholder: "Paste Zapier token",
                                         }
                                     }
+                                }
+
+                                div { class: "simple-top",
+                                    div {
+                                        label { "Solana RPC Endpoint" }
+                                        input {
+                                            value: "{solana_rpc_endpoint_input}",
+                                            oninput: move |evt| {
+                                                let mut solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
+                                                solana_rpc_endpoint_input.set(evt.value());
+                                            },
+                                            placeholder: "https://...",
+                                        }
+                                    }
+                                    div {}
+                                    div {}
                                 }
 
                                 div { class: "simple-top",
