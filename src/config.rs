@@ -286,7 +286,7 @@ impl Config {
     }
 
     pub fn convention_defaults(db_path: &str) -> Self {
-        let model = "ministral-3:14b".to_string();
+        let model = "ministral-3:8b".to_string();
         Self {
             provider: Some(ProviderConfig {
                 runtime: RuntimeProvider::Ollama,
@@ -303,7 +303,7 @@ impl Config {
                 sqlite_path: Some(db_path.to_string()),
                 summary_model: Some(model),
                 embedding_model: Some("embeddinggemma:latest".to_string()),
-                rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+                rerank_model: Some("ministral-3:8b".to_string()),
                 openai: None,
                 context_embed_enabled: Some(false),
                 summary_threshold: None,

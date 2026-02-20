@@ -32,9 +32,10 @@ use tokio::time::{sleep, timeout, Duration};
 
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-const OPENAI_DEFAULT_CHAT_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_DEFAULT_CHAT_MODEL: &str = "ministral-3:8b";
+const OPENAI_DEFAULT_SUMMARY_MODEL: &str = "ministral-3:8b";
 const OPENAI_DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
-const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_DEFAULT_RERANK_MODEL: &str = "ministral-3:8b";
 
 #[cfg(target_os = "linux")]
 fn send_desktop_notification(title: &str) {
@@ -940,6 +941,7 @@ fn app_view() -> Element {
     let openai_api_key_input = use_signal(String::new);
     let openai_base_url_input = use_signal(String::new);
     let openai_model_input = use_signal(String::new);
+    let openai_summary_model_input = use_signal(String::new);
     let openai_embedding_model_input = use_signal(String::new);
     let openai_rerank_model_input = use_signal(String::new);
     let coding_api_key_input = use_signal(String::new);
@@ -1966,6 +1968,7 @@ fn app_view() -> Element {
         let openai_api_key_input = openai_api_key_input.clone();
         let openai_base_url_input = openai_base_url_input.clone();
         let openai_model_input = openai_model_input.clone();
+        let openai_summary_model_input = openai_summary_model_input.clone();
         let openai_embedding_model_input = openai_embedding_model_input.clone();
         let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
@@ -2018,6 +2021,7 @@ fn app_view() -> Element {
                 let mut openai_api_key_input = openai_api_key_input;
                 let mut openai_base_url_input = openai_base_url_input;
                 let mut openai_model_input = openai_model_input;
+                let mut openai_summary_model_input = openai_summary_model_input;
                 let mut openai_embedding_model_input = openai_embedding_model_input;
                 let mut openai_rerank_model_input = openai_rerank_model_input;
                 let mut coding_api_key_input = coding_api_key_input;
@@ -2127,6 +2131,9 @@ fn app_view() -> Element {
                 }
 
                 if let Some(memory) = &config.memory {
+                    if let Some(summary_model) = &memory.summary_model {
+                        openai_summary_model_input.set(summary_model.clone());
+                    }
                     if let Some(embedding_model) = &memory.embedding_model {
                         openai_embedding_model_input.set(embedding_model.clone());
                     }
@@ -2582,6 +2589,7 @@ fn app_view() -> Element {
         let openai_api_key_input = openai_api_key_input.clone();
         let openai_base_url_input = openai_base_url_input.clone();
         let openai_model_input = openai_model_input.clone();
+        let openai_summary_model_input = openai_summary_model_input.clone();
         let openai_embedding_model_input = openai_embedding_model_input.clone();
         let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
@@ -2606,6 +2614,7 @@ fn app_view() -> Element {
             let openai_api_key_input = openai_api_key_input.clone();
             let openai_base_url_input = openai_base_url_input.clone();
             let openai_model_input = openai_model_input.clone();
+            let openai_summary_model_input = openai_summary_model_input.clone();
             let openai_embedding_model_input = openai_embedding_model_input.clone();
             let openai_rerank_model_input = openai_rerank_model_input.clone();
             let coding_api_key_input = coding_api_key_input.clone();
@@ -2647,6 +2656,7 @@ fn app_view() -> Element {
 
                 let mut openai_base_url_value = openai_base_url_input().trim().to_string();
                 let mut openai_model_value = openai_model_input().trim().to_string();
+                let mut openai_summary_model_value = openai_summary_model_input().trim().to_string();
                 let mut openai_embedding_model_value =
                     openai_embedding_model_input().trim().to_string();
                 let mut openai_rerank_model_value = openai_rerank_model_input().trim().to_string();
@@ -2672,6 +2682,9 @@ fn app_view() -> Element {
                     }
                     if openai_embedding_model_value.is_empty() {
                         openai_embedding_model_value = OPENAI_DEFAULT_EMBED_MODEL.to_string();
+                    }
+                    if openai_summary_model_value.is_empty() {
+                        openai_summary_model_value = OPENAI_DEFAULT_SUMMARY_MODEL.to_string();
                     }
                     if openai_rerank_model_value.is_empty() {
                         openai_rerank_model_value = OPENAI_DEFAULT_RERANK_MODEL.to_string();
@@ -2820,6 +2833,11 @@ fn app_view() -> Element {
                     None
                 } else {
                     Some(openai_embedding_model_value)
+                };
+                memory_cfg.summary_model = if openai_summary_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_summary_model_value)
                 };
                 memory_cfg.rerank_model = if openai_rerank_model_value.is_empty() {
                     None
@@ -4140,6 +4158,17 @@ fn app_view() -> Element {
 
                                         div { class: "simple-top",
                                             div {
+                                                label { "Summary Model" }
+                                                input {
+                                                    value: "{openai_summary_model_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_summary_model_input = openai_summary_model_input.clone();
+                                                        openai_summary_model_input.set(evt.value());
+                                                    },
+                                                    placeholder: "gpt-4.1-mini",
+                                                }
+                                            }
+                                            div {
                                                 label { "Embedding Model (small)" }
                                                 input {
                                                     value: "{openai_embedding_model_input}",
@@ -4161,7 +4190,6 @@ fn app_view() -> Element {
                                                     placeholder: "owner-selected reranker",
                                                 }
                                             }
-                                            div {}
                                         }
                                     }
                                 }
