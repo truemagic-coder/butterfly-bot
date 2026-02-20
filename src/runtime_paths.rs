@@ -1,68 +1,65 @@
-use directories::{BaseDirs, ProjectDirs};
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
-#[cfg(test)]
-use std::cell::RefCell;
-
-fn app_root_override_lock() -> &'static RwLock<Option<PathBuf>> {
-    static OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
-    OVERRIDE.get_or_init(|| RwLock::new(None))
+#[cfg(target_os = "macos")]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME").ok().and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(trimmed))
+        }
+    })
 }
 
-fn app_root_override() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        if let Some(path) = TEST_APP_ROOT_OVERRIDE.with(|cell| cell.borrow().clone()) {
-            return Some(path);
+fn env_app_root() -> Option<PathBuf> {
+    std::env::var("BUTTERFLY_BOT_APP_ROOT")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
+}
+
+#[cfg(target_os = "macos")]
+fn platform_app_root() -> PathBuf {
+    home_dir()
+        .map(|home| {
+            home.join("Library")
+                .join("Application Support")
+                .join("butterfly-bot")
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join("butterfly-bot"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_app_root() -> PathBuf {
+    if let Ok(value) = std::env::var("SNAP_USER_COMMON") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("butterfly-bot");
         }
     }
-
-    let lock = app_root_override_lock();
-    match lock.read() {
-        Ok(guard) => guard.clone(),
-        Err(poisoned) => poisoned.into_inner().clone(),
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static TEST_APP_ROOT_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-}
-
-#[cfg(test)]
-pub(crate) fn set_app_root_override_for_tests(path: Option<PathBuf>) {
-    TEST_APP_ROOT_OVERRIDE.with(|cell| {
-        *cell.borrow_mut() = path;
-    });
-}
-
-fn platform_app_root() -> PathBuf {
-    if let Some(project_dirs) = ProjectDirs::from("", "", "butterfly-bot") {
-        return project_dirs.data_dir().to_path_buf();
-    }
-
-    if let Some(base_dirs) = BaseDirs::new() {
-        return base_dirs.data_local_dir().join("butterfly-bot");
-    }
-
-    std::env::temp_dir().join("butterfly-bot")
+    PathBuf::from(".")
 }
 
 pub fn app_root() -> PathBuf {
-    app_root_override().unwrap_or_else(platform_app_root)
-}
-
-#[cfg(all(debug_assertions, not(test)))]
-pub fn set_debug_app_root_override(path: Option<PathBuf>) {
-    let lock = app_root_override_lock();
-    match lock.write() {
-        Ok(mut guard) => *guard = path,
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = path;
+    if let Some(lock) = DEBUG_APP_ROOT_OVERRIDE.get() {
+        let override_root = match lock.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some(path) = override_root {
+            return path;
         }
     }
+
+    env_app_root().unwrap_or_else(platform_app_root)
 }
 
 pub fn default_db_path() -> String {
@@ -74,29 +71,46 @@ pub fn default_db_path() -> String {
 }
 
 pub fn default_wasm_dir_candidates() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+    let mut candidates = Vec::new();
 
-    if let Some(project_dirs) = ProjectDirs::from("", "", "butterfly-bot") {
-        roots.push(project_dirs.data_dir().join("wasm"));
+    if let Ok(value) = std::env::var("BUTTERFLY_BOT_WASM_DIR") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            candidates.push(PathBuf::from(trimmed));
+        }
     }
 
-    if let Some(base_dirs) = BaseDirs::new() {
-        roots.push(
-            base_dirs
-                .data_local_dir()
-                .join("butterfly-bot")
-                .join("wasm"),
-        );
+    candidates.push(app_root().join("wasm"));
+
+    if let Ok(current) = std::env::current_dir() {
+        candidates.push(current.join("wasm"));
     }
 
-    let app_root = app_root();
-    if !app_root.as_os_str().is_empty() {
-        roots.push(app_root.join("wasm"));
+    candidates.push(PathBuf::from("wasm"));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
     }
 
-    roots.push(std::env::temp_dir().join("butterfly-bot").join("wasm"));
-    roots.push(PathBuf::from(".").join("wasm"));
+    deduped
+}
 
-    roots.dedup();
-    roots
+static DEBUG_APP_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+pub fn set_debug_app_root_override(path: Option<PathBuf>) {
+    let lock = DEBUG_APP_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
+    match lock.write() {
+        Ok(mut guard) => *guard = path,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = path;
+        }
+    }
+}
+
+pub fn set_app_root_override_for_tests(path: Option<PathBuf>) {
+    set_debug_app_root_override(path);
 }

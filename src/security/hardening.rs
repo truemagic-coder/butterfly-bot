@@ -190,7 +190,7 @@ fn enforce_ptrace_protection() -> Result<bool> {
 
 #[cfg(target_os = "macos")]
 fn enforce_ptrace_protection() -> Result<bool> {
-    let deny_ptrace = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, 0, 0) };
+    let deny_ptrace = unsafe { libc::ptrace(libc::PT_DENY_ATTACH, 0, std::ptr::null_mut(), 0) };
     if deny_ptrace != 0 {
         return Err(ButterflyBotError::SecurityPolicy(
             "failed to set ptrace protection (PT_DENY_ATTACH)".to_string(),

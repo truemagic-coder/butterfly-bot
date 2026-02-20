@@ -15,6 +15,8 @@ use butterfly_bot::error::Result;
 use butterfly_bot::ui;
 #[cfg(not(test))]
 use butterfly_bot::vault;
+#[cfg(not(test))]
+use tracing_subscriber::EnvFilter;
 
 #[cfg(not(test))]
 #[derive(Parser, Debug)]
@@ -29,57 +31,39 @@ struct Cli {
 
     #[arg(long, default_value = "user")]
     user_id: String,
-
-    #[arg(long, default_value_t = false)]
-    migrate_secrets: bool,
-
-    #[arg(long, default_value_t = false, requires = "migrate_secrets")]
-    migrate_secrets_dry_run: bool,
 }
 
 #[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
-    butterfly_bot::logging::init_tracing("butterfly_bot");
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     force_dbusrs();
 
     let cli = Cli::parse();
+    std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
+    std::env::set_var("BUTTERFLY_BOT_DAEMON", &cli.daemon);
+    std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
 
-    if cli.migrate_secrets {
-        let mode = if cli.migrate_secrets_dry_run {
-            butterfly_bot::security::migration::MigrationMode::DryRun
-        } else {
-            butterfly_bot::security::migration::MigrationMode::Apply
-        };
-
-        let report = butterfly_bot::security::migration::run_legacy_secret_migration(mode)?;
-        println!(
-            "Secret migration ({:?}): checked={} migrated={} skipped={} errors={}",
-            report.mode, report.checked, report.migrated, report.skipped, report.errors
-        );
-        for item in report.items {
-            println!("- {}: {} ({})", item.name, item.status, item.detail);
-        }
-
-        return Ok(());
+    if let Ok(token) = vault::ensure_daemon_auth_token() {
+        std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
     }
 
     let config = ensure_default_config(&cli.db)?;
-    apply_tpm_mode_from_config(&config);
-    let _token = vault::ensure_daemon_auth_token()?;
     ensure_ollama_installed(&config)?;
     ensure_ollama_models(&config)?;
-    ui::launch_ui_with_config(ui::UiLaunchConfig {
-        db_path: cli.db,
-        daemon_url: cli.daemon,
-        user_id: cli.user_id,
-    });
+    ui::launch_ui();
     Ok(())
 }
 
 #[cfg(not(test))]
 #[cfg(target_os = "linux")]
-fn force_dbusrs() {}
+fn force_dbusrs() {
+    if std::env::var("DBUSRS").is_err() {
+        std::env::set_var("DBUSRS", "1");
+    }
+}
 
 #[cfg(not(test))]
 #[cfg(not(target_os = "linux"))]
@@ -95,24 +79,6 @@ fn ensure_default_config(db_path: &str) -> Result<Config> {
             Ok(config)
         }
     }
-}
-
-#[cfg(not(test))]
-fn apply_tpm_mode_from_config(config: &Config) {
-    if std::env::var("BUTTERFLY_TPM_MODE").is_ok() {
-        return;
-    }
-
-    let mode = config
-        .tools
-        .as_ref()
-        .and_then(|tools| tools.get("settings"))
-        .and_then(|settings| settings.get("security"))
-        .and_then(|security| security.get("tpm_mode"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("auto");
-
-    std::env::set_var("BUTTERFLY_TPM_MODE", mode);
 }
 
 #[cfg(not(test))]
@@ -165,10 +131,6 @@ fn ollama_available() -> bool {
 
 #[cfg(not(test))]
 fn uses_local_ollama(config: &Config) -> bool {
-    if config.runtime_provider() != butterfly_bot::config::RuntimeProvider::Ollama {
-        return false;
-    }
-
     let Some(openai) = &config.openai else {
         return false;
     };

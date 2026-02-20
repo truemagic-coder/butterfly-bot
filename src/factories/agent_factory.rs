@@ -79,7 +79,6 @@ use crate::tools::mcp::McpTool;
 use crate::tools::planning::PlanningTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
-use crate::tools::solana::SolanaTool;
 use crate::tools::tasks::TasksTool;
 use crate::tools::todo::TodoTool;
 use crate::tools::wakeup::WakeupTool;
@@ -421,12 +420,6 @@ impl ButterflyBotFactory {
             registered_tools.push("tasks".to_string());
         }
 
-        let tool: Arc<dyn Tool> = Arc::new(SolanaTool::new());
-        tool.configure(&config_value)?;
-        if tool_registry.register_tool(tool).await {
-            registered_tools.push("solana".to_string());
-        }
-
         for tool_name in &registered_tools {
             let assigned = tool_registry
                 .assign_tool_to_agent(&agent_name, tool_name)
@@ -481,6 +474,7 @@ impl ButterflyBotFactory {
                 Arc::new(InMemoryMemoryProvider::new())
                     as Arc<dyn crate::interfaces::providers::MemoryProvider>
             };
+
         let reminder_store = if registered_tools.iter().any(|name| name == "reminders") {
             let path =
                 resolve_reminder_db_path(&config_value).unwrap_or_else(default_reminder_db_path);
@@ -488,6 +482,7 @@ impl ButterflyBotFactory {
         } else {
             None
         };
+
         Ok(QueryService::new(
             agent_service,
             Some(memory_provider),

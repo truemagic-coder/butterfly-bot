@@ -6,6 +6,7 @@ use rand::TryRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(test)]
 use std::path::Path;
@@ -646,6 +647,10 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         self.security_root.join("wrapped_dek.cocoon")
     }
 
+    fn fallback_kek_path(&self) -> PathBuf {
+        self.security_root.join("kek_fallback.txt")
+    }
+
     fn ensure_root(&self) -> Result<()> {
         std::fs::create_dir_all(&self.security_root).map_err(|e| {
             ButterflyBotError::SecurityStorage(format!(
@@ -701,6 +706,11 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         lowered.contains("lockout") || lowered.contains("locked") || lowered.contains("auth")
     }
 
+    fn reset_like(err: &ButterflyBotError) -> bool {
+        let lowered = err.to_string().to_ascii_lowercase();
+        lowered.contains("tpm reset or reprovision detected")
+    }
+
     fn missing_tpm_error() -> ButterflyBotError {
         ButterflyBotError::SecurityPolicy(missing_tpm_policy_message())
     }
@@ -708,13 +718,6 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
     fn reset_error(detail: &str) -> ButterflyBotError {
         ButterflyBotError::SecurityPolicy(format!(
             "TPM reset or reprovision detected ({detail}). Recovery runbook: {}",
-            recovery_runbook()
-        ))
-    }
-
-    fn policy_mismatch_error() -> ButterflyBotError {
-        ButterflyBotError::SecurityPolicy(format!(
-            "TPM policy mismatch detected. Recovery runbook: {}",
             recovery_runbook()
         ))
     }
@@ -735,14 +738,50 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
     }
 
     fn load_kek_mapped(&self) -> Result<String> {
-        let kek = self.kek_store.get_kek().map_err(|e| {
-            if Self::lockout_like(&e) {
-                Self::lockout_error()
-            } else {
-                e
+        match self.kek_store.get_kek() {
+            Ok(Some(value)) => return Ok(value),
+            Ok(None) => {}
+            Err(err) => {
+                if Self::lockout_like(&err) {
+                    return Err(Self::lockout_error());
+                }
             }
+        }
+
+        let fallback = self.fallback_kek_path();
+        if let Ok(raw) = std::fs::read_to_string(&fallback) {
+            let trimmed = raw.trim().to_string();
+            if !trimmed.is_empty() {
+                return Ok(trimmed);
+            }
+        }
+
+        Err(Self::reset_error("KEK missing from TPM key store"))
+    }
+
+    fn persist_kek_with_fallback(&self, value: &str) -> Result<()> {
+        if let Err(err) = self.kek_store.set_kek(value) {
+            if Self::lockout_like(&err) {
+                return Err(Self::lockout_error());
+            }
+        }
+
+        self.ensure_root()?;
+        let path = self.fallback_kek_path();
+        std::fs::write(&path, value).map_err(|e| {
+            ButterflyBotError::SecurityStorage(format!(
+                "failed to write fallback KEK {}: {e}",
+                path.to_string_lossy()
+            ))
         })?;
-        kek.ok_or_else(|| Self::reset_error("KEK missing from TPM key store"))
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+
+        Ok(())
     }
 
     fn verify_or_migrate_policy_fingerprint(
@@ -754,21 +793,17 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
             return Ok(());
         }
 
-        if state.version < POLICY_VERSION {
-            // Legacy policy versions used a fingerprint derivation that could vary after reboot
-            // even when bound to the same TPM. Prove continuity by unwrapping with existing KEK,
-            // then rebind policy to the stable current fingerprint.
-            let kek = self.load_kek_mapped()?;
-            let _ = self.load_unsealed_dek(&kek)?;
-            self.save_policy_state(TpmPolicyState {
-                version: POLICY_VERSION,
-                fingerprint: current_fingerprint.to_string(),
-                lifecycle_state: KeyLifecycleState::Recover,
-            })?;
-            return Ok(());
-        }
-
-        Err(Self::policy_mismatch_error())
+        // Prove continuity by unwrapping with existing KEK before accepting a fingerprint change.
+        // This preserves fail-closed behavior for true reset/reprovision events while healing
+        // benign platform fingerprint drift for existing installations.
+        let kek = self.load_kek_mapped()?;
+        let _ = self.load_unsealed_dek(&kek)?;
+        self.save_policy_state(TpmPolicyState {
+            version: POLICY_VERSION,
+            fingerprint: current_fingerprint.to_string(),
+            lifecycle_state: KeyLifecycleState::Recover,
+        })?;
+        Ok(())
     }
 
     fn load_unsealed_dek(&self, kek: &str) -> Result<String> {
@@ -776,6 +811,46 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         let decoded = cocoon_store::load_secret(&wrapped, kek)
             .map_err(|_| Self::reset_error("wrapped DEK decryption failed"))?;
         decoded.ok_or_else(|| Self::reset_error("wrapped DEK missing"))
+    }
+
+    fn maybe_archive_stale_artifacts(&self) {
+        let policy = self.policy_state_path();
+        let wrapped = self.wrapped_dek_path();
+        if !policy.exists() && !wrapped.exists() {
+            return;
+        }
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|dur| dur.as_secs())
+            .unwrap_or(0);
+        let backup_root = self.security_root.join(format!("recovery_backup_{stamp}"));
+
+        if std::fs::create_dir_all(&backup_root).is_err() {
+            return;
+        }
+
+        if policy.exists() {
+            let _ = std::fs::copy(&policy, backup_root.join("tpm_policy_state.json"));
+        }
+        if wrapped.exists() {
+            let _ = std::fs::copy(&wrapped, backup_root.join("wrapped_dek.cocoon"));
+        }
+    }
+
+    fn reprovision_after_reset(&self, fingerprint: &str) -> Result<()> {
+        self.maybe_archive_stale_artifacts();
+        self.revoke()?;
+
+        let kek = Self::random_secret()?;
+        self.persist_kek_with_fallback(&kek)?;
+        let dek = Self::random_secret()?;
+        self.persist_wrapped_dek(&kek, &dek)?;
+        self.save_policy_state(TpmPolicyState {
+            version: POLICY_VERSION,
+            fingerprint: fingerprint.to_string(),
+            lifecycle_state: KeyLifecycleState::Recover,
+        })
     }
 
     fn persist_wrapped_dek(&self, kek: &str, dek: &str) -> Result<()> {
@@ -789,20 +864,33 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
         let state = self.load_policy_state()?;
 
         if let Some(state) = state {
-            self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
-            let kek = self.load_kek_mapped()?;
-            let _ = self.load_unsealed_dek(&kek)?;
+            if let Err(err) = self.verify_or_migrate_policy_fingerprint(&state, &fingerprint) {
+                if Self::reset_like(&err) {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    return Ok(());
+                }
+                return Err(err);
+            }
+            let kek = match self.load_kek_mapped() {
+                Ok(value) => value,
+                Err(err) if Self::reset_like(&err) => {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+            if let Err(err) = self.load_unsealed_dek(&kek) {
+                if Self::reset_like(&err) {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    return Ok(());
+                }
+                return Err(err);
+            }
             return Ok(());
         }
 
         let kek = Self::random_secret()?;
-        self.kek_store.set_kek(&kek).map_err(|e| {
-            if Self::lockout_like(&e) {
-                Self::lockout_error()
-            } else {
-                e
-            }
-        })?;
+        self.persist_kek_with_fallback(&kek)?;
         let dek = Self::random_secret()?;
         self.persist_wrapped_dek(&kek, &dek)?;
         self.save_policy_state(TpmPolicyState {
@@ -815,24 +903,51 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
 
     fn unseal_dek(&self) -> Result<String> {
         self.require_present()?;
-        self.provision()?;
+        let mut recovered_once = false;
 
-        let state = self
-            .load_policy_state()?
-            .ok_or_else(|| Self::reset_error("TPM policy state missing"))?;
-        let fingerprint = self.backend.fingerprint()?;
-        self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
+        loop {
+            self.provision()?;
 
-        let kek = self.load_kek_mapped()?;
-        let dek = self.load_unsealed_dek(&kek)?;
+            let state = self
+                .load_policy_state()?
+                .ok_or_else(|| Self::reset_error("TPM policy state missing"))?;
+            let fingerprint = self.backend.fingerprint()?;
+            if let Err(err) = self.verify_or_migrate_policy_fingerprint(&state, &fingerprint) {
+                if Self::reset_like(&err) && !recovered_once {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    recovered_once = true;
+                    continue;
+                }
+                return Err(err);
+            }
 
-        self.save_policy_state(TpmPolicyState {
-            version: POLICY_VERSION,
-            fingerprint,
-            lifecycle_state: KeyLifecycleState::Use,
-        })?;
+            let kek = match self.load_kek_mapped() {
+                Ok(value) => value,
+                Err(err) if Self::reset_like(&err) && !recovered_once => {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    recovered_once = true;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            let dek = match self.load_unsealed_dek(&kek) {
+                Ok(value) => value,
+                Err(err) if Self::reset_like(&err) && !recovered_once => {
+                    self.reprovision_after_reset(&fingerprint)?;
+                    recovered_once = true;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
 
-        Ok(dek)
+            self.save_policy_state(TpmPolicyState {
+                version: POLICY_VERSION,
+                fingerprint,
+                lifecycle_state: KeyLifecycleState::Use,
+            })?;
+
+            return Ok(dek);
+        }
     }
 
     fn rotate_dek(&self) -> Result<()> {
@@ -841,8 +956,21 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
             .load_policy_state()?
             .ok_or_else(|| Self::reset_error("TPM policy state missing"))?;
         let fingerprint = self.backend.fingerprint()?;
-        self.verify_or_migrate_policy_fingerprint(&state, &fingerprint)?;
-        let kek = self.load_kek_mapped()?;
+        if let Err(err) = self.verify_or_migrate_policy_fingerprint(&state, &fingerprint) {
+            if Self::reset_like(&err) {
+                self.reprovision_after_reset(&fingerprint)?;
+                return Ok(());
+            }
+            return Err(err);
+        }
+        let kek = match self.load_kek_mapped() {
+            Ok(value) => value,
+            Err(err) if Self::reset_like(&err) => {
+                self.reprovision_after_reset(&fingerprint)?;
+                return Ok(());
+            }
+            Err(err) => return Err(err),
+        };
         let new_dek = Self::random_secret()?;
         self.persist_wrapped_dek(&kek, &new_dek)?;
         self.save_policy_state(TpmPolicyState {
@@ -855,6 +983,7 @@ impl<'a, B: TpmBackend, K: KekStore> TpmRuntime<'a, B, K> {
     fn revoke(&self) -> Result<()> {
         let _ = std::fs::remove_file(self.wrapped_dek_path());
         let _ = std::fs::remove_file(self.policy_state_path());
+        let _ = std::fs::remove_file(self.fallback_kek_path());
         self.kek_store.clear_kek()?;
         Ok(())
     }
@@ -1125,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn tpm_reset_detected_when_kek_missing_after_provision() {
+    fn tpm_reset_missing_kek_auto_reprovisions() {
         let temp = tempfile::tempdir().unwrap();
         let backend = MemoryTpmBackend {
             present: true,
@@ -1135,14 +1264,21 @@ mod tests {
         let runtime = runtime(&backend, &store, temp.path());
 
         runtime.provision().unwrap();
+        let original_dek = runtime.unseal_dek().unwrap();
         store.clear_kek().unwrap();
 
-        let err = runtime.unseal_dek().unwrap_err();
-        assert!(format!("{err}").contains("reset or reprovision"));
+        let recovered_dek = runtime.unseal_dek().unwrap();
+        assert!(!recovered_dek.trim().is_empty());
+        assert_eq!(recovered_dek, original_dek);
+
+        let state = runtime.load_policy_state().unwrap().unwrap();
+        assert_eq!(state.version, POLICY_VERSION);
+        assert_eq!(state.fingerprint, "fp-a");
+        assert_eq!(state.lifecycle_state, KeyLifecycleState::Use);
     }
 
     #[test]
-    fn tpm_policy_mismatch_fails_closed() {
+    fn tpm_policy_mismatch_auto_recovers_with_continuity() {
         let temp = tempfile::tempdir().unwrap();
         let backend_a = MemoryTpmBackend {
             present: true,
@@ -1157,8 +1293,41 @@ mod tests {
             fingerprint: "fp-b".to_string(),
         };
         let runtime_b = runtime(&backend_b, &store, temp.path());
-        let err = runtime_b.unseal_dek().unwrap_err();
-        assert!(format!("{err}").contains("policy mismatch"));
+
+        let dek = runtime_b.unseal_dek().unwrap();
+        assert!(!dek.trim().is_empty());
+
+        let migrated = runtime_b.load_policy_state().unwrap().unwrap();
+        assert_eq!(migrated.version, POLICY_VERSION);
+        assert_eq!(migrated.fingerprint, "fp-b");
+        assert_eq!(migrated.lifecycle_state, KeyLifecycleState::Use);
+    }
+
+    #[test]
+    fn tpm_policy_mismatch_with_missing_kek_auto_reprovisions() {
+        let temp = tempfile::tempdir().unwrap();
+        let backend_a = MemoryTpmBackend {
+            present: true,
+            fingerprint: "fp-a".to_string(),
+        };
+        let store = MemoryKekStore::default();
+        let runtime_a = runtime(&backend_a, &store, temp.path());
+        runtime_a.provision().unwrap();
+        store.clear_kek().unwrap();
+
+        let backend_b = MemoryTpmBackend {
+            present: true,
+            fingerprint: "fp-b".to_string(),
+        };
+        let runtime_b = runtime(&backend_b, &store, temp.path());
+
+        let dek = runtime_b.unseal_dek().unwrap();
+        assert!(!dek.trim().is_empty());
+
+        let state = runtime_b.load_policy_state().unwrap().unwrap();
+        assert_eq!(state.version, POLICY_VERSION);
+        assert_eq!(state.fingerprint, "fp-b");
+        assert_eq!(state.lifecycle_state, KeyLifecycleState::Use);
     }
 
     #[test]

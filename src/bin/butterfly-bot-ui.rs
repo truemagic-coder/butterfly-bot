@@ -4,51 +4,39 @@ use clap::Parser;
 #[command(name = "butterfly-bot-ui")]
 struct UiCli {
     /// Database path for settings/config storage.
-    #[arg(long, default_value_t = butterfly_bot::runtime_paths::default_db_path())]
+    #[arg(
+        long,
+        env = "BUTTERFLY_BOT_DB",
+        default_value_t = butterfly_bot::runtime_paths::default_db_path()
+    )]
     db: String,
 
     /// Daemon address (e.g. http://127.0.0.1:7878).
-    #[arg(long)]
+    #[arg(long, env = "BUTTERFLY_BOT_DAEMON")]
     daemon: Option<String>,
 
     /// User id for chat context.
-    #[arg(long, default_value = "user")]
+    #[arg(long, env = "BUTTERFLY_BOT_USER_ID", default_value = "user")]
     user_id: String,
 }
 
 fn main() -> butterfly_bot::Result<()> {
-    butterfly_bot::logging::init_tracing("butterfly_bot_ui");
     let cli = UiCli::parse();
 
-    let config = if let Ok(config) = butterfly_bot::config::Config::from_store(&cli.db) {
-        config
-    } else {
+    if butterfly_bot::config::Config::from_store(&cli.db).is_err() {
         let defaults = butterfly_bot::config::Config::convention_defaults(&cli.db);
         butterfly_bot::config_store::save_config(&cli.db, &defaults)?;
-        defaults
-    };
-
-    if std::env::var("BUTTERFLY_TPM_MODE").is_err() {
-        let tpm_mode = config
-            .tools
-            .as_ref()
-            .and_then(|tools| tools.get("settings"))
-            .and_then(|settings| settings.get("security"))
-            .and_then(|security| security.get("tpm_mode"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("auto")
-            .to_string();
-        std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode);
     }
 
-    let _token = butterfly_bot::vault::ensure_daemon_auth_token()?;
+    std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
+    if let Some(daemon) = cli.daemon.as_ref() {
+        std::env::set_var("BUTTERFLY_BOT_DAEMON", daemon);
+    }
+    if let Ok(token) = butterfly_bot::vault::ensure_daemon_auth_token() {
+        std::env::set_var("BUTTERFLY_BOT_TOKEN", token);
+    }
+    std::env::set_var("BUTTERFLY_BOT_USER_ID", &cli.user_id);
 
-    butterfly_bot::ui::launch_ui_with_config(butterfly_bot::ui::UiLaunchConfig {
-        db_path: cli.db,
-        daemon_url: cli
-            .daemon
-            .unwrap_or_else(|| "http://127.0.0.1:7878".to_string()),
-        user_id: cli.user_id,
-    });
+    butterfly_bot::ui::launch_ui();
     Ok(())
 }

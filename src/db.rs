@@ -1,6 +1,8 @@
 use std::sync::{OnceLock, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use diesel::Connection;
 use diesel::sqlite::SqliteConnection;
 use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
 #[cfg(not(test))]
@@ -143,6 +145,85 @@ pub fn apply_sqlcipher_key_sync(conn: &mut SqliteConnection) -> Result<()> {
     .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     tune_sqlcipher_log_level_sync(conn);
     Ok(())
+}
+
+fn sqlcipher_not_a_database(err: &ButterflyBotError) -> bool {
+    let lowered = err.to_string().to_ascii_lowercase();
+    lowered.contains("file is not a database")
+        || lowered.contains("file is encrypted or is not a database")
+}
+
+fn validate_sqlcipher_connection_sync(conn: &mut SqliteConnection) -> Result<()> {
+    diesel::connection::SimpleConnection::batch_execute(conn, "SELECT count(*) FROM sqlite_master;")
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
+}
+
+fn archive_unreadable_db_file(database_url: &str) -> Result<()> {
+    let path = std::path::Path::new(database_url);
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let file_name = match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => return Ok(()),
+    };
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_secs())
+        .unwrap_or(0);
+    let backup_name = format!("{file_name}.recovery-{stamp}.bak");
+    let backup_path = match path.parent() {
+        Some(parent) => parent.join(backup_name),
+        None => return Ok(()),
+    };
+
+    std::fs::rename(path, &backup_path).map_err(|e| {
+        ButterflyBotError::Runtime(format!(
+            "failed to archive unreadable database {} -> {}: {e}",
+            path.to_string_lossy(),
+            backup_path.to_string_lossy()
+        ))
+    })?;
+
+    tracing::warn!(
+        db_path = %path.to_string_lossy(),
+        backup_path = %backup_path.to_string_lossy(),
+        "Archived unreadable SQLCipher database; a new encrypted database will be created"
+    );
+    Ok(())
+}
+
+pub fn open_sqlcipher_connection_sync(database_url: &str) -> Result<SqliteConnection> {
+    let mut conn = SqliteConnection::establish(database_url)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+
+    if let Err(err) = apply_sqlcipher_key_sync(&mut conn) {
+        if sqlcipher_not_a_database(&err) {
+            archive_unreadable_db_file(database_url)?;
+            let mut rebuilt = SqliteConnection::establish(database_url)
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            apply_sqlcipher_key_sync(&mut rebuilt)?;
+            validate_sqlcipher_connection_sync(&mut rebuilt)?;
+            return Ok(rebuilt);
+        }
+        return Err(err);
+    }
+
+    if let Err(err) = validate_sqlcipher_connection_sync(&mut conn) {
+        if sqlcipher_not_a_database(&err) {
+            archive_unreadable_db_file(database_url)?;
+            let mut rebuilt = SqliteConnection::establish(database_url)
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+            apply_sqlcipher_key_sync(&mut rebuilt)?;
+            validate_sqlcipher_connection_sync(&mut rebuilt)?;
+            return Ok(rebuilt);
+        }
+        return Err(err);
+    }
+
+    Ok(conn)
 }
 
 pub async fn apply_sqlcipher_key_async(

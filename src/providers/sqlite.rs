@@ -294,9 +294,7 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 async fn run_migrations(database_url: &str) -> Result<()> {
     let database_url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut conn = SqliteConnection::establish(&database_url)
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+        let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         Ok::<_, ButterflyBotError>(())
@@ -309,9 +307,7 @@ async fn run_migrations(database_url: &str) -> Result<()> {
 async fn ensure_memory_tables(database_url: &str) -> Result<()> {
     let database_url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut conn = SqliteConnection::establish(&database_url)
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+        let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
 
         let tables = [
             "messages",
@@ -772,9 +768,7 @@ impl SqliteMemoryProvider {
     async fn repair_messages_fts(&self) -> Result<()> {
         let database_url = self.sqlite_path.clone();
         tokio::task::spawn_blocking(move || {
-            let mut conn = SqliteConnection::establish(&database_url)
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-            crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+            let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
             repair_messages_fts_sync(&mut conn)
         })
         .await

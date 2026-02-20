@@ -1,6 +1,7 @@
 use butterfly_bot::daemon;
 use butterfly_bot::error::Result;
 use clap::Parser;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "butterfly-botd")]
@@ -18,24 +19,10 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    butterfly_bot::logging::init_tracing("butterfly_botd");
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let cli = Cli::parse();
-
-    if std::env::var("BUTTERFLY_TPM_MODE").is_err() {
-        if let Ok(config) = butterfly_bot::config::Config::from_store(&cli.db) {
-            let tpm_mode = config
-                .tools
-                .as_ref()
-                .and_then(|tools| tools.get("settings"))
-                .and_then(|settings| settings.get("security"))
-                .and_then(|security| security.get("tpm_mode"))
-                .and_then(|value| value.as_str())
-                .unwrap_or("auto")
-                .to_string();
-            std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode);
-        }
-    }
-
     let token = butterfly_bot::vault::ensure_daemon_auth_token()?;
 
     daemon::run(&cli.host, cli.port, &cli.db, &token).await
