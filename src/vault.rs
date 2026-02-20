@@ -2,8 +2,40 @@ use crate::error::{ButterflyBotError, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::rngs::SysRng;
 use rand::TryRng;
+use std::path::PathBuf;
 
 const SERVICE: &str = "butterfly-bot";
+const DAEMON_TOKEN_FILE: &str = "daemon_auth_token";
+
+fn daemon_auth_token_file() -> PathBuf {
+    crate::runtime_paths::app_root()
+        .join("secrets")
+        .join(DAEMON_TOKEN_FILE)
+}
+
+fn read_daemon_auth_token_file() -> Option<String> {
+    let path = daemon_auth_token_file();
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn write_daemon_auth_token_file(token: &str) {
+    let path = daemon_auth_token_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, token);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
 
 fn keyring_backend_unavailable(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
@@ -101,12 +133,18 @@ pub fn ensure_daemon_auth_token() -> Result<String> {
         }
     }
 
+    if let Some(token) = read_daemon_auth_token_file() {
+        std::env::set_var("BUTTERFLY_BOT_TOKEN", &token);
+        return Ok(token);
+    }
+
     let mut bytes = [0u8; 32];
     let mut rng = SysRng;
     rng.try_fill_bytes(&mut bytes)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     let generated = URL_SAFE_NO_PAD.encode(bytes);
     let _ = set_secret("daemon_auth_token", &generated);
+    write_daemon_auth_token_file(&generated);
     std::env::set_var("BUTTERFLY_BOT_TOKEN", &generated);
     Ok(generated)
 }

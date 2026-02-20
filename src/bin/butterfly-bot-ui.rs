@@ -21,6 +21,7 @@ struct UiCli {
 }
 
 fn main() -> butterfly_bot::Result<()> {
+    butterfly_bot::logging::init_tracing("butterfly_bot_ui");
     let cli = UiCli::parse();
 
     if butterfly_bot::config::Config::from_store(&cli.db).is_err() {

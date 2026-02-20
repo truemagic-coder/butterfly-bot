@@ -13,9 +13,13 @@ use notify_rust::Notification;
 use pulldown_cmark::{html, Options, Parser};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::env;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
-use std::thread;
+use std::time::Duration as StdDuration;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::html::styled_line_to_highlighted_html;
@@ -24,6 +28,26 @@ use syntect::util::LinesWithEndings;
 use time::format_description::well_known::Rfc3339;
 use time::{macros::format_description, OffsetDateTime, UtcOffset};
 use tokio::time::{sleep, timeout, Duration};
+
+const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
+const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+const OPENAI_DEFAULT_CHAT_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
+const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-4.1-mini";
+
+#[cfg(target_os = "linux")]
+fn send_desktop_notification(title: &str) {
+    if let Err(err) = Notification::new()
+        .summary("Butterfly Bot")
+        .body(title)
+        .show()
+    {
+        tracing::warn!(error = %err, "Desktop notification failed");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn send_desktop_notification(_title: &str) {}
 
 #[derive(Clone, Serialize)]
 struct ProcessTextRequest {
@@ -78,7 +102,7 @@ struct FactoryResetConfigResponse {
 }
 
 async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
-    let client = ui_http_client();
+    let client = reqwest::Client::new();
     let url = format!("{}/doctor", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -104,7 +128,7 @@ async fn run_security_audit_request(
     daemon_url: String,
     token: String,
 ) -> Result<SecurityAuditResponse, String> {
-    let client = ui_http_client();
+    let client = reqwest::Client::new();
     let url = format!("{}/security_audit", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -130,7 +154,7 @@ async fn run_factory_reset_config_request(
     daemon_url: String,
     token: String,
 ) -> Result<FactoryResetConfigResponse, String> {
-    let client = ui_http_client();
+    let client = reqwest::Client::new();
     let url = format!("{}/factory_reset_config", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -157,7 +181,7 @@ async fn run_chat_history_request(
     user_id: String,
     limit: usize,
 ) -> Result<Vec<String>, String> {
-    let client = ui_http_client();
+    let client = reqwest::Client::new();
     let url = format!(
         "{}/chat_history?user_id={}&limit={}",
         daemon_url.trim_end_matches('/'),
@@ -199,7 +223,7 @@ async fn run_clear_user_history_request(
     token: String,
     user_id: String,
 ) -> Result<(), String> {
-    let client = ui_http_client();
+    let client = reqwest::Client::new();
     let url = format!("{}/clear_user_history", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -333,6 +357,18 @@ struct UiMcpServer {
     url: String,
     header_key: String,
     header_value: String,
+    headers: HashMap<String, String>,
+    primary_header_key: String,
+}
+
+#[derive(Clone, Default)]
+struct UiHttpCallServer {
+    name: String,
+    url: String,
+    header_key: String,
+    header_value: String,
+    headers: HashMap<String, String>,
+    primary_header_key: String,
 }
 
 fn is_url_source(value: &str) -> bool {
@@ -468,151 +504,284 @@ fn highlight_json_html(input: &str) -> String {
 }
 
 pub fn launch_ui() {
-    force_dbusrs();
-    launch(app_view);
+    launch_ui_with_config(UiLaunchConfig::default());
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct UiLaunchConfig {
     pub db_path: String,
     pub daemon_url: String,
     pub user_id: String,
 }
 
+impl Default for UiLaunchConfig {
+    fn default() -> Self {
+        Self {
+            db_path: crate::runtime_paths::default_db_path(),
+            daemon_url: "http://127.0.0.1:7878".to_string(),
+            user_id: "user".to_string(),
+        }
+    }
+}
+
+fn ui_launch_config_lock() -> &'static Mutex<UiLaunchConfig> {
+    static CONFIG: OnceLock<Mutex<UiLaunchConfig>> = OnceLock::new();
+    CONFIG.get_or_init(|| Mutex::new(UiLaunchConfig::default()))
+}
+
+fn set_ui_launch_config(config: UiLaunchConfig) {
+    let lock = ui_launch_config_lock();
+    match lock.lock() {
+        Ok(mut guard) => *guard = config,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = config;
+        }
+    }
+}
+
+fn ui_launch_config() -> UiLaunchConfig {
+    let lock = ui_launch_config_lock();
+    match lock.lock() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
+
 pub fn launch_ui_with_config(config: UiLaunchConfig) {
-    if !config.db_path.trim().is_empty() {
-        std::env::set_var("BUTTERFLY_BOT_DB", config.db_path);
-    }
-    if !config.daemon_url.trim().is_empty() {
-        std::env::set_var("BUTTERFLY_BOT_DAEMON", config.daemon_url);
-    }
-    if !config.user_id.trim().is_empty() {
-        std::env::set_var("BUTTERFLY_BOT_USER_ID", config.user_id);
-    }
-    launch_ui();
+    set_ui_launch_config(config);
+    force_dbusrs();
+    install_shutdown_hooks_once();
+    launch(app_view);
+    shutdown_spawned_daemon_best_effort();
+}
+
+fn shutdown_spawned_daemon_best_effort() {
+    let _ = stop_local_daemon();
+}
+
+fn install_shutdown_hooks_once() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            shutdown_spawned_daemon_best_effort();
+            previous(info);
+        }));
+    });
 }
 
 fn stream_timeout_duration() -> Duration {
-    let default_secs = 180u64;
-    let value = std::env::var("BUTTERFLY_BOT_STREAM_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v > 0);
-    Duration::from_secs(value.unwrap_or(default_secs))
+    Duration::from_secs(180)
 }
 
 #[cfg(target_os = "linux")]
-fn force_dbusrs() {
-    if std::env::var("DBUSRS").is_err() {
-        std::env::set_var("DBUSRS", "1");
-    }
-}
+fn force_dbusrs() {}
 
 #[cfg(not(target_os = "linux"))]
 fn force_dbusrs() {}
 
 struct DaemonControl {
-    shutdown: tokio::sync::oneshot::Sender<()>,
-    thread: thread::JoinHandle<()>,
+    child: Child,
 }
-
-fn daemon_last_error() -> &'static Mutex<Option<String>> {
-    static LAST_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-    LAST_ERROR.get_or_init(|| Mutex::new(None))
-}
-
-fn set_daemon_last_error(message: Option<String>) {
-    if let Ok(mut guard) = daemon_last_error().lock() {
-        *guard = message;
-    }
-}
-
-fn take_daemon_last_error() -> Option<String> {
-    daemon_last_error()
-        .lock()
-        .ok()
-        .and_then(|mut guard| guard.take())
-}
-
-fn ui_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(2))
-        .timeout(Duration::from_secs(15))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
-}
-
-#[cfg(target_os = "linux")]
-fn show_desktop_notification(title: &str) {
-    if let Err(err) = Notification::new()
-        .summary("Butterfly Bot")
-        .body(title)
-        .show()
-    {
-        eprintln!("Notification error: {err}");
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn show_desktop_notification(_title: &str) {}
 
 fn daemon_control() -> &'static Mutex<Option<DaemonControl>> {
     static CONTROL: OnceLock<Mutex<Option<DaemonControl>>> = OnceLock::new();
     CONTROL.get_or_init(|| Mutex::new(None))
 }
 
-fn start_local_daemon() -> Result<(), String> {
-    if env::var("BUTTERFLY_BOT_DISABLE_DAEMON").is_ok() {
-        return Err("Daemon disabled by BUTTERFLY_BOT_DISABLE_DAEMON".to_string());
+fn local_daemon_exit_status() -> Option<std::process::ExitStatus> {
+    let control = daemon_control();
+    let mut guard = control.lock().ok()?;
+    let control = guard.as_mut()?;
+    control.child.try_wait().ok().flatten()
+}
+
+fn daemon_binary_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    let mut push_candidate = |path: PathBuf| {
+        if !candidates.iter().any(|existing| existing == &path) {
+            candidates.push(path);
+        }
+    };
+
+    if let Ok(explicit) = std::env::var("BUTTERFLY_BOTD_PATH") {
+        let explicit = explicit.trim();
+        if !explicit.is_empty() {
+            push_candidate(PathBuf::from(explicit));
+        }
     }
 
+    push_candidate(PathBuf::from("butterfly-botd"));
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(dir) = current_exe.parent() {
+            push_candidate(dir.join("butterfly-botd"));
+            #[cfg(windows)]
+            push_candidate(dir.join("butterfly-botd.exe"));
+
+            if let Some(profile_dir) = dir.file_name().and_then(|value| value.to_str()) {
+                if (profile_dir == "release" || profile_dir == "debug")
+                    && dir.parent().is_some()
+                {
+                    let target_dir = dir.parent().unwrap();
+                    let other_profile = if profile_dir == "release" {
+                        "debug"
+                    } else {
+                        "release"
+                    };
+                    push_candidate(target_dir.join(other_profile).join("butterfly-botd"));
+                    #[cfg(windows)]
+                    push_candidate(target_dir.join(other_profile).join("butterfly-botd.exe"));
+                }
+            }
+        }
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        push_candidate(cwd.join("target").join("debug").join("butterfly-botd"));
+        push_candidate(cwd.join("target").join("release").join("butterfly-botd"));
+        #[cfg(windows)]
+        {
+            push_candidate(cwd.join("target").join("debug").join("butterfly-botd.exe"));
+            push_candidate(cwd.join("target").join("release").join("butterfly-botd.exe"));
+        }
+    }
+
+    candidates
+}
+
+fn daemon_log_path() -> PathBuf {
+    crate::runtime_paths::app_root()
+        .join("logs")
+        .join("ui-daemon.log")
+}
+
+fn daemon_tpm_mode(db_path: &str) -> String {
+    crate::config::Config::from_store(db_path)
+        .ok()
+        .and_then(|config| config.tools)
+        .and_then(|tools| tools.get("settings").cloned())
+        .and_then(|settings| settings.get("security").cloned())
+        .and_then(|security| security.get("tpm_mode").cloned())
+        .and_then(|mode| mode.as_str().map(|s| s.to_string()))
+        .filter(|mode| matches!(mode.as_str(), "strict" | "auto" | "compatible"))
+        .unwrap_or_else(|| "auto".to_string())
+}
+
+fn spawn_daemon_process(
+    host: String,
+    port: u16,
+    db_path: String,
+    token: String,
+    tpm_mode: String,
+) -> Result<Child, String> {
+    let candidates = daemon_binary_candidates();
+    let mut not_found = Vec::new();
+    let log_path = daemon_log_path();
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "Failed to create daemon log directory '{}': {err}",
+                parent.to_string_lossy()
+            )
+        })?;
+    }
+
+    for candidate in candidates {
+        let candidate_display = candidate.to_string_lossy().to_string();
+        let log_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .map_err(|err| {
+                format!(
+                    "Failed to open daemon log file '{}': {err}",
+                    log_path.to_string_lossy()
+                )
+            })?;
+        let stdout_log = log_file.try_clone().map_err(|err| {
+            format!(
+                "Failed to clone daemon log file handle '{}': {err}",
+                log_path.to_string_lossy()
+            )
+        })?;
+        let result = Command::new(&candidate)
+            .arg("--host")
+            .arg(host.clone())
+            .arg("--port")
+            .arg(port.to_string())
+            .arg("--db")
+            .arg(db_path.clone())
+            .env("BUTTERFLY_BOT_TOKEN", token.clone())
+            .env("BUTTERFLY_TPM_MODE", tpm_mode.clone())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout_log))
+            .stderr(Stdio::from(log_file))
+            .spawn();
+
+        match result {
+            Ok(child) => return Ok(child),
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                not_found.push(candidate_display);
+            }
+            Err(err) => {
+                return Err(format!(
+                    "Failed to start butterfly-botd process via '{}': {err} (log: {})",
+                    candidate_display,
+                    log_path.to_string_lossy()
+                ));
+            }
+        }
+    }
+
+    Err(format!(
+        "Failed to start butterfly-botd process: executable not found. Tried: {}. Set BUTTERFLY_BOTD_PATH or ensure butterfly-botd is installed.",
+        not_found.join(", ")
+    ))
+}
+
+fn start_local_daemon() -> Result<(), String> {
     let control = daemon_control();
     let mut guard = control
         .lock()
         .map_err(|_| "Daemon lock unavailable".to_string())?;
-    if let Some(current) = guard.as_ref() {
-        if current.thread.is_finished() {
-            if let Some(stale) = guard.take() {
-                let _ = stale.thread.join();
+    if let Some(control) = guard.as_mut() {
+        match control.child.try_wait() {
+            Ok(Some(_)) => {
+                *guard = None;
+            }
+            Ok(None) => return Ok(()),
+            Err(_) => {
+                *guard = None;
             }
         }
     }
-    if guard.is_some() {
-        return Ok(());
+
+    let config = ui_launch_config();
+    let daemon_url = config.daemon_url;
+    let (host, port) = parse_daemon_address(&daemon_url);
+    let daemon_addr = format!("{host}:{port}");
+    let db_path = config.db_path;
+    let token = env_auth_token();
+    let tpm_mode = daemon_tpm_mode(&db_path);
+
+    let mut child = spawn_daemon_process(host, port, db_path, token, tpm_mode)?;
+
+    // Detect immediate exit (e.g. bind conflict) so UI doesn't talk to a different
+    // daemon instance with a mismatched auth token and then fail with HTTP 401.
+    std::thread::sleep(StdDuration::from_millis(200));
+    if let Ok(Some(status)) = child.try_wait() {
+        return Err(format!(
+            "Daemon exited immediately ({status}) while starting on {daemon_addr}. See log: {}",
+            daemon_log_path().to_string_lossy()
+        ));
     }
 
-    set_daemon_last_error(None);
+    tracing::info!("UI spawned local daemon process");
 
-    let daemon_url =
-        env::var("BUTTERFLY_BOT_DAEMON").unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
-    let (host, port) = parse_daemon_address(&daemon_url);
-    let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
-    let token = env_auth_token();
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let thread = thread::spawn(move || {
-        if let Ok(runtime) = tokio::runtime::Runtime::new() {
-            runtime.block_on(async move {
-                let shutdown = async move {
-                    let _ = shutdown_rx.await;
-                };
-                if let Err(err) =
-                    crate::daemon::run_with_shutdown(&host, port, &db_path, &token, shutdown).await
-                {
-                    set_daemon_last_error(Some(err.to_string()));
-                }
-            });
-        } else {
-            set_daemon_last_error(Some("Failed to initialize daemon runtime".to_string()));
-        }
-    });
-
-    *guard = Some(DaemonControl {
-        shutdown: shutdown_tx,
-        thread,
-    });
+    *guard = Some(DaemonControl { child });
 
     Ok(())
 }
@@ -626,11 +795,31 @@ fn stop_local_daemon() -> Result<(), String> {
     let mut guard = control
         .lock()
         .map_err(|_| "Daemon lock unavailable".to_string())?;
-    if let Some(control) = guard.take() {
-        let _ = control.shutdown.send(());
-        thread::spawn(move || {
-            let _ = control.thread.join();
-        });
+    if let Some(mut control) = guard.take() {
+        if let Ok(Some(_)) = control.child.try_wait() {
+            tracing::info!("Local daemon already exited");
+            return Ok(());
+        }
+        let _ = control.child.kill();
+        tracing::info!("Sent kill signal to local daemon");
+
+        // Avoid long blocking waits that can make desktop shutdown appear hung.
+        for _ in 0..80 {
+            match control.child.try_wait() {
+                Ok(Some(_)) => {
+                    tracing::info!("Local daemon exited");
+                    return Ok(());
+                }
+                Ok(None) => std::thread::sleep(StdDuration::from_millis(25)),
+                Err(err) => {
+                    tracing::error!(error = %err, "Failed waiting for local daemon shutdown");
+                    return Err(format!("Failed waiting for daemon shutdown: {err}"));
+                }
+            }
+        }
+
+        tracing::warn!("Local daemon did not exit before shutdown timeout");
+
         Ok(())
     } else {
         Err("Daemon is not running".to_string())
@@ -667,16 +856,11 @@ fn parse_daemon_address(daemon: &str) -> (String, u16) {
 }
 
 fn app_view() -> Element {
-    let db_path =
-        env::var("BUTTERFLY_BOT_DB").unwrap_or_else(|_| crate::runtime_paths::default_db_path());
-    let daemon_url = use_signal(|| {
-        let raw = env::var("BUTTERFLY_BOT_DAEMON")
-            .unwrap_or_else(|_| "http://127.0.0.1:7878".to_string());
-        normalize_daemon_url(&raw)
-    });
+    let launch_config = ui_launch_config();
+    let db_path = launch_config.db_path;
+    let daemon_url = use_signal(|| normalize_daemon_url(&launch_config.daemon_url));
     let token = use_signal(env_auth_token);
-    let user_id =
-        use_signal(|| env::var("BUTTERFLY_BOT_USER_ID").unwrap_or_else(|_| "user".to_string()));
+    let user_id = use_signal(|| launch_config.user_id.clone());
     let input = use_signal(String::new);
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
@@ -716,9 +900,17 @@ fn app_view() -> Element {
     let wakeup_poll_seconds_input = use_signal(|| "60".to_string());
     let github_pat_input = use_signal(String::new);
     let zapier_token_input = use_signal(String::new);
+    let tpm_mode_input = use_signal(|| "auto".to_string());
+    let openai_api_key_input = use_signal(String::new);
+    let openai_base_url_input = use_signal(String::new);
+    let openai_model_input = use_signal(String::new);
+    let openai_embedding_model_input = use_signal(String::new);
+    let openai_rerank_model_input = use_signal(String::new);
     let coding_api_key_input = use_signal(String::new);
     let search_api_key_input = use_signal(String::new);
+    let solana_rpc_endpoint_input = use_signal(String::new);
     let mcp_servers_form = use_signal(Vec::<UiMcpServer>::new);
+    let http_call_servers_form = use_signal(Vec::<UiHttpCallServer>::new);
     let network_allow_form = use_signal(Vec::<String>::new);
     let context_text = use_signal(String::new);
     let context_path = use_signal(|| "database".to_string());
@@ -738,6 +930,7 @@ fn app_view() -> Element {
     let search_network_allow = use_signal(String::new);
     let search_default_deny = use_signal(|| false);
     let search_api_key_status = use_signal(String::new);
+    let openai_settings_expanded = use_signal(|| false);
 
     let reminders_sqlite_path = use_signal(String::new);
     let memory_enabled = use_signal(|| true);
@@ -821,7 +1014,7 @@ fn app_view() -> Element {
                 input.set(String::new());
                 scroll_chat_after_render().await;
 
-                let client = ui_http_client();
+                let client = reqwest::Client::new();
                 let url = format!("{}/process_text_stream", daemon_url.trim_end_matches('/'));
                 let body = ProcessTextRequest {
                     user_id,
@@ -986,6 +1179,7 @@ fn app_view() -> Element {
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
+                let mut token = token;
                 let mut boot_ready = boot_ready;
                 let mut boot_status = boot_status;
                 let mut doctor_status = doctor_status;
@@ -1003,11 +1197,18 @@ fn app_view() -> Element {
                                 .to_string(),
                         );
 
-                        // Wait for daemon to be ready (retry up to 10 times with 500ms delay)
-                        let client = ui_http_client();
+                        // Wait for daemon to be ready (retry up to 60 times with 500ms delay)
+                        // Startup can take a while on first run while security checks, WASM
+                        // provisioning, embeddings, and prompt/context bootstrapping complete.
+                        let client = reqwest::Client::new();
                         let mut daemon_ready = false;
-                        for i in 0..10 {
+                        let mut daemon_exit: Option<std::process::ExitStatus> = None;
+                        for i in 0..60 {
                             sleep(Duration::from_millis(500)).await;
+                            if let Some(status) = local_daemon_exit_status() {
+                                daemon_exit = Some(status);
+                                break;
+                            }
                             let health_url =
                                 format!("{}/health", daemon_url().trim_end_matches('/'));
                             if let Ok(resp) = client.get(&health_url).send().await {
@@ -1016,38 +1217,112 @@ fn app_view() -> Element {
                                     break;
                                 }
                             }
-                            boot_status.set(format!("Waiting for daemon... ({}/10)", i + 1));
+                            boot_status.set(format!("Waiting for daemon... ({}/60)", i + 1));
                         }
 
                         if !daemon_ready {
-                            daemon_running.set(false);
-                            let detail = take_daemon_last_error().unwrap_or_else(|| {
-                                "Daemon started but not responding. Continuing without preload."
-                                    .to_string()
-                            });
-                            daemon_status.set(format!("Daemon failed to start: {detail}"));
-                            boot_status.set(detail);
-                            boot_ready.set(true);
+                            if let Some(status) = daemon_exit {
+                                daemon_running.set(false);
+                                boot_ready.set(false);
+                                daemon_status.set(format!(
+                                    "Daemon exited during startup: {status}."
+                                ));
+                                boot_status.set(
+                                    "Daemon failed to start. Check daemon logs/token and retry."
+                                        .to_string(),
+                                );
+                            } else {
+                                daemon_running.set(false);
+                                boot_ready.set(false);
+                                daemon_status.set(
+                                    "Daemon did not become healthy within startup timeout."
+                                        .to_string(),
+                                );
+                                boot_status.set(
+                                    "Daemon startup timed out. Retry Start; ensure no other daemon is bound to this port."
+                                        .to_string(),
+                                );
+                            }
                         } else {
                             daemon_running.set(true);
                             let url =
                                 format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
-                            let mut request = client
-                                .post(&url)
-                                .json(&PreloadBootRequest { user_id: user_id() });
-                            let token_value = token();
-                            if !token_value.trim().is_empty() {
-                                request = request
-                                    .header("authorization", format!("Bearer {token_value}"));
+                            let preload_body = PreloadBootRequest { user_id: user_id() };
+                            let mut token_value = token();
+                            if token_value.trim().is_empty() {
+                                let refreshed = env_auth_token();
+                                if !refreshed.trim().is_empty() {
+                                    token.set(refreshed.clone());
+                                    token_value = refreshed;
+                                }
                             }
-                            match request.send().await {
+
+                            let send_preload = |token_value: &str| {
+                                let mut request = client.post(&url).json(&preload_body);
+                                if !token_value.trim().is_empty() {
+                                    request = request
+                                        .header("authorization", format!("Bearer {token_value}"));
+                                }
+                                request
+                            };
+
+                            match send_preload(&token_value).send().await {
                                 Ok(resp) if resp.status().is_success() => {
                                     boot_status
                                         .set("Boot preload started in background…".to_string());
                                 }
                                 Ok(resp) => {
                                     let status = resp.status();
-                                    boot_status.set(format!("Boot preload failed: HTTP {status}"));
+                                    if status == reqwest::StatusCode::UNAUTHORIZED {
+                                        let refreshed = env_auth_token();
+                                        if !refreshed.trim().is_empty() && refreshed != token_value {
+                                            token.set(refreshed.clone());
+                                            token_value = refreshed;
+                                            match send_preload(&token_value).send().await {
+                                                Ok(retry_resp) if retry_resp.status().is_success() => {
+                                                    boot_status.set(
+                                                        "Boot preload started in background…"
+                                                            .to_string(),
+                                                    );
+                                                }
+                                                Ok(retry_resp)
+                                                    if retry_resp.status()
+                                                        == reqwest::StatusCode::UNAUTHORIZED =>
+                                                {
+                                                    boot_status.set(
+                                                        "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
+                                                            .to_string(),
+                                                    );
+                                                    daemon_status.set(
+                                                        "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
+                                                            .to_string(),
+                                                    );
+                                                }
+                                                Ok(retry_resp) => {
+                                                    let retry_status = retry_resp.status();
+                                                    boot_status.set(format!(
+                                                        "Boot preload failed: HTTP {retry_status}"
+                                                    ));
+                                                }
+                                                Err(err) => {
+                                                    boot_status
+                                                        .set(format!("Boot preload error: {err}"));
+                                                }
+                                            }
+                                        } else {
+                                            boot_status.set(
+                                                "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
+                                                    .to_string(),
+                                            );
+                                            daemon_status.set(
+                                                "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
+                                                    .to_string(),
+                                            );
+                                        }
+                                    } else {
+                                        boot_status
+                                            .set(format!("Boot preload failed: HTTP {status}"));
+                                    }
                                 }
                                 Err(err) => {
                                     boot_status.set(format!("Boot preload error: {err}"));
@@ -1154,6 +1429,64 @@ fn app_view() -> Element {
         })
     };
 
+    let on_run_doctor = {
+        let daemon_running = daemon_running.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+        let doctor_status = doctor_status.clone();
+        let doctor_error = doctor_error.clone();
+        let doctor_running = doctor_running.clone();
+        let doctor_overall = doctor_overall.clone();
+        let doctor_checks = doctor_checks.clone();
+
+        use_callback(move |_: ()| {
+            let daemon_running = daemon_running.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+            let doctor_status = doctor_status.clone();
+            let doctor_error = doctor_error.clone();
+            let doctor_running = doctor_running.clone();
+            let doctor_overall = doctor_overall.clone();
+            let doctor_checks = doctor_checks.clone();
+
+            spawn(async move {
+                let mut doctor_status = doctor_status;
+                let mut doctor_error = doctor_error;
+                let mut doctor_running = doctor_running;
+                let mut doctor_overall = doctor_overall;
+                let mut doctor_checks = doctor_checks;
+
+                if !daemon_running() {
+                    doctor_error
+                        .set("Doctor requires a running daemon. Start daemon first.".to_string());
+                    doctor_status.set(String::new());
+                    return;
+                }
+
+                doctor_running.set(true);
+                doctor_error.set(String::new());
+                doctor_status.set("Running diagnostics…".to_string());
+
+                match run_doctor_request(daemon_url(), token()).await {
+                    Ok(report) => {
+                        let overall = report.overall.clone();
+                        doctor_overall.set(overall.clone());
+                        doctor_checks.set(report.checks);
+                        doctor_status.set(format!("Diagnostics complete ({overall})."));
+                    }
+                    Err(err) => {
+                        doctor_error.set(format!("Diagnostics failed: {err}"));
+                        doctor_status.set(String::new());
+                        doctor_overall.set(String::new());
+                        doctor_checks.set(Vec::new());
+                    }
+                }
+
+                doctor_running.set(false);
+            });
+        })
+    };
+
     {
         let daemon_autostart_attempted = daemon_autostart_attempted.clone();
         let daemon_running = daemon_running.clone();
@@ -1210,8 +1543,6 @@ fn app_view() -> Element {
         let token = token.clone();
         let user_id = user_id.clone();
         let messages = messages.clone();
-        let activity_messages = activity_messages.clone();
-        let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
 
         use_effect(move || {
@@ -1223,7 +1554,6 @@ fn app_view() -> Element {
             started.set(true);
 
             let mut messages = messages.clone();
-            let mut activity_messages = activity_messages.clone();
             let mut next_id = next_id.clone();
 
             spawn(async move {
@@ -1261,13 +1591,6 @@ fn app_view() -> Element {
                     );
                 }
 
-                let mut activity = activity_messages.write();
-                if activity.is_empty() {
-                    for entry in list.iter().cloned() {
-                        push_bounded_message(&mut activity, entry, MAX_ACTIVITY_MESSAGES);
-                    }
-                }
-
                 drop(list);
                 scroll_chat_after_render().await;
             });
@@ -1300,7 +1623,7 @@ fn app_view() -> Element {
                 let mut next_id = next_id;
 
                 reminders_listening.set(true);
-                let client = ui_http_client();
+                let client = reqwest::Client::new();
                 loop {
                     if !*daemon_running.read() {
                         reminders_listening.set(false);
@@ -1322,20 +1645,16 @@ fn app_view() -> Element {
                     let response = match request.send().await {
                         Ok(resp) => resp,
                         Err(_) => {
-                            if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                                || cfg!(debug_assertions)
-                            {
-                                eprintln!("Reminder stream request failed (daemon unreachable?)");
+                            if cfg!(debug_assertions) {
+                                tracing::debug!("Reminder stream request failed (daemon unreachable?)");
                             }
                             sleep(Duration::from_secs(2)).await;
                             continue;
                         }
                     };
                     if !response.status().is_success() {
-                        if std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                            || cfg!(debug_assertions)
-                        {
-                            eprintln!("Reminder stream error: HTTP {}", response.status());
+                        if cfg!(debug_assertions) {
+                            tracing::debug!(status = %response.status(), "Reminder stream returned non-success status");
                         }
                         sleep(Duration::from_secs(2)).await;
                         continue;
@@ -1376,7 +1695,7 @@ fn app_view() -> Element {
                                             MAX_CHAT_MESSAGES,
                                         );
                                         scroll_chat_to_bottom().await;
-                                        show_desktop_notification(title);
+                                        send_desktop_notification(title);
                                     }
                                 }
                             }
@@ -1432,7 +1751,7 @@ fn app_view() -> Element {
                 let mut next_id = next_id;
 
                 ui_events_listening.set(true);
-                let client = ui_http_client();
+                let client = reqwest::Client::new();
                 loop {
                     if !*daemon_running.read() {
                         ui_events_listening.set(false);
@@ -1511,9 +1830,7 @@ fn app_view() -> Element {
                                             boot_status.set("Prompt + heartbeat ready".to_string());
                                         }
 
-                                        let show_success =
-                                            std::env::var("BUTTERFLY_BOT_SHOW_TOOL_SUCCESS")
-                                                .is_ok();
+                                        let show_success = false;
                                         if !show_success && (status == "success" || status == "ok")
                                         {
                                             if event_type == "tool" {
@@ -1609,9 +1926,17 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let tpm_mode_input = tpm_mode_input.clone();
+        let openai_api_key_input = openai_api_key_input.clone();
+        let openai_base_url_input = openai_base_url_input.clone();
+        let openai_model_input = openai_model_input.clone();
+        let openai_embedding_model_input = openai_embedding_model_input.clone();
+        let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
         let search_api_key_input = search_api_key_input.clone();
+        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
+        let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let boot_status = boot_status.clone();
         let boot_ready = boot_ready.clone();
@@ -1653,9 +1978,17 @@ fn app_view() -> Element {
                 let mut wakeup_poll_seconds_input = wakeup_poll_seconds_input;
                 let mut github_pat_input = github_pat_input;
                 let mut zapier_token_input = zapier_token_input;
+                let mut tpm_mode_input = tpm_mode_input;
+                let mut openai_api_key_input = openai_api_key_input;
+                let mut openai_base_url_input = openai_base_url_input;
+                let mut openai_model_input = openai_model_input;
+                let mut openai_embedding_model_input = openai_embedding_model_input;
+                let mut openai_rerank_model_input = openai_rerank_model_input;
                 let mut coding_api_key_input = coding_api_key_input;
                 let mut search_api_key_input = search_api_key_input;
+                let mut solana_rpc_endpoint_input = solana_rpc_endpoint_input;
                 let mut mcp_servers_form = mcp_servers_form;
+                let mut http_call_servers_form = http_call_servers_form;
                 let mut network_allow_form = network_allow_form;
                 let mut search_provider = search_provider;
                 let mut search_model = search_model;
@@ -1698,6 +2031,8 @@ fn app_view() -> Element {
                     }
                     Err(err) => {
                         settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
                     }
                 }
 
@@ -1733,6 +2068,37 @@ fn app_view() -> Element {
                     .unwrap_or(true);
                 memory_enabled.set(enabled);
 
+                let tpm_mode = config
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.get("settings"))
+                    .and_then(|settings| settings.get("security"))
+                    .and_then(|security| security.get("tpm_mode"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("auto");
+                tpm_mode_input.set(match tpm_mode {
+                    "strict" | "auto" | "compatible" => tpm_mode.to_string(),
+                    _ => "auto".to_string(),
+                });
+
+                if let Some(openai) = &config.openai {
+                    if let Some(base_url) = &openai.base_url {
+                        openai_base_url_input.set(base_url.clone());
+                    }
+                    if let Some(model) = &openai.model {
+                        openai_model_input.set(model.clone());
+                    }
+                }
+
+                if let Some(memory) = &config.memory {
+                    if let Some(embedding_model) = &memory.embedding_model {
+                        openai_embedding_model_input.set(embedding_model.clone());
+                    }
+                    if let Some(rerank_model) = &memory.rerank_model {
+                        openai_rerank_model_input.set(rerank_model.clone());
+                    }
+                }
+
                 if let Some(tools_value) = &config.tools {
                     if let Some(wakeup_cfg) = tools_value.get("wakeup") {
                         if let Some(poll_seconds) =
@@ -1740,6 +2106,16 @@ fn app_view() -> Element {
                         {
                             wakeup_poll_seconds_input.set(poll_seconds.to_string());
                         }
+                    }
+
+                    if let Some(solana_rpc_endpoint) = tools_value
+                        .get("settings")
+                        .and_then(|settings| settings.get("solana"))
+                        .and_then(|solana| solana.get("rpc"))
+                        .and_then(|rpc| rpc.get("endpoint"))
+                        .and_then(|value| value.as_str())
+                    {
+                        solana_rpc_endpoint_input.set(solana_rpc_endpoint.to_string());
                     }
 
                     if let Some(mcp_servers) = tools_value
@@ -1762,30 +2138,186 @@ fn app_view() -> Element {
                                     .unwrap_or_default()
                                     .trim()
                                     .to_string();
-                                let (header_key, header_value) = entry
+                                let headers = entry
                                     .get("headers")
                                     .and_then(|v| v.as_object())
-                                    .and_then(|map| {
-                                        map.iter().find_map(|(k, v)| {
-                                            v.as_str().map(|value| {
-                                                (k.trim().to_string(), value.trim().to_string())
+                                    .map(|map| {
+                                        map.iter()
+                                            .filter_map(|(k, v)| {
+                                                v.as_str().map(|value| {
+                                                    (k.trim().to_string(), value.trim().to_string())
+                                                })
                                             })
-                                        })
+                                            .collect::<HashMap<_, _>>()
                                     })
+                                    .unwrap_or_default();
+                                let mut header_entries = headers.iter().collect::<Vec<_>>();
+                                header_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                                let (header_key, header_value) = header_entries
+                                    .first()
+                                    .map(|(key, value)| ((*key).clone(), (*value).clone()))
                                     .unwrap_or_else(|| (String::new(), String::new()));
                                 if name.is_empty() && url.is_empty() {
                                     None
                                 } else {
+                                    let primary_header_key = header_key.clone();
                                     Some(UiMcpServer {
                                         name,
                                         url,
                                         header_key,
                                         header_value,
+                                        headers,
+                                        primary_header_key,
                                     })
                                 }
                             })
                             .collect::<Vec<_>>();
                         mcp_servers_form.set(parsed_servers);
+                    }
+
+                    if let Some(http_call_cfg) = tools_value.get("http_call") {
+                        let mut parsed_servers = http_call_cfg
+                            .get("servers")
+                            .and_then(|v| v.as_array())
+                            .map(|servers| {
+                                servers
+                                    .iter()
+                                    .filter_map(|entry| {
+                                        let name = entry
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        let url = entry
+                                            .get("url")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or_default()
+                                            .trim()
+                                            .to_string();
+                                        let headers = entry
+                                            .get("headers")
+                                            .and_then(|v| v.as_object())
+                                            .map(|map| {
+                                                map.iter()
+                                                    .filter_map(|(k, v)| {
+                                                        v.as_str().map(|value| {
+                                                            (
+                                                                k.trim().to_string(),
+                                                                value.trim().to_string(),
+                                                            )
+                                                        })
+                                                    })
+                                                    .collect::<HashMap<_, _>>()
+                                            })
+                                            .unwrap_or_default();
+                                        let mut header_entries = headers.iter().collect::<Vec<_>>();
+                                        header_entries
+                                            .sort_by(|(left, _), (right, _)| left.cmp(right));
+                                        let (header_key, header_value) = header_entries
+                                            .first()
+                                            .map(|(key, value)| ((*key).clone(), (*value).clone()))
+                                            .unwrap_or_else(|| (String::new(), String::new()));
+
+                                        if name.is_empty() && url.is_empty() {
+                                            None
+                                        } else {
+                                            let primary_header_key = header_key.clone();
+                                            Some(UiHttpCallServer {
+                                                name,
+                                                url,
+                                                header_key,
+                                                header_value,
+                                                headers,
+                                                primary_header_key,
+                                            })
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        if parsed_servers.is_empty() {
+                            let mut shared_headers = http_call_cfg
+                                .get("custom_headers")
+                                .and_then(|v| v.as_object())
+                                .map(|map| {
+                                    map.iter()
+                                        .filter_map(|(k, v)| {
+                                            v.as_str().map(|value| {
+                                                (k.trim().to_string(), value.trim().to_string())
+                                            })
+                                        })
+                                        .collect::<HashMap<_, _>>()
+                                })
+                                .unwrap_or_default();
+                            if let Some(default_headers) = http_call_cfg
+                                .get("default_headers")
+                                .and_then(|v| v.as_object())
+                            {
+                                for (key, value) in default_headers {
+                                    if let Some(value) = value.as_str() {
+                                        shared_headers
+                                            .entry(key.trim().to_string())
+                                            .or_insert(value.trim().to_string());
+                                    }
+                                }
+                            }
+                            let mut header_entries = shared_headers.iter().collect::<Vec<_>>();
+                            header_entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                            let (header_key, header_value) = header_entries
+                                .first()
+                                .map(|(key, value)| ((*key).clone(), (*value).clone()))
+                                .unwrap_or_else(|| (String::new(), String::new()));
+
+                            if let Some(base_urls) =
+                                http_call_cfg.get("base_urls").and_then(|v| v.as_array())
+                            {
+                                parsed_servers = base_urls
+                                    .iter()
+                                    .enumerate()
+                                    .filter_map(|(index, value)| {
+                                        let url =
+                                            value.as_str().unwrap_or_default().trim().to_string();
+                                        if url.is_empty() {
+                                            None
+                                        } else {
+                                            let primary_header_key = header_key.clone();
+                                            Some(UiHttpCallServer {
+                                                name: format!("server_{}", index + 1),
+                                                url,
+                                                header_key: header_key.clone(),
+                                                header_value: header_value.clone(),
+                                                headers: shared_headers.clone(),
+                                                primary_header_key,
+                                            })
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+                            }
+
+                            if parsed_servers.is_empty() {
+                                let base_url = http_call_cfg
+                                    .get("base_url")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or_default()
+                                    .trim()
+                                    .to_string();
+                                if !base_url.is_empty() {
+                                    let primary_header_key = header_key.clone();
+                                    parsed_servers.push(UiHttpCallServer {
+                                        name: "default".to_string(),
+                                        url: base_url,
+                                        header_key,
+                                        header_value,
+                                        headers: shared_headers,
+                                        primary_header_key,
+                                    });
+                                }
+                            }
+                        }
+
+                        http_call_servers_form.set(parsed_servers);
                     }
 
                     if let Some(search_cfg) = tools_value.get("search_internet") {
@@ -1883,7 +2415,11 @@ fn app_view() -> Element {
                         github_pat_input.set(secret);
                     }
                     Ok(_) => github_pat_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 match crate::vault::get_secret("zapier_token") {
@@ -1891,7 +2427,30 @@ fn app_view() -> Element {
                         zapier_token_input.set(secret);
                     }
                     Ok(_) => zapier_token_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
+                }
+
+                match crate::vault::get_secret("openai_api_key") {
+                    Ok(Some(secret)) if !secret.trim().is_empty() => {
+                        openai_api_key_input.set(secret);
+                    }
+                    Ok(_) => {
+                        let fallback = config
+                            .openai
+                            .as_ref()
+                            .and_then(|openai| openai.api_key.clone())
+                            .unwrap_or_default();
+                        openai_api_key_input.set(fallback);
+                    }
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 match crate::vault::get_secret("coding_openai_api_key") {
@@ -1899,7 +2458,11 @@ fn app_view() -> Element {
                         coding_api_key_input.set(secret);
                     }
                     Ok(_) => coding_api_key_input.set(String::new()),
-                    Err(err) => settings_error.set(format!("Vault error: {err}")),
+                    Err(err) => {
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
+                    }
                 }
 
                 let provider_name = search_provider();
@@ -1926,7 +2489,9 @@ fn app_view() -> Element {
                         search_api_key_status.set("Not set".to_string());
                     }
                     Err(err) => {
-                        search_api_key_status.set(format!("Vault error: {err}"));
+                        settings_error.set(format!("Vault error: {err}"));
+                        tools_loaded.set(true);
+                        return;
                     }
                 }
 
@@ -1938,7 +2503,7 @@ fn app_view() -> Element {
                     // Preload prompt into memory and heartbeat into agent.
                     boot_ready.set(true);
                     boot_status.set("Initializing prompt + heartbeat in background...".to_string());
-                    let client = ui_http_client();
+                    let client = reqwest::Client::new();
                     let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
                     let mut request = client
                         .post(&url)
@@ -1977,10 +2542,18 @@ fn app_view() -> Element {
         let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
         let github_pat_input = github_pat_input.clone();
         let zapier_token_input = zapier_token_input.clone();
+        let tpm_mode_input = tpm_mode_input.clone();
+        let openai_api_key_input = openai_api_key_input.clone();
+        let openai_base_url_input = openai_base_url_input.clone();
+        let openai_model_input = openai_model_input.clone();
+        let openai_embedding_model_input = openai_embedding_model_input.clone();
+        let openai_rerank_model_input = openai_rerank_model_input.clone();
         let coding_api_key_input = coding_api_key_input.clone();
+        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let search_provider = search_provider.clone();
         let search_api_key_input = search_api_key_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
+        let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
         let db_path = db_path.clone();
         let daemon_url = daemon_url.clone();
@@ -1993,10 +2566,18 @@ fn app_view() -> Element {
             let wakeup_poll_seconds_input = wakeup_poll_seconds_input.clone();
             let github_pat_input = github_pat_input.clone();
             let zapier_token_input = zapier_token_input.clone();
+            let tpm_mode_input = tpm_mode_input.clone();
+            let openai_api_key_input = openai_api_key_input.clone();
+            let openai_base_url_input = openai_base_url_input.clone();
+            let openai_model_input = openai_model_input.clone();
+            let openai_embedding_model_input = openai_embedding_model_input.clone();
+            let openai_rerank_model_input = openai_rerank_model_input.clone();
             let coding_api_key_input = coding_api_key_input.clone();
+            let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
             let search_provider = search_provider.clone();
             let search_api_key_input = search_api_key_input.clone();
             let mcp_servers_form = mcp_servers_form.clone();
+            let http_call_servers_form = http_call_servers_form.clone();
             let network_allow_form = network_allow_form.clone();
             let db_path = db_path.clone();
             let daemon_url = daemon_url.clone();
@@ -2019,12 +2600,55 @@ fn app_view() -> Element {
                     }
                 };
 
+                let tpm_mode_value = match tpm_mode_input().trim() {
+                    "strict" | "auto" | "compatible" => tpm_mode_input().trim().to_string(),
+                    _ => {
+                        settings_error
+                            .set("TPM mode must be strict, auto, or compatible.".to_string());
+                        return;
+                    }
+                };
+
+                let mut openai_base_url_value = openai_base_url_input().trim().to_string();
+                let mut openai_model_value = openai_model_input().trim().to_string();
+                let mut openai_embedding_model_value =
+                    openai_embedding_model_input().trim().to_string();
+                let mut openai_rerank_model_value = openai_rerank_model_input().trim().to_string();
+
+                let runtime_provider_value = if openai_base_url_value
+                    .to_ascii_lowercase()
+                    .starts_with("http://localhost:11434")
+                    || openai_base_url_value
+                        .to_ascii_lowercase()
+                        .starts_with("http://127.0.0.1:11434")
+                {
+                    "ollama"
+                } else {
+                    "openai"
+                };
+
+                if runtime_provider_value == "openai" {
+                    if openai_base_url_value.is_empty() {
+                        openai_base_url_value = OPENAI_DEFAULT_BASE_URL.to_string();
+                    }
+                    if openai_model_value.is_empty() {
+                        openai_model_value = OPENAI_DEFAULT_CHAT_MODEL.to_string();
+                    }
+                    if openai_embedding_model_value.is_empty() {
+                        openai_embedding_model_value = OPENAI_DEFAULT_EMBED_MODEL.to_string();
+                    }
+                    if openai_rerank_model_value.is_empty() {
+                        openai_rerank_model_value = OPENAI_DEFAULT_RERANK_MODEL.to_string();
+                    }
+                }
+
                 let mut mcp_servers = Vec::new();
                 for entry in mcp_servers_form().iter() {
                     let name = entry.name.trim();
                     let url = entry.url.trim();
                     let header_key = entry.header_key.trim();
                     let header_value = entry.header_value.trim();
+                    let primary_header_key = entry.primary_header_key.trim();
                     if name.is_empty() && url.is_empty() {
                         continue;
                     }
@@ -2048,12 +2672,56 @@ fn app_view() -> Element {
                         );
                         return;
                     }
-                    mcp_servers.push((
-                        name.to_string(),
-                        url.to_string(),
-                        header_key.to_string(),
-                        header_value.to_string(),
-                    ));
+                    let mut headers = entry.headers.clone();
+                    if !primary_header_key.is_empty() && primary_header_key != header_key {
+                        headers.remove(primary_header_key);
+                    }
+                    if !header_key.is_empty() {
+                        headers.insert(header_key.to_string(), header_value.to_string());
+                    }
+                    mcp_servers.push((name.to_string(), url.to_string(), headers));
+                }
+
+                let mut http_call_servers = Vec::new();
+                for entry in http_call_servers_form().iter() {
+                    let name = entry.name.trim();
+                    let url = entry.url.trim();
+                    let header_key = entry.header_key.trim();
+                    let header_value = entry.header_value.trim();
+                    let primary_header_key = entry.primary_header_key.trim();
+                    if name.is_empty() && url.is_empty() {
+                        continue;
+                    }
+                    if name.is_empty() || url.is_empty() {
+                        settings_error
+                            .set("Each HTTP call server needs both a name and URL.".to_string());
+                        return;
+                    }
+                    if !url.starts_with("http://") && !url.starts_with("https://") {
+                        settings_error.set(format!(
+                            "HTTP call server URL must start with http:// or https:// ({url})."
+                        ));
+                        return;
+                    }
+                    if (header_key.is_empty() && !header_value.is_empty())
+                        || (!header_key.is_empty() && header_value.is_empty())
+                    {
+                        settings_error.set(
+                            "HTTP call header key and value must both be set or both be empty."
+                                .to_string(),
+                        );
+                        return;
+                    }
+
+                    let mut headers = entry.headers.clone();
+                    if !primary_header_key.is_empty() && primary_header_key != header_key {
+                        headers.remove(primary_header_key);
+                    }
+                    if !header_key.is_empty() {
+                        headers.insert(header_key.to_string(), header_value.to_string());
+                    }
+
+                    http_call_servers.push((name.to_string(), url.to_string(), headers));
                 }
 
                 let network_allow = network_allow_form()
@@ -2072,12 +2740,55 @@ fn app_view() -> Element {
                     }
                 };
 
+                let solana_rpc_endpoint = solana_rpc_endpoint_input().trim().to_string();
+
                 let mut config = match crate::config::Config::from_store(&db_path) {
                     Ok(value) => value,
                     Err(err) => {
                         settings_error.set(format!("Failed to load current config: {err}"));
                         return;
                     }
+                };
+
+                config.provider = None;
+
+                let openai_cfg = config.openai.get_or_insert(crate::config::OpenAiConfig {
+                    api_key: None,
+                    model: None,
+                    base_url: None,
+                });
+                openai_cfg.base_url = if openai_base_url_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_base_url_value)
+                };
+                openai_cfg.model = if openai_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_model_value)
+                };
+                openai_cfg.api_key = None;
+
+                let memory_cfg = config.memory.get_or_insert(crate::config::MemoryConfig {
+                    enabled: Some(true),
+                    sqlite_path: Some(db_path.clone()),
+                    summary_model: None,
+                    embedding_model: None,
+                    rerank_model: None,
+                    openai: None,
+                    context_embed_enabled: Some(false),
+                    summary_threshold: None,
+                    retention_days: None,
+                });
+                memory_cfg.embedding_model = if openai_embedding_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_embedding_model_value)
+                };
+                memory_cfg.rerank_model = if openai_rerank_model_value.is_empty() {
+                    None
+                } else {
+                    Some(openai_rerank_model_value)
                 };
 
                 let tools_value = config
@@ -2116,13 +2827,15 @@ fn app_view() -> Element {
                         Value::Array(
                             mcp_servers
                                 .into_iter()
-                                .map(|(name, url, header_key, header_value)| {
+                                .map(|(name, url, headers)| {
                                     let mut server = serde_json::Map::new();
                                     server.insert("name".to_string(), Value::String(name));
                                     server.insert("url".to_string(), Value::String(url));
-                                    if !header_key.is_empty() {
-                                        let mut headers = serde_json::Map::new();
-                                        headers.insert(header_key, Value::String(header_value));
+                                    if !headers.is_empty() {
+                                        let headers = headers
+                                            .into_iter()
+                                            .map(|(key, value)| (key, Value::String(value)))
+                                            .collect::<serde_json::Map<_, _>>();
                                         server
                                             .insert("headers".to_string(), Value::Object(headers));
                                     }
@@ -2131,6 +2844,66 @@ fn app_view() -> Element {
                                 .collect(),
                         ),
                     );
+                }
+
+                let http_call_cfg = tools_obj
+                    .entry("http_call")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                if !http_call_cfg.is_object() {
+                    *http_call_cfg = Value::Object(serde_json::Map::new());
+                }
+                if let Some(http_call_obj) = http_call_cfg.as_object_mut() {
+                    let mut first_url: Option<String> = None;
+                    let mut first_headers: Option<HashMap<String, String>> = None;
+
+                    let servers = http_call_servers
+                        .iter()
+                        .map(|(name, url, headers)| {
+                            if first_url.is_none() {
+                                first_url = Some(url.clone());
+                            }
+                            if first_headers.is_none() {
+                                first_headers = Some(headers.clone());
+                            }
+                            let mut server = serde_json::Map::new();
+                            server.insert("name".to_string(), Value::String(name.clone()));
+                            server.insert("url".to_string(), Value::String(url.clone()));
+                            if !headers.is_empty() {
+                                let headers = headers
+                                    .iter()
+                                    .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+                                    .collect::<serde_json::Map<_, _>>();
+                                server.insert("headers".to_string(), Value::Object(headers));
+                            }
+                            Value::Object(server)
+                        })
+                        .collect::<Vec<_>>();
+
+                    http_call_obj.insert("servers".to_string(), Value::Array(servers));
+
+                    let base_urls = http_call_servers
+                        .iter()
+                        .map(|(_, url, _)| Value::String(url.clone()))
+                        .collect::<Vec<_>>();
+                    http_call_obj.insert("base_urls".to_string(), Value::Array(base_urls));
+
+                    if let Some(url) = first_url {
+                        http_call_obj.insert("base_url".to_string(), Value::String(url));
+                    } else {
+                        http_call_obj.remove("base_url");
+                    }
+
+                    let legacy_headers = first_headers
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(key, value)| (key, Value::String(value)))
+                        .collect::<serde_json::Map<_, _>>();
+                    http_call_obj.insert(
+                        "custom_headers".to_string(),
+                        Value::Object(legacy_headers.clone()),
+                    );
+                    http_call_obj
+                        .insert("default_headers".to_string(), Value::Object(legacy_headers));
                 }
 
                 let search_cfg = tools_obj
@@ -2171,9 +2944,42 @@ fn app_view() -> Element {
                             ),
                         );
                     }
+
+                    let security_cfg = settings_obj
+                        .entry("security")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !security_cfg.is_object() {
+                        *security_cfg = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(security_obj) = security_cfg.as_object_mut() {
+                        security_obj.insert(
+                            "tpm_mode".to_string(),
+                            Value::String(tpm_mode_value.clone()),
+                        );
+                    }
+
+                    let solana_cfg = settings_obj
+                        .entry("solana")
+                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                    if !solana_cfg.is_object() {
+                        *solana_cfg = Value::Object(serde_json::Map::new());
+                    }
+                    if let Some(solana_obj) = solana_cfg.as_object_mut() {
+                        let rpc_cfg = solana_obj
+                            .entry("rpc")
+                            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                        if !rpc_cfg.is_object() {
+                            *rpc_cfg = Value::Object(serde_json::Map::new());
+                        }
+                        if let Some(rpc_obj) = rpc_cfg.as_object_mut() {
+                            rpc_obj
+                                .insert("endpoint".to_string(), Value::String(solana_rpc_endpoint));
+                        }
+                    }
                 }
 
                 let github_pat = github_pat_input().trim().to_string();
+                std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode_value);
                 if let Err(err) = crate::vault::set_secret("github_pat", &github_pat) {
                     settings_error.set(format!("Failed to store GitHub token: {err}"));
                     return;
@@ -2182,6 +2988,12 @@ fn app_view() -> Element {
                 let zapier_token = zapier_token_input().trim().to_string();
                 if let Err(err) = crate::vault::set_secret("zapier_token", &zapier_token) {
                     settings_error.set(format!("Failed to store Zapier token: {err}"));
+                    return;
+                }
+
+                let openai_api_key = openai_api_key_input().trim().to_string();
+                if let Err(err) = crate::vault::set_secret("openai_api_key", &openai_api_key) {
+                    settings_error.set(format!("Failed to store OpenAI API key: {err}"));
                     return;
                 }
 
@@ -2227,7 +3039,7 @@ fn app_view() -> Element {
                 match result {
                     Ok(Ok(())) => {
                         config_json_text.set(pretty);
-                        let client = ui_http_client();
+                        let client = reqwest::Client::new();
                         let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                         let mut request = client.post(url);
                         let token_value = token();
@@ -2258,6 +3070,46 @@ fn app_view() -> Element {
                     }
                     Ok(Err(err)) => settings_error.set(format!("Save failed: {err}")),
                     Err(err) => settings_error.set(format!("Save failed: {err}")),
+                }
+            });
+        })
+    };
+
+    let on_factory_reset_config = {
+        let settings_error = settings_error.clone();
+        let settings_status = settings_status.clone();
+        let settings_load_started = settings_load_started.clone();
+        let tools_loaded = tools_loaded.clone();
+        let daemon_url = daemon_url.clone();
+        let token = token.clone();
+
+        use_callback(move |_: ()| {
+            let settings_error = settings_error.clone();
+            let settings_status = settings_status.clone();
+            let settings_load_started = settings_load_started.clone();
+            let tools_loaded = tools_loaded.clone();
+            let daemon_url = daemon_url.clone();
+            let token = token.clone();
+
+            spawn(async move {
+                let mut settings_error = settings_error;
+                let mut settings_status = settings_status;
+                let mut settings_load_started = settings_load_started;
+                let mut tools_loaded = tools_loaded;
+
+                settings_error.set(String::new());
+                settings_status.set("Resetting config to defaults…".to_string());
+
+                match run_factory_reset_config_request(daemon_url(), token()).await {
+                    Ok(response) => {
+                        settings_status.set(response.message);
+                        tools_loaded.set(false);
+                        settings_load_started.set(false);
+                    }
+                    Err(err) => {
+                        settings_error.set(format!("Factory reset failed: {err}"));
+                        settings_status.set(String::new());
+                    }
                 }
             });
         })
@@ -2368,7 +3220,7 @@ fn app_view() -> Element {
                 }
 
                 if *daemon_running.read() {
-                    let client = ui_http_client();
+                    let client = reqwest::Client::new();
                     let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                     let mut request = client.post(url);
                     let token_value = token();
@@ -2504,7 +3356,7 @@ fn app_view() -> Element {
                 }
 
                 if *daemon_running.read() {
-                    let client = ui_http_client();
+                    let client = reqwest::Client::new();
                     let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                     let mut request = client.post(url);
                     let token_value = token();
@@ -2564,7 +3416,18 @@ fn app_view() -> Element {
                 box-shadow: 0 8px 30px rgba(0,0,0,0.25);
                 border-radius: 14px;
             }}
-            .nav {{ display: flex; gap: 8px; align-items: center; }}
+            .nav {{
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                justify-content: flex-end;
+                margin-left: auto;
+                flex-wrap: wrap;
+            }}
+            .nav > button {{
+                min-width: 0;
+                padding: 8px 14px;
+            }}
             .nav button {{ background: rgba(255,255,255,0.08); }}
             .nav button.active {{ background: rgba(99,102,241,0.6); }}
             .nav-controls {{ display: flex; gap: 6px; margin-left: 8px; }}
@@ -2589,7 +3452,8 @@ fn app_view() -> Element {
             .daemon-trash-btn:hover {{
                 background: rgba(239,68,68,0.50);
             }}
-            .title-logo {{ height: 30px; width: auto; display: block; }}
+            .title {{ display: flex; align-items: center; }}
+            .title-logo {{ width: 30px; height: 30px; display: block; }}
             .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: rgba(10,16,34,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }}
             .bubble {{
                 max-width: 72%;
@@ -2821,32 +3685,141 @@ fn app_view() -> Element {
                 padding: 10px 12px;
                 border-radius: 12px;
             }}
+            .server-row {{
+                display: grid;
+                grid-template-columns: minmax(140px, 1fr) minmax(220px, 2fr) minmax(160px, 1fr) minmax(180px, 1fr) auto;
+                align-items: center;
+                gap: 10px;
+            }}
+            .server-row input,
+            .server-row button {{
+                width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+            }}
             .simple-row .mcp-name {{
-                flex: 0 0 190px;
+                flex: 1;
             }}
             .simple-row .mcp-url {{
                 flex: 1;
             }}
             .simple-row .mcp-header-key {{
-                flex: 0 0 180px;
+                flex: 1;
             }}
             .simple-row .mcp-header-value {{
-                flex: 0 0 220px;
+                flex: 1;
             }}
             .simple-row .host-input {{
                 flex: 1;
             }}
+            .network-row {{
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: center;
+                gap: 10px;
+            }}
+            .network-row input,
+            .network-row button {{
+                width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+            }}
+            .network-row button {{
+                min-width: 108px;
+            }}
             .simple-actions {{
                 display: flex;
                 justify-content: center;
+                gap: 14px;
                 margin-top: 2px;
             }}
             .add-host-actions {{
                 margin-top: 12px;
             }}
+            @media (max-width: 1280px) {{
+                .server-row {{
+                    grid-template-columns: minmax(180px, 1fr) minmax(220px, 1fr);
+                }}
+                .server-row button {{
+                    grid-column: 1 / -1;
+                }}
+            }}
+            @media (max-width: 1024px) {{
+                .server-row {{
+                    grid-template-columns: 1fr;
+                }}
+                .server-row button {{
+                    grid-column: auto;
+                }}
+                .network-row {{
+                    grid-template-columns: 1fr;
+                }}
+            }}
+            @media (max-width: 960px) {{
+                .header {{
+                    padding: 12px 14px;
+                    justify-content: space-between;
+                    gap: 8px;
+                }}
+                .nav {{
+                    width: auto;
+                    gap: 6px;
+                    justify-content: flex-end;
+                    margin-left: auto;
+                    flex-wrap: nowrap;
+                }}
+                .nav > button {{
+                    flex: 0 0 auto;
+                }}
+                .nav-controls {{
+                    width: auto;
+                    margin-left: auto;
+                    display: flex;
+                    gap: 6px;
+                }}
+                .daemon-icon-btn {{
+                    width: 34px;
+                    height: 34px;
+                    min-width: 34px;
+                    border-radius: 999px;
+                }}
+                .daemon-trash-btn {{
+                    margin-left: 4px;
+                }}
+            }}
+            @media (max-width: 640px) {{
+                .header {{
+                    justify-content: space-between;
+                    flex-wrap: wrap;
+                }}
+                .nav {{
+                    width: 100%;
+                    justify-content: flex-end;
+                    margin-left: 0;
+                    flex-wrap: wrap;
+                }}
+                .nav > button {{
+                    flex: 0 0 auto;
+                }}
+                .nav-controls {{
+                    width: auto;
+                    margin-left: 8px;
+                    display: flex;
+                }}
+                .daemon-icon-btn {{
+                    width: 34px;
+                    height: 34px;
+                    min-width: 34px;
+                    border-radius: 999px;
+                }}
+                .daemon-trash-btn {{
+                    margin-left: 4px;
+                }}
+            }}
             @media (max-width: 860px) {{
                 .simple-top {{ grid-template-columns: 1fr; }}
                 .simple-row {{ flex-direction: column; align-items: stretch; }}
+                .server-row {{ grid-template-columns: 1fr; }}
                 .simple-row .mcp-name {{ flex: 1 1 auto; }}
                 .simple-row .mcp-url {{ flex: 1 1 auto; }}
                 .simple-row .mcp-header-key {{ flex: 1 1 auto; }}
@@ -2856,7 +3829,9 @@ fn app_view() -> Element {
         "# }
         div { class: "container",
             div { class: "header",
-                img { class: "title-logo", src: asset!("/assets/icon.png"), alt: "Butterfly Bot" }
+                div { class: "title",
+                    img { class: "title-logo", src: APP_LOGO, alt: "Butterfly Bot" }
+                }
                 div { class: "nav",
                     button {
                         class: if *active_tab.read() == UiTab::Chat { "active" } else { "" },
@@ -3034,6 +4009,129 @@ fn app_view() -> Element {
 
                                 div { class: "simple-top",
                                     div {
+                                        label { "Solana RPC Endpoint" }
+                                        input {
+                                            value: "{solana_rpc_endpoint_input}",
+                                            oninput: move |evt| {
+                                                let mut solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
+                                                solana_rpc_endpoint_input.set(evt.value());
+                                            },
+                                            placeholder: "https://...",
+                                        }
+                                    }
+                                    div {
+                                        label { "TPM Mode" }
+                                        select {
+                                            value: "{tpm_mode_input}",
+                                            onchange: move |evt| {
+                                                let selected = evt.value();
+                                                let normalized = match selected.as_str() {
+                                                    "strict" | "auto" | "compatible" => selected,
+                                                    _ => "auto".to_string(),
+                                                };
+                                                let mut tpm_mode_input = tpm_mode_input.clone();
+                                                tpm_mode_input.set(normalized);
+                                            },
+                                            option {
+                                                value: "strict",
+                                                "strict"
+                                            }
+                                            option {
+                                                value: "auto",
+                                                "auto"
+                                            }
+                                            option {
+                                                value: "compatible",
+                                                "compatible"
+                                            }
+                                        }
+                                    }
+                                    div {}
+                                }
+
+                                div { class: "simple-section",
+                                    label { "OpenAI Settings" }
+                                    button {
+                                        class: "text-btn",
+                                        onclick: move |_| {
+                                            let mut openai_settings_expanded = openai_settings_expanded.clone();
+                                            openai_settings_expanded.set(!openai_settings_expanded());
+                                        },
+                                        if openai_settings_expanded() {
+                                            "Hide"
+                                        } else {
+                                            "Show"
+                                        }
+                                    }
+
+                                    if openai_settings_expanded() {
+                                        div { class: "simple-top",
+                                            div {
+                                                label { "OpenAI Base URL" }
+                                                input {
+                                                    value: "{openai_base_url_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_base_url_input = openai_base_url_input.clone();
+                                                        openai_base_url_input.set(evt.value());
+                                                    },
+                                                    placeholder: "https://api.openai.com/v1",
+                                                }
+                                            }
+                                            div {
+                                                label { "OpenAI API Key" }
+                                                input {
+                                                    r#type: "password",
+                                                    value: "{openai_api_key_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_api_key_input = openai_api_key_input.clone();
+                                                        openai_api_key_input.set(evt.value());
+                                                    },
+                                                    placeholder: "Paste OpenAI API key",
+                                                }
+                                            }
+                                            div {
+                                                label { "Runtime Model" }
+                                                input {
+                                                    value: "{openai_model_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_model_input = openai_model_input.clone();
+                                                        openai_model_input.set(evt.value());
+                                                    },
+                                                    placeholder: "gpt-4.1-mini",
+                                                }
+                                            }
+                                        }
+
+                                        div { class: "simple-top",
+                                            div {
+                                                label { "Embedding Model (small)" }
+                                                input {
+                                                    value: "{openai_embedding_model_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_embedding_model_input = openai_embedding_model_input.clone();
+                                                        openai_embedding_model_input.set(evt.value());
+                                                    },
+                                                    placeholder: "text-embedding-3-small",
+                                                }
+                                            }
+                                            div {
+                                                label { "Rerank Model" }
+                                                input {
+                                                    value: "{openai_rerank_model_input}",
+                                                    oninput: move |evt| {
+                                                        let mut openai_rerank_model_input = openai_rerank_model_input.clone();
+                                                        openai_rerank_model_input.set(evt.value());
+                                                    },
+                                                    placeholder: "owner-selected reranker",
+                                                }
+                                            }
+                                            div {}
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-top",
+                                    div {
                                         label { "Coding OpenAI API Key" }
                                         input {
                                             r#type: "password",
@@ -3064,11 +4162,20 @@ fn app_view() -> Element {
                                                     _ => "search_internet_openai_api_key",
                                                 };
                                                 let mut search_api_key_input = search_api_key_input.clone();
+                                                let mut search_api_key_status = search_api_key_status.clone();
                                                 match crate::vault::get_secret(secret_name) {
                                                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                                                         search_api_key_input.set(secret);
+                                                        search_api_key_status.set("Stored in vault".to_string());
                                                     }
-                                                    _ => search_api_key_input.set(String::new()),
+                                                    Ok(_) => {
+                                                        search_api_key_input.set(String::new());
+                                                        search_api_key_status.set("Not set".to_string());
+                                                    }
+                                                    Err(err) => {
+                                                        search_api_key_input.set(String::new());
+                                                        search_api_key_status.set(format!("Vault error: {err}"));
+                                                    }
                                                 }
                                             },
                                             option {
@@ -3103,7 +4210,7 @@ fn app_view() -> Element {
                                     label { "MCP Servers" }
                                     div { class: "simple-list",
                                         for (index, server) in mcp_servers_form.read().iter().enumerate() {
-                                            div { class: "simple-row",
+                                            div { class: "simple-row server-row",
                                                 input {
                                                     class: "mcp-name",
                                                     value: "{server.name}",
@@ -3184,10 +4291,94 @@ fn app_view() -> Element {
                                 }
 
                                 div { class: "simple-section",
+                                    label { "HTTP Call Servers" }
+                                    div { class: "simple-list",
+                                        for (index, server) in http_call_servers_form.read().iter().enumerate() {
+                                            div { class: "simple-row server-row",
+                                                input {
+                                                    class: "mcp-name",
+                                                    value: "{server.name}",
+                                                    placeholder: "Server name",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.name = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-url",
+                                                    value: "{server.url}",
+                                                    placeholder: "https://api.example.com/v1",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.url = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-key",
+                                                    value: "{server.header_key}",
+                                                    placeholder: "Header key (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_key = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                input {
+                                                    class: "mcp-header-value",
+                                                    value: "{server.header_value}",
+                                                    placeholder: "Header value (optional)",
+                                                    oninput: move |evt| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if let Some(item) = list.get_mut(index) {
+                                                            item.header_value = evt.value();
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                }
+                                                button {
+                                                    onclick: move |_| {
+                                                        let mut http_call_servers_form = http_call_servers_form.clone();
+                                                        let mut list = http_call_servers_form();
+                                                        if index < list.len() {
+                                                            list.remove(index);
+                                                        }
+                                                        http_call_servers_form.set(list);
+                                                    },
+                                                    "Remove"
+                                                }
+                                            }
+                                        }
+                                    }
+                                    div { class: "simple-actions",
+                                        button {
+                                            onclick: move |_| {
+                                                let mut http_call_servers_form = http_call_servers_form.clone();
+                                                let mut list = http_call_servers_form();
+                                                list.push(UiHttpCallServer::default());
+                                                http_call_servers_form.set(list);
+                                            },
+                                            "+ Add HTTP Server"
+                                        }
+                                    }
+                                }
+
+                                div { class: "simple-section",
                                     label { "Network Allow List" }
                                     div { class: "simple-list",
                                         for (index, host) in network_allow_form.read().iter().enumerate() {
-                                            div { class: "simple-row",
+                                            div { class: "simple-row network-row",
                                                 input {
                                                     class: "host-input",
                                                     value: "{host}",
@@ -3228,10 +4419,48 @@ fn app_view() -> Element {
                                     }
                                 }
 
+                                div { class: "simple-section",
+                                    label { "Doctor" }
+                                    p { class: "hint", "Run diagnostics for provider health, security posture, and daemon readiness." }
+                                    div { class: "simple-actions",
+                                        button {
+                                            onclick: move |_| on_run_doctor.call(()),
+                                            disabled: *doctor_running.read(),
+                                            if *doctor_running.read() { "Running…" } else { "Run Doctor" }
+                                        }
+                                    }
+                                    if !doctor_status.read().is_empty() {
+                                        p { class: "hint", "{doctor_status}" }
+                                    }
+                                    if !doctor_overall.read().is_empty() {
+                                        p { class: "hint", "Overall: {doctor_overall}" }
+                                    }
+                                    if !doctor_error.read().is_empty() {
+                                        p { class: "error", "{doctor_error}" }
+                                    }
+                                    if !doctor_checks.read().is_empty() {
+                                        div { class: "simple-list",
+                                            for check in doctor_checks.read().iter() {
+                                                div { class: "simple-row",
+                                                    div { class: "hint", "{check.name}: {check.status}" }
+                                                    div { class: "hint", "{check.message}" }
+                                                    if let Some(fix) = &check.fix_hint {
+                                                        div { class: "hint", "Fix: {fix}" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 div { class: "simple-actions",
                                     button {
                                         onclick: move |_| on_save_config.call(()),
                                         "Save Settings"
+                                    }
+                                    button {
+                                        onclick: move |_| on_factory_reset_config.call(()),
+                                        "Factory Reset Defaults"
                                     }
                                 }
                             }

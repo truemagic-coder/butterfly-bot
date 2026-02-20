@@ -1,7 +1,6 @@
 use butterfly_bot::daemon;
 use butterfly_bot::error::Result;
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "butterfly-botd")]
@@ -19,9 +18,7 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    butterfly_bot::logging::init_tracing("butterfly_botd");
     let cli = Cli::parse();
     let token = butterfly_bot::vault::ensure_daemon_auth_token()?;
 
