@@ -13,6 +13,38 @@ fn daemon_auth_token_file() -> PathBuf {
         .join(DAEMON_TOKEN_FILE)
 }
 
+fn secret_fallback_file(name: &str) -> PathBuf {
+    let encoded = URL_SAFE_NO_PAD.encode(name.as_bytes());
+    crate::runtime_paths::app_root()
+        .join("secrets")
+        .join("fallback")
+        .join(encoded)
+}
+
+fn read_secret_fallback_file(name: &str) -> Option<String> {
+    let path = secret_fallback_file(name);
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn write_secret_fallback_file(name: &str, value: &str) {
+    let path = secret_fallback_file(name);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, value);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
 fn read_daemon_auth_token_file() -> Option<String> {
     let path = daemon_auth_token_file();
     let raw = std::fs::read_to_string(path).ok()?;
@@ -76,12 +108,14 @@ fn keyring_disabled() -> bool {
 
 pub fn set_secret(name: &str, value: &str) -> Result<()> {
     if keyring_disabled() {
+        write_secret_fallback_file(name, value);
         return Ok(());
     }
     let entry = keyring::Entry::new(SERVICE, name)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     if let Err(err) = entry.set_password(value) {
         if keyring_backend_unavailable(&err.to_string()) {
+            write_secret_fallback_file(name, value);
             return Ok(());
         }
         return Err(ButterflyBotError::Runtime(err.to_string()));
@@ -91,29 +125,33 @@ pub fn set_secret(name: &str, value: &str) -> Result<()> {
 
 pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
     if keyring_disabled() {
-        return Err(ButterflyBotError::SecurityStorage(
-            "Secure storage is disabled via BUTTERFLY_BOT_DISABLE_KEYRING".to_string(),
-        ));
+        write_secret_fallback_file(name, value);
+        return Ok(());
     }
     let entry = keyring::Entry::new(SERVICE, name)
         .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
-    entry
-        .set_password(value)
-        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))
+    if let Err(err) = entry.set_password(value) {
+        if keyring_backend_unavailable(&err.to_string()) {
+            write_secret_fallback_file(name, value);
+            return Ok(());
+        }
+        return Err(ButterflyBotError::SecurityStorage(err.to_string()));
+    }
+    Ok(())
 }
 
 pub fn get_secret(name: &str) -> Result<Option<String>> {
     if keyring_disabled() {
-        return Ok(None);
+        return Ok(read_secret_fallback_file(name));
     }
     let entry = keyring::Entry::new(SERVICE, name)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
     match entry.get_password() {
         Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::NoEntry) => Ok(read_secret_fallback_file(name)),
         Err(err) => {
             if keyring_backend_unavailable(&err.to_string()) {
-                return Ok(None);
+                return Ok(read_secret_fallback_file(name));
             }
             Err(ButterflyBotError::Runtime(err.to_string()))
         }

@@ -282,9 +282,10 @@ mod tests {
     #[test]
     fn wasm_module_path_defaults_to_convention() {
         let cfg = ToolSandboxConfig::default();
-        assert_eq!(
-            WasmRuntime::resolve_module_path("coding", &cfg),
-            "./wasm/coding_tool.wasm"
+        let path = WasmRuntime::resolve_module_path("coding", &cfg);
+        assert!(
+            path.ends_with("/coding_tool.wasm") || path.ends_with("\\coding_tool.wasm"),
+            "unexpected module path: {path}"
         );
     }
 

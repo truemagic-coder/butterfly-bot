@@ -1650,6 +1650,7 @@ fn app_view() -> Element {
         let token = token.clone();
         let user_id = user_id.clone();
         let daemon_running = daemon_running.clone();
+        let active_tab = active_tab.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
 
@@ -1742,7 +1743,9 @@ fn app_view() -> Element {
                                             ),
                                             MAX_CHAT_MESSAGES,
                                         );
-                                        scroll_chat_to_bottom().await;
+                                        if *active_tab.read() == UiTab::Chat {
+                                            scroll_chat_to_bottom().await;
+                                        }
                                         send_desktop_notification(title);
                                     }
                                 }
@@ -1775,6 +1778,7 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
+        let active_tab = active_tab.clone();
         let activity_messages = activity_messages.clone();
         let next_id = next_id.clone();
         let daemon_running = daemon_running.clone();
@@ -1953,7 +1957,9 @@ fn app_view() -> Element {
                                             ChatMessage::new(id, MessageRole::Bot, text, timestamp),
                                             MAX_ACTIVITY_MESSAGES,
                                         );
-                                        scroll_activity_after_render().await;
+                                        if *active_tab.read() == UiTab::Activity {
+                                            scroll_activity_to_bottom().await;
+                                        }
                                     }
                                 }
                             }
