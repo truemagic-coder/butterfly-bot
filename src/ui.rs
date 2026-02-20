@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Write};
+use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -613,8 +614,6 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
         }
     }
 
-    push_candidate(PathBuf::from("butterfly-botd"));
-
     if let Ok(current_exe) = std::env::current_exe() {
         if let Some(dir) = current_exe.parent() {
             push_candidate(dir.join("butterfly-botd"));
@@ -648,6 +647,9 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
             push_candidate(cwd.join("target").join("release").join("butterfly-botd.exe"));
         }
     }
+
+    // Fall back to PATH lookup last so local workspace/current-exe builds win.
+    push_candidate(PathBuf::from("butterfly-botd"));
 
     candidates
 }
@@ -767,12 +769,16 @@ fn start_local_daemon() -> Result<(), String> {
     let token = env_auth_token();
     let tpm_mode = daemon_tpm_mode(&db_path);
 
-    let mut child = spawn_daemon_process(host, port, db_path, token, tpm_mode)?;
+    let mut child = spawn_daemon_process(host.clone(), port, db_path, token, tpm_mode)?;
 
     // Detect immediate exit (e.g. bind conflict) so UI doesn't talk to a different
     // daemon instance with a mismatched auth token and then fail with HTTP 401.
     std::thread::sleep(StdDuration::from_millis(200));
     if let Ok(Some(status)) = child.try_wait() {
+        if daemon_health_ok(&host, port) {
+            tracing::info!(address = %daemon_addr, "Daemon already healthy on target address; reusing existing instance");
+            return Ok(());
+        }
         return Err(format!(
             "Daemon exited immediately ({status}) while starting on {daemon_addr}. See log: {}",
             daemon_log_path().to_string_lossy()
@@ -784,6 +790,36 @@ fn start_local_daemon() -> Result<(), String> {
     *guard = Some(DaemonControl { child });
 
     Ok(())
+}
+
+fn daemon_health_ok(host: &str, port: u16) -> bool {
+    let address = format!("{host}:{port}");
+    let socket = match address.to_socket_addrs().ok().and_then(|mut addrs| addrs.next()) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    let mut stream = match std::net::TcpStream::connect_timeout(&socket, StdDuration::from_millis(500)) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    let _ = stream.set_write_timeout(Some(StdDuration::from_millis(500)));
+    let _ = stream.set_read_timeout(Some(StdDuration::from_millis(700)));
+
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+
+    let mut response = [0u8; 256];
+    let bytes_read = match stream.read(&mut response) {
+        Ok(count) if count > 0 => count,
+        _ => return false,
+    };
+    let text = String::from_utf8_lossy(&response[..bytes_read]);
+    text.contains(" 200 ") || text.contains("{\"status\":\"ok\"}")
 }
 
 fn env_auth_token() -> String {

@@ -15,9 +15,56 @@ use crate::error::{ButterflyBotError, Result};
 #[cfg(not(test))]
 const DB_KEY_NAME: &str = "db_encryption_key";
 
+#[cfg(not(test))]
+fn db_key_fallback_path() -> std::path::PathBuf {
+    crate::runtime_paths::app_root()
+        .join("secrets")
+        .join(DB_KEY_NAME)
+}
+
+#[cfg(not(test))]
+fn read_db_key_fallback() -> Option<String> {
+    let path = db_key_fallback_path();
+    let raw = std::fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
+#[cfg(not(test))]
+fn write_db_key_fallback(value: &str) -> Result<()> {
+    let path = db_key_fallback_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    }
+    std::fs::write(&path, value).map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    }
+    Ok(())
+}
+
 fn sqlcipher_key_cache() -> &'static RwLock<Option<(String, String)>> {
     static CACHE: OnceLock<RwLock<Option<(String, String)>>> = OnceLock::new();
     CACHE.get_or_init(|| RwLock::new(None))
+}
+
+#[cfg(not(test))]
+fn set_sqlcipher_key_cache(root: String, key: String) {
+    let lock = sqlcipher_key_cache();
+    match lock.write() {
+        Ok(mut guard) => *guard = Some((root, key)),
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = Some((root, key));
+        }
+    }
 }
 
 fn tune_sqlcipher_log_level_sync(conn: &mut SqliteConnection) {
@@ -26,6 +73,20 @@ fn tune_sqlcipher_log_level_sync(conn: &mut SqliteConnection) {
     {
         tracing::debug!("Unable to set SQLCipher log level (sync): {}", err);
     }
+}
+
+#[cfg(not(test))]
+fn apply_sqlcipher_key_value_sync(conn: &mut SqliteConnection, key: &str) -> Result<()> {
+    diesel::RunQueryDsl::execute(diesel::sql_query("PRAGMA busy_timeout = 5000"), conn)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    let escaped_key = key.replace('\'', "''");
+    diesel::RunQueryDsl::execute(
+        diesel::sql_query(format!("PRAGMA key = '{escaped_key}'")),
+        conn,
+    )
+    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    tune_sqlcipher_log_level_sync(conn);
+    Ok(())
 }
 
 async fn tune_sqlcipher_log_level_async(conn: &mut SyncConnectionWrapper<SqliteConnection>) {
@@ -104,31 +165,47 @@ pub fn get_sqlcipher_key() -> Result<String> {
         }
     }
 
-    let resolved = if let Some(value) = crate::vault::get_secret(DB_KEY_NAME)? {
+    let resolved = if let Some(value) = read_db_key_fallback() {
+        log_sqlcipher_key_source_once("file_fallback");
+        value
+    } else if let Some(value) = crate::vault::get_secret(DB_KEY_NAME)? {
         let trimmed = value.trim();
         if !trimmed.is_empty() {
+            write_db_key_fallback(trimmed)?;
             log_sqlcipher_key_source_once("keychain");
             trimmed.to_string()
         } else {
             let generated = generated_db_key()?;
-            crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
-            log_sqlcipher_key_source_once("generated_keychain");
+            match crate::vault::set_secret_required(DB_KEY_NAME, &generated) {
+                Ok(()) => log_sqlcipher_key_source_once("generated_keychain"),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "Could not persist db_encryption_key to secure storage; using local fallback file"
+                    );
+                    log_sqlcipher_key_source_once("generated_file_fallback");
+                }
+            }
+            write_db_key_fallback(&generated)?;
             generated
         }
     } else {
         let generated = generated_db_key()?;
-        crate::vault::set_secret_required(DB_KEY_NAME, &generated)?;
-        log_sqlcipher_key_source_once("generated_keychain");
+        match crate::vault::set_secret_required(DB_KEY_NAME, &generated) {
+            Ok(()) => log_sqlcipher_key_source_once("generated_keychain"),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Could not persist db_encryption_key to secure storage; using local fallback file"
+                );
+                log_sqlcipher_key_source_once("generated_file_fallback");
+            }
+        }
+        write_db_key_fallback(&generated)?;
         generated
     };
 
-    match lock.write() {
-        Ok(mut guard) => *guard = Some((root, resolved.clone())),
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            *guard = Some((root, resolved.clone()));
-        }
-    }
+    set_sqlcipher_key_cache(root, resolved.clone());
 
     Ok(resolved)
 }
@@ -151,6 +228,29 @@ fn sqlcipher_not_a_database(err: &ButterflyBotError) -> bool {
     let lowered = err.to_string().to_ascii_lowercase();
     lowered.contains("file is not a database")
         || lowered.contains("file is encrypted or is not a database")
+}
+
+#[cfg(not(test))]
+fn normalized_keychain_db_key() -> Result<Option<String>> {
+    let value = match crate::vault::get_secret(DB_KEY_NAME)? {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
+    }
+}
+
+#[cfg(not(test))]
+fn try_open_with_key(database_url: &str, key: &str) -> Result<SqliteConnection> {
+    let mut conn = SqliteConnection::establish(database_url)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    apply_sqlcipher_key_value_sync(&mut conn, key)?;
+    validate_sqlcipher_connection_sync(&mut conn)?;
+    Ok(conn)
 }
 
 fn validate_sqlcipher_connection_sync(conn: &mut SqliteConnection) -> Result<()> {
@@ -199,8 +299,42 @@ pub fn open_sqlcipher_connection_sync(database_url: &str) -> Result<SqliteConnec
     let mut conn = SqliteConnection::establish(database_url)
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
 
+    #[cfg(not(test))]
+    let cached_root = crate::runtime_paths::app_root()
+        .to_string_lossy()
+        .to_string();
+
+    #[cfg(not(test))]
+    let primary_key = get_sqlcipher_key()?;
+
     if let Err(err) = apply_sqlcipher_key_sync(&mut conn) {
         if sqlcipher_not_a_database(&err) {
+            #[cfg(not(test))]
+            {
+                if let Some(keychain_key) = normalized_keychain_db_key()? {
+                    if keychain_key != primary_key {
+                        match try_open_with_key(database_url, &keychain_key) {
+                            Ok(recovered) => {
+                                write_db_key_fallback(&keychain_key)?;
+                                set_sqlcipher_key_cache(cached_root.clone(), keychain_key);
+                                tracing::warn!(
+                                    db_path = %database_url,
+                                    "Recovered SQLCipher database by switching to keychain key and refreshed fallback key file"
+                                );
+                                return Ok(recovered);
+                            }
+                            Err(recovery_err) => {
+                                tracing::warn!(
+                                    db_path = %database_url,
+                                    error = %recovery_err,
+                                    "Alternate keychain key did not decrypt database; proceeding with archive recovery"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             archive_unreadable_db_file(database_url)?;
             let mut rebuilt = SqliteConnection::establish(database_url)
                 .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
@@ -213,6 +347,32 @@ pub fn open_sqlcipher_connection_sync(database_url: &str) -> Result<SqliteConnec
 
     if let Err(err) = validate_sqlcipher_connection_sync(&mut conn) {
         if sqlcipher_not_a_database(&err) {
+            #[cfg(not(test))]
+            {
+                if let Some(keychain_key) = normalized_keychain_db_key()? {
+                    if keychain_key != primary_key {
+                        match try_open_with_key(database_url, &keychain_key) {
+                            Ok(recovered) => {
+                                write_db_key_fallback(&keychain_key)?;
+                                set_sqlcipher_key_cache(cached_root, keychain_key);
+                                tracing::warn!(
+                                    db_path = %database_url,
+                                    "Recovered SQLCipher database by switching to keychain key and refreshed fallback key file"
+                                );
+                                return Ok(recovered);
+                            }
+                            Err(recovery_err) => {
+                                tracing::warn!(
+                                    db_path = %database_url,
+                                    error = %recovery_err,
+                                    "Alternate keychain key did not decrypt database; proceeding with archive recovery"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             archive_unreadable_db_file(database_url)?;
             let mut rebuilt = SqliteConnection::establish(database_url)
                 .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
