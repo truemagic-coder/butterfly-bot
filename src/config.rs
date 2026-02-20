@@ -194,10 +194,6 @@ pub struct Config {
 }
 impl Config {
     pub fn runtime_provider(&self) -> RuntimeProvider {
-        if let Some(provider) = &self.provider {
-            return provider.runtime;
-        }
-
         let base_url = self
             .openai
             .as_ref()
@@ -412,12 +408,17 @@ mod tests {
     }
 
     #[test]
-    fn runtime_provider_prefers_explicit_provider_field() {
+    fn runtime_provider_is_inferred_from_base_url_even_with_provider_field() {
         let mut config = Config::convention_defaults(":memory:");
         config.provider = Some(ProviderConfig {
             runtime: RuntimeProvider::Openai,
         });
-        assert_eq!(config.runtime_provider(), RuntimeProvider::Openai);
+        config.openai = Some(OpenAiConfig {
+            api_key: None,
+            model: Some("local-model".to_string()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_string()),
+        });
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
     }
 
     #[test]

@@ -40,17 +40,41 @@ impl CocoonFileSecretProvider {
 
 impl SecretProvider for CocoonFileSecretProvider {
     fn set_secret(&self, name: &str, value: &str, _allow_backend_unavailable: bool) -> Result<()> {
+        let path = self.secret_path(name);
+        if value.trim().is_empty() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => return Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => {
+                    return Err(ButterflyBotError::SecurityStorage(format!(
+                        "failed to clear encrypted secret {}: {e}",
+                        path.to_string_lossy()
+                    )));
+                }
+            }
+        }
+
         let passphrase = self.passphrase()?;
         crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
-            cocoon_store::persist_secret(&self.secret_path(name), sensitive_passphrase, value)
+            cocoon_store::persist_secret(&path, sensitive_passphrase, value)
         })
     }
 
     fn get_secret(&self, name: &str) -> Result<Option<String>> {
+        let path = self.secret_path(name);
         let passphrase = self.passphrase()?;
-        crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
-            cocoon_store::load_secret(&self.secret_path(name), sensitive_passphrase)
-        })
+        match crate::security::hardening::with_sensitive_string(passphrase, |sensitive_passphrase| {
+            cocoon_store::load_secret(&path, sensitive_passphrase)
+        }) {
+            Ok(value) => Ok(value),
+            Err(ButterflyBotError::SecurityStorage(message))
+                if message.contains(" is empty") =>
+            {
+                let _ = std::fs::remove_file(&path);
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -262,6 +286,62 @@ mod tests {
         set_secret("cocoon_secret_master_key", "value").unwrap();
         let loaded = get_secret("cocoon_secret_master_key").unwrap();
         assert_eq!(loaded.as_deref(), Some("value"));
+
+        reset_secret_provider_for_tests();
+        crate::runtime_paths::set_app_root_override_for_tests(None);
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(None);
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
+    #[test]
+    fn cocoon_provider_empty_set_clears_secret_file() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(true));
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(Some(
+            "vault-test-dek-passphrase-empty-clear".to_string(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+
+        crate::runtime_paths::set_app_root_override_for_tests(Some(temp.path().to_path_buf()));
+        set_secret_provider_for_tests(Arc::new(CocoonFileSecretProvider));
+
+        set_secret("github_pat", "token-value").unwrap();
+        let path = temp.path().join("secrets").join("github_pat.cocoon");
+        assert!(path.exists());
+
+        set_secret("github_pat", "").unwrap();
+        assert!(!path.exists());
+        assert!(get_secret("github_pat").unwrap().is_none());
+
+        reset_secret_provider_for_tests();
+        crate::runtime_paths::set_app_root_override_for_tests(None);
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(None);
+        crate::security::tpm_provider::set_tpm_available_for_tests(None);
+    }
+
+    #[test]
+    fn cocoon_provider_self_heals_legacy_empty_encrypted_secret() {
+        let _guard = test_lock().lock().expect("test lock poisoned");
+        crate::security::tpm_provider::set_tpm_available_for_tests(Some(true));
+        crate::security::tpm_provider::set_dek_passphrase_for_tests(Some(
+            "vault-test-dek-passphrase-empty-heal".to_string(),
+        ));
+        let temp = tempfile::tempdir().unwrap();
+
+        crate::runtime_paths::set_app_root_override_for_tests(Some(temp.path().to_path_buf()));
+        set_secret_provider_for_tests(Arc::new(CocoonFileSecretProvider));
+
+        let path = temp.path().join("secrets").join("github_pat.cocoon");
+        crate::security::hardening::with_sensitive_string(
+            "vault-test-dek-passphrase-empty-heal".to_string(),
+            |sensitive| crate::security::cocoon_store::persist_secret(&path, sensitive, ""),
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        let loaded = get_secret("github_pat").unwrap();
+        assert!(loaded.is_none());
+        assert!(!path.exists());
 
         reset_secret_provider_for_tests();
         crate::runtime_paths::set_app_root_override_for_tests(None);

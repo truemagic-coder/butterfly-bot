@@ -8,6 +8,7 @@ pub mod domains;
 pub mod error;
 pub mod factories;
 pub mod interfaces;
+pub mod logging;
 pub mod planning;
 pub mod plugins;
 pub mod providers;

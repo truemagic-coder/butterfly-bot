@@ -17,6 +17,7 @@ struct UiCli {
 }
 
 fn main() -> butterfly_bot::Result<()> {
+    butterfly_bot::logging::init_tracing("butterfly_bot_ui");
     let cli = UiCli::parse();
 
     let config = if let Ok(config) = butterfly_bot::config::Config::from_store(&cli.db) {
@@ -27,16 +28,18 @@ fn main() -> butterfly_bot::Result<()> {
         defaults
     };
 
-    let tpm_mode = config
-        .tools
-        .as_ref()
-        .and_then(|tools| tools.get("settings"))
-        .and_then(|settings| settings.get("security"))
-        .and_then(|security| security.get("tpm_mode"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("auto")
-        .to_string();
-    std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode);
+    if std::env::var("BUTTERFLY_TPM_MODE").is_err() {
+        let tpm_mode = config
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.get("settings"))
+            .and_then(|settings| settings.get("security"))
+            .and_then(|security| security.get("tpm_mode"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("auto")
+            .to_string();
+        std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode);
+    }
 
     let _token = butterfly_bot::vault::ensure_daemon_auth_token()?;
 

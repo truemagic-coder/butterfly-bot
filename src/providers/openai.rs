@@ -74,26 +74,36 @@ impl OpenAiProvider {
             .json(request)
             .send()
             .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
+            .map_err(|e| {
+                ButterflyBotError::Http(format!("Chat completion transport failed: {e}"))
+            })?;
         let status = response.status();
         let body = response
             .text()
             .await
-            .map_err(|e| ButterflyBotError::Http(e.to_string()))?;
+            .map_err(|e| ButterflyBotError::Http(format!("Chat completion read failed: {e}")))?;
         if status != StatusCode::OK {
             return Err(ButterflyBotError::Http(format!(
                 "Chat completion failed ({status}): {body}"
             )));
         }
-        serde_json::from_str(&body).map_err(|e| ButterflyBotError::Serialization(e.to_string()))
+        serde_json::from_str(&body).map_err(|e| {
+            ButterflyBotError::Serialization(format!("Chat completion decode failed: {e}"))
+        })
     }
 
     async fn chat_create_with_fallback(
         &self,
         request: async_openai::types::chat::CreateChatCompletionRequest,
     ) -> Result<ChatCreateResult> {
-        if let Ok(raw) = self.raw_chat_completion(&request).await {
-            return Ok(ChatCreateResult::Raw(raw));
+        match self.raw_chat_completion(&request).await {
+            Ok(raw) => return Ok(ChatCreateResult::Raw(raw)),
+            Err(ButterflyBotError::Http(message))
+                if message.starts_with("Chat completion failed (") =>
+            {
+                return Err(ButterflyBotError::Http(message));
+            }
+            Err(_) => {}
         }
 
         match self.client.chat().create(request).await {

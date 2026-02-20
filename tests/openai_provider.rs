@@ -763,3 +763,32 @@ async fn openai_provider_error_paths() {
     assert!(matches!(err, ButterflyBotError::Serialization(_)));
     bad_mock.assert_calls(1);
 }
+
+#[tokio::test]
+async fn openai_provider_does_not_fallback_on_server_rejection() {
+    let server = MockServer::start_async().await;
+    let reject_mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(404)
+                .json_body(json!({"error": {"message": "model 'not-real' not found"}}));
+        })
+        .await;
+
+    let provider = OpenAiProvider::new(
+        "key".to_string(),
+        Some("not-real".to_string()),
+        Some(server.base_url()),
+    );
+
+    let err = provider.generate_text("hi", "", None).await.unwrap_err();
+    match err {
+        ButterflyBotError::Http(message) => {
+            assert!(message.contains("Chat completion failed"));
+            assert!(message.contains("404"));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+
+    reject_mock.assert_calls(1);
+}

@@ -15,8 +15,6 @@ use butterfly_bot::error::Result;
 use butterfly_bot::ui;
 #[cfg(not(test))]
 use butterfly_bot::vault;
-#[cfg(not(test))]
-use tracing_subscriber::EnvFilter;
 
 #[cfg(not(test))]
 #[derive(Parser, Debug)]
@@ -42,9 +40,7 @@ struct Cli {
 #[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    butterfly_bot::logging::init_tracing("butterfly_bot");
     force_dbusrs();
 
     let cli = Cli::parse();
@@ -103,6 +99,10 @@ fn ensure_default_config(db_path: &str) -> Result<Config> {
 
 #[cfg(not(test))]
 fn apply_tpm_mode_from_config(config: &Config) {
+    if std::env::var("BUTTERFLY_TPM_MODE").is_ok() {
+        return;
+    }
+
     let mode = config
         .tools
         .as_ref()
