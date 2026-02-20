@@ -11,6 +11,18 @@ pub struct OpenAiConfig {
     pub base_url: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeProvider {
+    Ollama,
+    Openai,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ProviderConfig {
+    pub runtime: RuntimeProvider,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemoryConfig {
     pub enabled: Option<bool>,
@@ -162,6 +174,7 @@ where
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
+    pub provider: Option<ProviderConfig>,
     pub openai: Option<OpenAiConfig>,
     #[serde(
         default = "default_heartbeat_source",
@@ -180,6 +193,23 @@ pub struct Config {
     pub brains: Option<Value>,
 }
 impl Config {
+    pub fn runtime_provider(&self) -> RuntimeProvider {
+        let base_url = self
+            .openai
+            .as_ref()
+            .and_then(|openai| openai.base_url.as_deref())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+
+        if base_url.starts_with("http://localhost:11434")
+            || base_url.starts_with("http://127.0.0.1:11434")
+        {
+            RuntimeProvider::Ollama
+        } else {
+            RuntimeProvider::Openai
+        }
+    }
+
     fn apply_security_defaults(mut self) -> Self {
         let tools = self.tools.get_or_insert_with(|| Value::Object(Map::new()));
         if let Some(tools_obj) = tools.as_object_mut() {
@@ -206,14 +236,61 @@ impl Config {
                         ])
                     });
                 }
+
+                let security = settings_obj
+                    .entry("security")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(security_obj) = security.as_object_mut() {
+                    security_obj
+                        .entry("tpm_mode")
+                        .or_insert_with(|| Value::String("auto".to_string()));
+                }
+
+                let solana = settings_obj
+                    .entry("solana")
+                    .or_insert_with(|| Value::Object(Map::new()));
+                if let Some(solana_obj) = solana.as_object_mut() {
+                    solana_obj.entry("rpc").or_insert_with(|| {
+                        serde_json::json!({
+                            "provider": "quicknode",
+                            "endpoint": "",
+                            "commitment": "confirmed",
+                            "bootstrap_wallets": [
+                                {
+                                    "user_id": "user",
+                                    "actor": "agent"
+                                }
+                            ],
+                            "compute_budget": {
+                                "unit_limit": 300000,
+                                "unit_price_microlamports": 2500
+                            },
+                            "simulation": {
+                                "enabled": true,
+                                "commitment": "processed",
+                                "replace_recent_blockhash": true,
+                                "sig_verify": false,
+                                "min_context_slot": null
+                            },
+                            "send": {
+                                "skip_preflight": false,
+                                "preflight_commitment": "confirmed",
+                                "max_retries": 5
+                            }
+                        })
+                    });
+                }
             }
         }
         self
     }
 
     pub fn convention_defaults(db_path: &str) -> Self {
-        let model = "ministral-3:14b".to_string();
+        let model = "ministral-3:8b".to_string();
         Self {
+            provider: Some(ProviderConfig {
+                runtime: RuntimeProvider::Ollama,
+            }),
             openai: Some(OpenAiConfig {
                 api_key: None,
                 model: Some(model.clone()),
@@ -226,7 +303,7 @@ impl Config {
                 sqlite_path: Some(db_path.to_string()),
                 summary_model: Some(model),
                 embedding_model: Some("embeddinggemma:latest".to_string()),
-                rerank_model: Some("qllama/bge-reranker-v2-m3".to_string()),
+                rerank_model: Some("ministral-3:8b".to_string()),
                 openai: None,
                 context_embed_enabled: Some(false),
                 summary_threshold: None,
@@ -242,7 +319,7 @@ impl Config {
         match crate::config_store::load_config(db_path) {
             Ok(config) => Ok(config.apply_security_defaults()),
             Err(store_err) => {
-                if let Ok(Some(secret)) = crate::vault::get_secret("app_config_json") {
+                if let Some(secret) = crate::vault::get_secret("app_config_json")? {
                     if !secret.trim().is_empty() {
                         let value: Value = serde_json::from_str(&secret)
                             .map_err(|e| ButterflyBotError::Config(e.to_string()))?;
@@ -275,5 +352,118 @@ impl Config {
             }
         }
         Ok(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn convention_defaults_include_solana_rpc_settings() {
+        let config = Config::convention_defaults(":memory:");
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+        let tools = config.tools.expect("tools should be initialized");
+
+        let rpc = tools
+            .get("settings")
+            .and_then(|settings| settings.get("solana"))
+            .and_then(|solana| solana.get("rpc"))
+            .expect("tools.settings.solana.rpc should exist");
+
+        assert_eq!(
+            rpc.get("provider").and_then(|v| v.as_str()),
+            Some("quicknode")
+        );
+        assert_eq!(
+            rpc.get("commitment").and_then(|v| v.as_str()),
+            Some("confirmed")
+        );
+
+        let simulation = rpc
+            .get("simulation")
+            .and_then(|v| v.as_object())
+            .expect("simulation object should exist");
+        assert_eq!(
+            simulation.get("enabled").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let send = rpc
+            .get("send")
+            .and_then(|v| v.as_object())
+            .expect("send object should exist");
+        assert_eq!(
+            send.get("skip_preflight").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+
+        let tpm_mode = tools
+            .get("settings")
+            .and_then(|settings| settings.get("security"))
+            .and_then(|security| security.get("tpm_mode"))
+            .and_then(|v| v.as_str());
+        assert_eq!(tpm_mode, Some("auto"));
+    }
+
+    #[test]
+    fn runtime_provider_is_inferred_from_base_url_even_with_provider_field() {
+        let mut config = Config::convention_defaults(":memory:");
+        config.provider = Some(ProviderConfig {
+            runtime: RuntimeProvider::Openai,
+        });
+        config.openai = Some(OpenAiConfig {
+            api_key: None,
+            model: Some("local-model".to_string()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_string()),
+        });
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+    }
+
+    #[test]
+    fn runtime_provider_infers_ollama_from_local_base_url_when_missing_provider_field() {
+        let mut config = Config::convention_defaults(":memory:");
+        config.provider = None;
+        config.openai = Some(OpenAiConfig {
+            api_key: None,
+            model: Some("local-model".to_string()),
+            base_url: Some("http://127.0.0.1:11434/v1".to_string()),
+        });
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+    }
+
+    #[test]
+    fn runtime_provider_infers_openai_for_non_local_base_url_when_missing_provider_field() {
+        let mut config = Config::convention_defaults(":memory:");
+        config.provider = None;
+        config.openai = Some(OpenAiConfig {
+            api_key: None,
+            model: Some("gpt-4.1-mini".to_string()),
+            base_url: Some("https://api.openai.com/v1".to_string()),
+        });
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Openai);
+    }
+
+    #[test]
+    fn apply_security_defaults_adds_tpm_mode_when_missing() {
+        let raw = json!({
+            "openai": {
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-4.1-mini"
+            },
+            "tools": {
+                "settings": {}
+            }
+        });
+        let config: Config = serde_json::from_value(raw).unwrap();
+        let secured = config.apply_security_defaults();
+        let tpm_mode = secured
+            .tools
+            .and_then(|tools| tools.get("settings").cloned())
+            .and_then(|settings| settings.get("security").cloned())
+            .and_then(|security| security.get("tpm_mode").cloned())
+            .and_then(|value| value.as_str().map(|v| v.to_string()));
+        assert_eq!(tpm_mode.as_deref(), Some("auto"));
     }
 }

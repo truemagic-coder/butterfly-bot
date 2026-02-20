@@ -26,7 +26,7 @@ impl ExplainabilityBrain {
     }
 
     fn explain(message: &str) -> ExplainabilityNote {
-        let explanation = format!("Response grounded in user input: {message}");
+        let explanation = format!("Response reasoning grounded in user input: {message}");
         ExplainabilityNote { explanation }
     }
 }

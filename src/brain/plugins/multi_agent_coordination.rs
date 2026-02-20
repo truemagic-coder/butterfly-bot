@@ -60,3 +60,50 @@ impl BrainPlugin for MultiAgentCoordinationBrain {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::interfaces::brain::{BrainContext, BrainPlugin};
+
+    #[test]
+    fn decide_routes_complex_prompts_to_parallel_strategy() {
+        let simple = MultiAgentCoordinationBrain::decide("draft this note");
+        assert_eq!(simple.strategy, "single");
+        assert_eq!(simple.agents_needed, 1);
+
+        let complex = MultiAgentCoordinationBrain::decide("run a complex multi-step migration");
+        assert_eq!(complex.strategy, "parallel");
+        assert_eq!(complex.agents_needed, 3);
+    }
+
+    #[tokio::test]
+    async fn user_message_updates_last_decision() {
+        let plugin = MultiAgentCoordinationBrain::new();
+        let ctx = BrainContext {
+            agent_name: "agent".to_string(),
+            user_id: Some("u1".to_string()),
+        };
+
+        plugin
+            .on_event(BrainEvent::Tick, &ctx)
+            .await
+            .expect("tick should be ignored safely");
+        assert!(plugin.last_decision().await.is_none());
+
+        plugin
+            .on_event(
+                BrainEvent::UserMessage {
+                    user_id: "u1".to_string(),
+                    text: "this is complex and multi-step".to_string(),
+                },
+                &ctx,
+            )
+            .await
+            .expect("user message should produce a decision");
+
+        let decision = plugin.last_decision().await.expect("decision recorded");
+        assert_eq!(decision.strategy, "parallel");
+        assert_eq!(decision.agents_needed, 3);
+    }
+}

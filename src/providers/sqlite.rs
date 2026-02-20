@@ -294,9 +294,7 @@ fn ensure_parent_dir(path: &str) -> Result<()> {
 async fn run_migrations(database_url: &str) -> Result<()> {
     let database_url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut conn = SqliteConnection::establish(&database_url)
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+        let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
         conn.run_pending_migrations(MIGRATIONS)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         Ok::<_, ButterflyBotError>(())
@@ -309,9 +307,7 @@ async fn run_migrations(database_url: &str) -> Result<()> {
 async fn ensure_memory_tables(database_url: &str) -> Result<()> {
     let database_url = database_url.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut conn = SqliteConnection::establish(&database_url)
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-        crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+        let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
 
         let tables = [
             "messages",
@@ -525,47 +521,33 @@ impl MemoryProvider for SqliteMemoryProvider {
             .as_secs() as i64;
         let row_id = {
             let _write_guard = self.write_gate.lock().await;
-            let key = crate::db::get_sqlcipher_key()?;
-            let user_id_owned = user_id.to_string();
-            let role_owned = role.to_string();
-            let content_owned = content.to_string();
+            let mut conn = self.conn().await?;
 
-            let conn = self
-                .deadpool
-                .get()
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-
-            let inserted_id = conn
-                .interact(move |conn| -> std::result::Result<i64, String> {
-                    conn.execute_batch("PRAGMA busy_timeout = 5000;")
-                        .map_err(|e| format!("append_message step=pragma_busy_timeout failed: {e}"))?;
-
-                    let escaped_key = key.replace('\'', "''");
-                    conn.execute_batch(&format!("PRAGMA key = '{escaped_key}';"))
-                        .map_err(|e| format!("append_message step=pragma_key failed: {e}"))?;
-                    let _ = conn.execute_batch("PRAGMA cipher_log_level = ERROR;");
-
-                    deadpool_sqlite::rusqlite::Connection::execute(
-                        conn,
-                        "INSERT INTO messages (user_id, role, content, timestamp) VALUES (?1, ?2, ?3, ?4)",
-                        params![&user_id_owned, &role_owned, &content_owned, ts],
-                    )
-                    .map_err(|e| format!("append_message step=insert_message failed: {e}"))?;
-
-                    let mut stmt = conn
-                        .prepare("SELECT last_insert_rowid()")
-                        .map_err(|e| format!("append_message step=prepare_last_rowid failed: {e}"))?;
-                    let id = stmt
-                        .query_row([], |row| row.get::<_, i64>(0))
-                        .map_err(|e| format!("append_message step=query_last_rowid failed: {e}"))?;
-                    Ok(id)
+            diesel::insert_into(messages::table)
+                .values(NewMessage {
+                    user_id,
+                    role,
+                    content,
+                    timestamp: ts,
                 })
+                .execute(&mut conn)
                 .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-                .map_err(ButterflyBotError::Runtime)?;
+                .map_err(|e| {
+                    ButterflyBotError::Runtime(format!(
+                        "append_message step=insert_message failed: {e}"
+                    ))
+                })?;
 
-            RowId { id: inserted_id }
+            let inserted_id: RowId = diesel::sql_query("SELECT last_insert_rowid() AS id")
+                .get_result(&mut conn)
+                .await
+                .map_err(|e| {
+                    ButterflyBotError::Runtime(format!(
+                        "append_message step=query_last_rowid failed: {e}"
+                    ))
+                })?;
+
+            inserted_id
         };
 
         if let Some(embedder) = &self.embedder {
@@ -772,9 +754,7 @@ impl SqliteMemoryProvider {
     async fn repair_messages_fts(&self) -> Result<()> {
         let database_url = self.sqlite_path.clone();
         tokio::task::spawn_blocking(move || {
-            let mut conn = SqliteConnection::establish(&database_url)
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
-            crate::db::apply_sqlcipher_key_sync(&mut conn)?;
+            let mut conn = crate::db::open_sqlcipher_connection_sync(&database_url)?;
             repair_messages_fts_sync(&mut conn)
         })
         .await

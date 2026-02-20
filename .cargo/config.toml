@@ -5,3 +5,6 @@ clipster = "clippy --all-targets --all-features -- -D warnings"
 tester = "test --workspace --all-features"
 golden_path = "test --test golden_path -- --nocapture"
 execution_trace = "test --test execution_trace -- --nocapture"
+
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"

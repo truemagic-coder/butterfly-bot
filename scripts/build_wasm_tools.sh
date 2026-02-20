@@ -14,6 +14,7 @@ TOOLS=(
   planning
   reminders
   search_internet
+  solana
   tasks
   todo
   wakeup

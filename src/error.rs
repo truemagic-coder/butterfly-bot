@@ -10,6 +10,10 @@ pub enum ButterflyBotError {
     Serialization(String),
     #[error("runtime error: {0}")]
     Runtime(String),
+    #[error("security policy error: {0}")]
+    SecurityPolicy(String),
+    #[error("security storage error: {0}")]
+    SecurityStorage(String),
 }
 
 pub use crate::Result;

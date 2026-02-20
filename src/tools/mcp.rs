@@ -263,3 +263,148 @@ impl Tool for McpTool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime_message(err: ButterflyBotError) -> String {
+        match err {
+            ButterflyBotError::Runtime(msg) => msg,
+            other => panic!("expected runtime error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn parse_servers_handles_empty_and_invalid_entries() {
+        let empty = McpTool::parse_servers(&json!({})).expect("empty config should parse");
+        assert!(empty.is_empty());
+
+        let err = McpTool::parse_servers(&json!({
+            "tools": {"mcp": {"servers": [{"name": "only-name"}]}}
+        }))
+        .expect_err("server entry without url should fail");
+        match err {
+            ButterflyBotError::Config(msg) => assert!(msg.contains("requires name and url")),
+            other => panic!("expected config error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn parse_servers_keeps_string_headers_only() {
+        let servers = McpTool::parse_servers(&json!({
+            "tools": {
+                "mcp": {
+                    "servers": [
+                        {
+                            "name": "demo",
+                            "url": "http://localhost:3001",
+                            "headers": {
+                                "x-api-key": "abc",
+                                "x-bool": true,
+                                "x-num": 42
+                            }
+                        }
+                    ]
+                }
+            }
+        }))
+        .expect("valid server should parse");
+
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "demo");
+        assert_eq!(servers[0].url, "http://localhost:3001");
+        assert_eq!(servers[0].headers.len(), 1);
+        assert_eq!(
+            servers[0].headers.get("x-api-key"),
+            Some(&"abc".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn find_server_routes_single_and_named_servers() {
+        let tool = McpTool::new();
+        tool.configure(&json!({
+            "tools": {
+                "mcp": {
+                    "servers": [
+                        {"name": "primary", "url": "http://localhost:3001"}
+                    ]
+                }
+            }
+        }))
+        .expect("configure single server");
+
+        let auto = tool
+            .find_server(None)
+            .await
+            .expect("single server auto selection");
+        assert_eq!(auto.name, "primary");
+
+        let named = tool
+            .find_server(Some("primary"))
+            .await
+            .expect("named server lookup");
+        assert_eq!(named.url, "http://localhost:3001");
+
+        let err = tool
+            .find_server(Some("missing"))
+            .await
+            .expect_err("unknown server should fail");
+        assert!(runtime_message(err).contains("Unknown MCP server"));
+    }
+
+    #[tokio::test]
+    async fn find_server_requires_name_when_multiple() {
+        let tool = McpTool::new();
+        tool.configure(&json!({
+            "tools": {
+                "mcp": {
+                    "servers": [
+                        {"name": "a", "url": "http://localhost:3001"},
+                        {"name": "b", "url": "http://localhost:3002"}
+                    ]
+                }
+            }
+        }))
+        .expect("configure multiple servers");
+
+        let err = tool
+            .find_server(Some("   "))
+            .await
+            .expect_err("blank server should fail with multiple configured");
+        assert!(runtime_message(err).contains("Multiple MCP servers configured"));
+    }
+
+    #[test]
+    fn build_http_client_validates_headers() {
+        let valid_server = McpServerConfig {
+            name: "ok".to_string(),
+            url: "http://localhost:3001".to_string(),
+            headers: HashMap::from([("x-token".to_string(), "abc".to_string())]),
+        };
+        McpTool::build_http_client(&valid_server).expect("valid headers should build client");
+
+        let invalid_server = McpServerConfig {
+            name: "bad".to_string(),
+            url: "http://localhost:3001".to_string(),
+            headers: HashMap::from([("bad header".to_string(), "abc".to_string())]),
+        };
+        let err = McpTool::build_http_client(&invalid_server).expect_err("invalid header");
+        match err {
+            ButterflyBotError::Config(msg) => assert!(msg.contains("Invalid MCP header name")),
+            other => panic!("expected config error, got {other}"),
+        }
+    }
+
+    #[test]
+    fn parameters_schema_includes_actions() {
+        let schema = McpTool::new().parameters();
+        assert_eq!(schema["required"], json!(["action"]));
+        let actions = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        assert!(actions.iter().any(|v| v == "list_tools"));
+        assert!(actions.iter().any(|v| v == "call_tool"));
+    }
+}

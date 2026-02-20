@@ -8,6 +8,13 @@ use butterfly_bot::factories::agent_factory::ButterflyBotFactory;
 
 #[tokio::test]
 async fn config_from_file_and_factory_errors() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(temp.path().to_path_buf()));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "config-factory-test-dek".to_string(),
+    ));
+
     let config: Config = serde_json::from_value(json!({
         "openai": {"api_key":"key","model":null,"base_url":null},
         "heartbeat_source": {"type": "database", "markdown": ""},
@@ -19,6 +26,7 @@ async fn config_from_file_and_factory_errors() {
         .unwrap();
 
     let no_key_with_base_url = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: None,
             model: None,
@@ -35,6 +43,7 @@ async fn config_from_file_and_factory_errors() {
         .unwrap();
 
     let missing_key = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: None,
             model: None,
@@ -58,6 +67,7 @@ async fn config_from_file_and_factory_errors() {
     assert!(matches!(err, ButterflyBotError::Config(_)));
 
     let missing = Config {
+        provider: None,
         openai: None,
         heartbeat_source: MarkdownSource::default_heartbeat(),
         prompt_source: MarkdownSource::default_prompt(),
@@ -74,4 +84,8 @@ async fn config_from_file_and_factory_errors() {
     let _ok: butterfly_bot::error::Result<()> = Ok(());
     let err = ButterflyBotError::Runtime("boom".to_string());
     assert!(format!("{err}").contains("boom"));
+
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(None);
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(None);
+    butterfly_bot::runtime_paths::set_debug_app_root_override(None);
 }

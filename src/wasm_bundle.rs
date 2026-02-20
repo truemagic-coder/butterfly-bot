@@ -40,14 +40,6 @@ const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
     ),
 ];
 
-fn env_wasm_dir() -> Option<PathBuf> {
-    std::env::var("BUTTERFLY_BOT_WASM_DIR")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
 fn write_module_if_needed(root: &Path, file_name: &str, content: &[u8]) -> Result<()> {
     let path = root.join(file_name);
 
@@ -100,12 +92,6 @@ fn provision_into_dir(wasm_dir: &Path) -> Result<()> {
 }
 
 pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
-    if let Some(wasm_dir) = env_wasm_dir() {
-        provision_into_dir(&wasm_dir)?;
-        std::env::set_var("BUTTERFLY_BOT_WASM_DIR", &wasm_dir);
-        return Ok(wasm_dir);
-    }
-
     let mut tried = Vec::new();
     let mut last_err = None;
     let candidates = crate::runtime_paths::default_wasm_dir_candidates();
@@ -114,7 +100,6 @@ pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
         tried.push(wasm_dir.to_string_lossy().to_string());
         match provision_into_dir(&wasm_dir) {
             Ok(()) => {
-                std::env::set_var("BUTTERFLY_BOT_WASM_DIR", &wasm_dir);
                 return Ok(wasm_dir);
             }
             Err(err) => {
@@ -131,4 +116,55 @@ pub fn ensure_bundled_wasm_tools() -> Result<PathBuf> {
         tried.join(", "),
         detail
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provision_into_dir_writes_all_bundled_modules() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        provision_into_dir(dir.path()).expect("provision bundled modules");
+
+        for (file_name, content) in BUNDLED_WASM_MODULES {
+            let path = dir.path().join(file_name);
+            assert!(path.exists(), "expected bundled module {file_name}");
+            let bytes = std::fs::read(&path).expect("read provisioned module");
+            assert_eq!(
+                bytes.as_slice(),
+                content,
+                "content mismatch for {file_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn write_module_if_needed_replaces_stale_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (file_name, content) = BUNDLED_WASM_MODULES[0];
+        let target = dir.path().join(file_name);
+
+        std::fs::write(&target, b"stale module bytes").expect("seed stale module");
+        write_module_if_needed(dir.path(), file_name, content).expect("rewrite stale module");
+
+        let bytes = std::fs::read(&target).expect("read rewritten module");
+        assert_eq!(bytes.as_slice(), content);
+    }
+
+    #[test]
+    fn write_module_if_needed_is_idempotent_when_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (file_name, content) = BUNDLED_WASM_MODULES[1];
+        let target = dir.path().join(file_name);
+
+        write_module_if_needed(dir.path(), file_name, content).expect("initial write");
+        let first = std::fs::read(&target).expect("read first write");
+
+        write_module_if_needed(dir.path(), file_name, content).expect("idempotent rewrite");
+        let second = std::fs::read(&target).expect("read second write");
+
+        assert_eq!(first, second);
+        assert_eq!(second.as_slice(), content);
+    }
 }

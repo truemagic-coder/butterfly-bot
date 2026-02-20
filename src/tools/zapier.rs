@@ -204,14 +204,6 @@ impl Tool for ZapierTool {
             }
         }
 
-        if next.token.is_none() {
-            if let Some(secret) = vault::get_secret("zapier_token")? {
-                if !Self::is_placeholder_token(&secret) {
-                    next.token = Some(secret);
-                }
-            }
-        }
-
         if let Some(token) = next.token.clone() {
             next.url = Self::url_with_token(&next.url, &token);
             Self::set_bearer_header(&mut next.headers, &token);
@@ -248,7 +240,18 @@ impl Tool for ZapierTool {
             .unwrap_or("")
             .to_string();
 
-        let config = self.config.read().await.clone();
+        let mut config = self.config.read().await.clone();
+
+        if !Self::has_valid_token_in_url(&config.url)
+            && !Self::has_authorization_header(&config.headers)
+        {
+            if let Some(secret) = vault::get_secret("zapier_token")? {
+                if !Self::is_placeholder_token(&secret) {
+                    config.url = Self::url_with_token(&config.url, &secret);
+                    Self::set_bearer_header(&mut config.headers, &secret);
+                }
+            }
+        }
 
         if !Self::has_valid_token_in_url(&config.url)
             && !Self::has_authorization_header(&config.headers)

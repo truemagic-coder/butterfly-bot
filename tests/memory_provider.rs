@@ -104,3 +104,33 @@ async fn memory_provider_defaults_and_in_memory() {
     );
     assert_eq!(dummy.count_documents("any", json!(null)).unwrap(), 0);
 }
+
+#[tokio::test]
+async fn memory_provider_collection_find_count_and_search_defaults() {
+    let provider = InMemoryMemoryProvider::new();
+
+    provider.insert_document("notes", json!({"kind":"todo","title":"Plan sprint"}));
+    provider.insert_document("notes", json!({"kind":"note","title":"Meeting recap"}));
+    provider.insert_document("notes", json!({"kind":"todo","title":"Ship release"}));
+
+    let all_docs = provider
+        .find("notes", json!(null), None, None, None)
+        .expect("find all docs");
+    assert_eq!(all_docs.len(), 3);
+
+    let todo_docs = provider
+        .find("notes", json!({"kind":"todo"}), None, None, None)
+        .expect("find filtered docs");
+    assert_eq!(todo_docs.len(), 2);
+
+    let todo_count = provider
+        .count_documents("notes", json!({"kind":"todo"}))
+        .expect("count filtered docs");
+    assert_eq!(todo_count, 2);
+
+    let search_results = provider
+        .search("u1", "release", 5)
+        .await
+        .expect("search should be supported and return empty by default");
+    assert!(search_results.is_empty());
+}

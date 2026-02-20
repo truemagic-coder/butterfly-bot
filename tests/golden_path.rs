@@ -1,4 +1,5 @@
 use serde_json::json;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
@@ -6,8 +7,32 @@ use butterfly_bot::planning::PlanStore;
 use butterfly_bot::reminders::ReminderStore;
 use butterfly_bot::tasks::{TaskStatus, TaskStore};
 
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("butterfly-golden-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "golden-path-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "golden-path-test-sqlcipher-key")
+        .expect("set deterministic golden path db key");
+}
+
 #[tokio::test]
 async fn golden_path_plan_create_and_update() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();
@@ -53,6 +78,7 @@ async fn golden_path_plan_create_and_update() {
 
 #[tokio::test]
 async fn golden_path_due_task_runs_and_completes() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();
@@ -91,6 +117,7 @@ async fn golden_path_due_task_runs_and_completes() {
 
 #[tokio::test]
 async fn golden_path_due_reminder_fires_once() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();
@@ -120,6 +147,7 @@ async fn golden_path_due_reminder_fires_once() {
 
 #[tokio::test]
 async fn golden_path_persists_across_store_restart() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("golden-path.db");
     let db_path = db_path.to_string_lossy().to_string();

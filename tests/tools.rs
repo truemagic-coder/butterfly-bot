@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use butterfly_bot::interfaces::plugins::Tool;
@@ -9,8 +10,32 @@ use butterfly_bot::tools::wakeup::WakeupTool;
 use serde_json::json;
 use tempfile::tempdir;
 
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("butterfly-tools-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "tools-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "tools-test-sqlcipher-key")
+        .expect("set deterministic tools db key");
+}
+
 #[tokio::test]
 async fn todo_tool_supports_bulk_create_reorder_and_complete() {
+    setup_security_env();
     let dir = tempdir().expect("temp dir");
     let db_path = dir.path().join("todo.db");
     let path = db_path.to_string_lossy().to_string();
@@ -78,6 +103,7 @@ async fn todo_tool_supports_bulk_create_reorder_and_complete() {
 
 #[tokio::test]
 async fn tasks_tool_schedules_and_toggles_task() {
+    setup_security_env();
     let dir = tempdir().expect("temp dir");
     let db_path = dir.path().join("tasks.db");
     let path = db_path.to_string_lossy().to_string();
@@ -132,6 +158,7 @@ async fn tasks_tool_schedules_and_toggles_task() {
 
 #[tokio::test]
 async fn planning_tool_crud_flow_works() {
+    setup_security_env();
     let dir = tempdir().expect("temp dir");
     let db_path = dir.path().join("plans.db");
     let path = db_path.to_string_lossy().to_string();
@@ -186,6 +213,7 @@ async fn planning_tool_crud_flow_works() {
 
 #[tokio::test]
 async fn reminders_tool_handles_aliases_and_lifecycle() {
+    setup_security_env();
     let dir = tempdir().expect("temp dir");
     let db_path = dir.path().join("reminders.db");
     let path = db_path.to_string_lossy().to_string();
@@ -237,6 +265,7 @@ async fn reminders_tool_handles_aliases_and_lifecycle() {
 
 #[tokio::test]
 async fn wakeup_tool_create_toggle_and_delete() {
+    setup_security_env();
     let dir = tempdir().expect("temp dir");
     let db_path = dir.path().join("wakeup.db");
     let path = db_path.to_string_lossy().to_string();

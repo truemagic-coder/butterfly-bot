@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod planning;
 pub mod reminders;
 pub mod search_internet;
+pub mod solana;
 pub mod tasks;
 pub mod todo;
 pub mod wakeup;

@@ -18,6 +18,7 @@
         "cargo check": true,
         "cargo coverage": true,
         "cargo test": true,
-        "cargo clippy": true
+        "cargo clippy": true,
+        "cargo llvm-cov": true
     }
 }

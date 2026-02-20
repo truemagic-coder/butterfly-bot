@@ -28,6 +28,10 @@ use crate::interfaces::scheduler::ScheduledJob;
 use crate::reminders::{resolve_reminder_db_path, ReminderStore};
 use crate::sandbox::{SandboxSettings, ToolRuntime};
 use crate::scheduler::Scheduler;
+use crate::security::policy::SigningIntent;
+use crate::security::signer_daemon::{SignerRequest, SignerService};
+use crate::security::solana_rpc_policy::SolanaRpcExecutionPolicy;
+use crate::security::x402::canonicalize_payment_required;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
 use crate::tasks::TaskStore;
@@ -39,6 +43,7 @@ use tokio::sync::{broadcast, RwLock};
 pub struct AppState {
     pub agent: Arc<RwLock<Arc<ButterflyBot>>>,
     pub reminder_store: Arc<ReminderStore>,
+    pub signer_service: SignerService,
     pub token: String,
     pub ui_event_tx: broadcast::Sender<UiEvent>,
     pub db_path: String,
@@ -422,6 +427,101 @@ struct ErrorResponse {
     error: String,
 }
 
+#[derive(Deserialize)]
+struct SignerIdRequest {
+    request_id: String,
+}
+
+#[derive(Deserialize)]
+struct X402PreviewRequest {
+    request_id: String,
+    actor: String,
+    user_id: String,
+    payment_required: Value,
+    merchant_origin: Option<String>,
+    context_requires_approval: Option<bool>,
+    idempotency_key: Option<String>,
+}
+
+#[derive(Serialize)]
+struct X402PreviewResponse {
+    canonical_intent: crate::security::x402::CanonicalX402Intent,
+    signer: crate::security::signer_daemon::SignerResponse,
+}
+
+#[derive(Deserialize)]
+struct SolanaWalletQuery {
+    user_id: String,
+    actor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SolanaWalletResponse {
+    user_id: String,
+    actor: String,
+    address: String,
+}
+
+#[derive(Deserialize)]
+struct SolanaBalanceQuery {
+    address: Option<String>,
+    user_id: Option<String>,
+    actor: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SolanaBalanceResponse {
+    address: String,
+    lamports: u64,
+    sol: f64,
+}
+
+#[derive(Deserialize)]
+struct SolanaTransferRequest {
+    request_id: String,
+    user_id: String,
+    actor: Option<String>,
+    to: String,
+    lamports: u64,
+    payee: Option<String>,
+    simulate_only: Option<bool>,
+}
+
+#[derive(Serialize)]
+struct SolanaTransferResponse {
+    status: String,
+    request_id: String,
+    wallet_address: String,
+    signer_reason_code: String,
+    simulation: Option<Value>,
+    signature: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SolanaTxStatusQuery {
+    signature: String,
+}
+
+#[derive(Serialize)]
+struct SolanaTxStatusResponse {
+    signature: String,
+    value: Value,
+}
+
+#[derive(Deserialize)]
+struct SolanaTxHistoryQuery {
+    address: Option<String>,
+    user_id: Option<String>,
+    actor: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct SolanaTxHistoryResponse {
+    address: String,
+    entries: Value,
+}
+
 #[derive(Serialize, Clone)]
 struct DoctorCheck {
     name: String,
@@ -474,7 +574,623 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ui_events", get(ui_events))
         .route("/factory_reset_config", post(factory_reset_config))
         .route("/reload_config", post(reload_config))
+        .route("/signer/preview", post(signer_preview))
+        .route("/signer/approve", post(signer_approve))
+        .route("/signer/sign", post(signer_sign))
+        .route("/signer/deny", post(signer_deny))
+        .route("/x402/preview", post(x402_preview))
+        .route("/solana/wallet", get(solana_wallet))
+        .route("/solana/balance", get(solana_balance))
+        .route("/solana/transfer", post(solana_transfer))
+        .route("/solana/simulate_transfer", post(solana_simulate_transfer))
+        .route("/solana/tx/status", get(solana_tx_status))
+        .route("/solana/tx/history", get(solana_tx_history))
         .with_state(state)
+}
+
+async fn solana_wallet(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SolanaWalletQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let actor = query.actor.unwrap_or_else(|| "agent".to_string());
+
+    match crate::security::solana_signer::wallet_address(&query.user_id, &actor) {
+        Ok(address) => (
+            StatusCode::OK,
+            Json(SolanaWalletResponse {
+                user_id: query.user_id,
+                actor,
+                address,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn solana_balance(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SolanaBalanceQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let policy = match load_solana_rpc_policy(&state) {
+        Ok(policy) => policy,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let endpoint = match require_solana_rpc_endpoint(&policy) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let address =
+        match resolve_query_or_wallet_address(query.address, query.user_id, query.actor, "agent") {
+            Ok(address) => address,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    match crate::solana_rpc::get_balance(&endpoint, &address, &policy.commitment).await {
+        Ok(lamports) => (
+            StatusCode::OK,
+            Json(SolanaBalanceResponse {
+                address,
+                lamports,
+                sol: lamports as f64 / 1_000_000_000f64,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn solana_transfer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SolanaTransferRequest>,
+) -> impl IntoResponse {
+    execute_solana_transfer(state, headers, payload, false).await
+}
+
+async fn solana_simulate_transfer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SolanaTransferRequest>,
+) -> impl IntoResponse {
+    execute_solana_transfer(state, headers, payload, true).await
+}
+
+async fn execute_solana_transfer(
+    state: AppState,
+    headers: HeaderMap,
+    payload: SolanaTransferRequest,
+    force_simulation_only: bool,
+) -> Response {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let actor = payload.actor.unwrap_or_else(|| "agent".to_string());
+    let signer_preview = match state.signer_service.process(SignerRequest::Preview {
+        intent: Box::new(SigningIntent {
+            request_id: payload.request_id.clone(),
+            actor: actor.clone(),
+            user_id: payload.user_id.clone(),
+            action_type: "solana_transfer".to_string(),
+            amount_atomic: payload.lamports,
+            payee: payload
+                .payee
+                .clone()
+                .unwrap_or_else(|| "merchant.local".to_string()),
+            context_requires_approval: false,
+            scheme_id: None,
+            chain_id: Some("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp".to_string()),
+            payment_authority: None,
+            idempotency_key: Some(payload.request_id.clone()),
+        }),
+    }) {
+        Ok(response) => response,
+        Err(err) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    if signer_preview.status != "approved" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "transfer requires approval",
+                "signer": signer_preview,
+            })),
+        )
+            .into_response();
+    }
+
+    let policy = match load_solana_rpc_policy(&state) {
+        Ok(policy) => policy,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let endpoint = match require_solana_rpc_endpoint(&policy) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let from_seed = match crate::security::solana_signer::signing_seed(&payload.user_id, &actor) {
+        Ok(seed) => seed,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let latest_blockhash =
+        match crate::solana_rpc::get_latest_blockhash(&endpoint, &policy.commitment).await {
+            Ok(hash) => hash,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let probe_unit_limit = crate::solana_rpc::probe_compute_unit_limit(&policy);
+    let (probe_tx_base64, wallet_address) =
+        match crate::solana_rpc::build_transfer_transaction_base64_with_unit_limit(
+            &from_seed,
+            &payload.to,
+            payload.lamports,
+            &latest_blockhash,
+            &policy,
+            probe_unit_limit,
+        ) {
+            Ok(tuple) => tuple,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let probe_simulation =
+        match crate::solana_rpc::simulate_transaction(&endpoint, &probe_tx_base64, &policy).await {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    let adjusted_unit_limit = crate::solana_rpc::recommended_compute_unit_limit(
+        &probe_simulation,
+        policy.compute_budget.unit_limit,
+    );
+
+    let tx_base64 = if adjusted_unit_limit == probe_unit_limit {
+        probe_tx_base64
+    } else {
+        match crate::solana_rpc::build_transfer_transaction_base64_with_unit_limit(
+            &from_seed,
+            &payload.to,
+            payload.lamports,
+            &latest_blockhash,
+            &policy,
+            adjusted_unit_limit,
+        ) {
+            Ok((tx, _)) => tx,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        }
+    };
+
+    let simulate_only = force_simulation_only || payload.simulate_only.unwrap_or(false);
+    let simulation_result = Some(probe_simulation);
+
+    if simulate_only {
+        return (
+            StatusCode::OK,
+            Json(SolanaTransferResponse {
+                status: "simulated".to_string(),
+                request_id: payload.request_id,
+                wallet_address,
+                signer_reason_code: signer_preview.reason_code,
+                simulation: simulation_result,
+                signature: None,
+            }),
+        )
+            .into_response();
+    }
+
+    if let Err(err) = state.signer_service.process(SignerRequest::Sign {
+        request_id: payload.request_id.clone(),
+    }) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    match crate::solana_rpc::send_transaction(&endpoint, &tx_base64, &policy).await {
+        Ok(signature) => (
+            StatusCode::OK,
+            Json(SolanaTransferResponse {
+                status: "submitted".to_string(),
+                request_id: payload.request_id,
+                wallet_address,
+                signer_reason_code: signer_preview.reason_code,
+                simulation: simulation_result,
+                signature: Some(signature),
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn solana_tx_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SolanaTxStatusQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let policy = match load_solana_rpc_policy(&state) {
+        Ok(policy) => policy,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let endpoint = match require_solana_rpc_endpoint(&policy) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    match crate::solana_rpc::get_signature_status(&endpoint, &query.signature).await {
+        Ok(value) => (
+            StatusCode::OK,
+            Json(SolanaTxStatusResponse {
+                signature: query.signature,
+                value,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn solana_tx_history(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<SolanaTxHistoryQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let policy = match load_solana_rpc_policy(&state) {
+        Ok(policy) => policy,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+    let endpoint = match require_solana_rpc_endpoint(&policy) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let address =
+        match resolve_query_or_wallet_address(query.address, query.user_id, query.actor, "agent") {
+            Ok(address) => address,
+            Err(err) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response()
+            }
+        };
+
+    match crate::solana_rpc::get_signatures_for_address(
+        &endpoint,
+        &address,
+        query.limit.unwrap_or(20),
+    )
+    .await
+    {
+        Ok(entries) => (
+            StatusCode::OK,
+            Json(SolanaTxHistoryResponse { address, entries }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn x402_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<X402PreviewRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let context_requires_approval = payload.context_requires_approval.unwrap_or(false);
+
+    let (canonical_intent, signing_intent) = match canonicalize_payment_required(
+        &payload.request_id,
+        &payload.actor,
+        &payload.user_id,
+        &payload.payment_required,
+        payload.merchant_origin.as_deref(),
+        context_requires_approval,
+        payload.idempotency_key.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    match state.signer_service.process(SignerRequest::Preview {
+        intent: Box::new(signing_intent),
+    }) {
+        Ok(signer_response) => (
+            StatusCode::OK,
+            Json(X402PreviewResponse {
+                canonical_intent,
+                signer: signer_response,
+            }),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn signer_preview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(intent): Json<SigningIntent>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    match state.signer_service.process(SignerRequest::Preview {
+        intent: Box::new(intent),
+    }) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn signer_approve(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SignerIdRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    match state.signer_service.process(SignerRequest::Approve {
+        request_id: payload.request_id,
+    }) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn signer_sign(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SignerIdRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    match state.signer_service.process(SignerRequest::Sign {
+        request_id: payload.request_id,
+    }) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn signer_deny(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SignerIdRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    match state.signer_service.process(SignerRequest::Deny {
+        request_id: payload.request_id,
+    }) {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -790,6 +1506,53 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
                     Some("Verify provider base_url/model and network access."),
                 )),
             }
+
+            let mode = crate::security::tpm_provider::tpm_mode();
+            let tpm_available = crate::security::tpm_provider::tpm_available();
+            if tpm_available {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "pass",
+                    format!("TPM capability available (mode={mode})."),
+                    None,
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "pass",
+                    "Secure Solana wallet custody/signing backend is available.".to_string(),
+                    None,
+                ));
+            } else if mode == "strict" {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "fail",
+                    "TPM unavailable while strict mode is enabled.".to_string(),
+                    Some("Switch TPM mode to auto/compatible or restore TPM availability."),
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "warn",
+                    "Solana signing/custody is disabled because secure key backend is unavailable in strict mode."
+                        .to_string(),
+                    Some("Use a machine with TPM support or relax TPM mode for compatibility."),
+                ));
+            } else {
+                checks.push(doctor_check(
+                    "security_tpm_mode",
+                    "warn",
+                    format!(
+                        "TPM unavailable; running in compatibility path (mode={mode}) with degraded hardware binding."
+                    ),
+                    Some("Use strict mode on TPM-capable hardware for strongest key protection."),
+                ));
+                checks.push(doctor_check(
+                    "solana_custody",
+                    "warn",
+                    "Solana signing/custody is degraded or disabled without hardware-backed key protection."
+                        .to_string(),
+                    Some("For production custody, run on TPM-capable hardware in strict mode."),
+                ));
+            }
         }
         Err(err) => {
             checks.push(doctor_check(
@@ -806,6 +1569,18 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
             ));
             checks.push(doctor_check(
                 "provider_health",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+            checks.push(doctor_check(
+                "security_tpm_mode",
+                "warn",
+                "Skipped because config could not be loaded.".to_string(),
+                Some("Fix config_store check first."),
+            ));
+            checks.push(doctor_check(
+                "solana_custody",
                 "warn",
                 "Skipped because config could not be loaded.".to_string(),
                 Some("Fix config_store check first."),
@@ -841,7 +1616,7 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
                 "database_access",
                 "fail",
                 format!("Database key apply failed: {err}"),
-                Some("Verify BUTTERFLY_BOT_DB_KEY or keychain db_encryption_key."),
+                Some("Verify secure secret storage availability for db_encryption_key."),
             );
         }
 
@@ -1333,10 +2108,7 @@ async fn reminder_stream(
                 .unwrap_or_default()
                 .as_secs() as i64;
             if let Ok(items) = store.due_reminders(&user_id, now, 10).await {
-                if (std::env::var("BUTTERFLY_BOT_REMINDER_DEBUG").is_ok()
-                    || cfg!(debug_assertions))
-                    && !items.is_empty()
-                {
+                if cfg!(debug_assertions) && !items.is_empty() {
                     eprintln!(
                         "Reminder stream emit: user_id={} count={} now={}",
                         user_id,
@@ -1425,22 +2197,17 @@ async fn factory_reset_config(
     };
 
     let pretty = serde_json::to_string_pretty(&config_value).unwrap_or_default();
-    let keyring_saved = match vault::set_secret("app_config_json", &pretty) {
-        Ok(()) => true,
-        Err(err) => {
-            tracing::warn!(
-                "factory_reset_config: failed to persist keyring config: {}",
-                err
-            );
-            false
-        }
-    };
+    if let Err(err) = vault::set_secret("app_config_json", &pretty) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to persist vault config during factory reset: {err}"),
+            }),
+        )
+            .into_response();
+    }
 
-    let mut message = if keyring_saved {
-        "Config reset to factory defaults".to_string()
-    } else {
-        "Config reset to factory defaults (keyring sync failed)".to_string()
-    };
+    let mut message = "Config reset to factory defaults".to_string();
 
     match ButterflyBot::from_store_with_events(&state.db_path, Some(state.ui_event_tx.clone()))
         .await
@@ -1548,6 +2315,91 @@ fn authorize(
     }
 }
 
+fn load_solana_rpc_policy(state: &AppState) -> Result<SolanaRpcExecutionPolicy> {
+    let config = Config::from_store(&state.db_path)
+        .unwrap_or_else(|_| Config::convention_defaults(&state.db_path));
+    SolanaRpcExecutionPolicy::from_config(&config)
+}
+
+fn require_solana_rpc_endpoint(policy: &SolanaRpcExecutionPolicy) -> Result<String> {
+    let endpoint = policy.endpoint.as_deref().unwrap_or("").trim();
+    if endpoint.is_empty() {
+        return Err(ButterflyBotError::Config(
+            "tools.settings.solana.rpc.endpoint must be configured for Solana RPC".to_string(),
+        ));
+    }
+    Ok(endpoint.to_string())
+}
+
+fn resolve_query_or_wallet_address(
+    address: Option<String>,
+    user_id: Option<String>,
+    actor: Option<String>,
+    default_actor: &str,
+) -> Result<String> {
+    if let Some(address) = address {
+        let trimmed = address.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let user_id = user_id.ok_or_else(|| {
+        ButterflyBotError::Config("user_id is required when address is not provided".to_string())
+    })?;
+    let actor = actor.unwrap_or_else(|| default_actor.to_string());
+    crate::security::solana_signer::wallet_address(&user_id, &actor)
+}
+
+fn bootstrap_wallet_targets(config: Option<&Config>) -> Vec<(String, String)> {
+    let configured = config
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| tools.get("settings"))
+        .and_then(|settings| settings.get("solana"))
+        .and_then(|solana| {
+            solana.get("bootstrap_wallets").or_else(|| {
+                solana
+                    .get("rpc")
+                    .and_then(|rpc| rpc.get("bootstrap_wallets"))
+            })
+        })
+        .and_then(|targets| targets.as_array())
+        .map(|targets| {
+            targets
+                .iter()
+                .filter_map(|entry| {
+                    let user_id = entry
+                        .get("user_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())?;
+                    let actor = entry
+                        .get("actor")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or("agent");
+                    Some((user_id.to_string(), actor.to_string()))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if configured.is_empty() {
+        vec![("user".to_string(), "agent".to_string())]
+    } else {
+        configured
+    }
+}
+
+fn bootstrap_solana_wallets(config: Option<&Config>) -> Result<()> {
+    for (user_id, actor) in bootstrap_wallet_targets(config) {
+        let address = crate::security::solana_signer::wallet_address(&user_id, &actor)?;
+        tracing::info!(user_id = %user_id, actor = %actor, address = %address, "Solana wallet bootstrapped");
+    }
+    Ok(())
+}
+
 pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()> {
     run_with_shutdown(host, port, db_path, token, futures::future::pending::<()>()).await
 }
@@ -1562,6 +2414,8 @@ pub async fn run_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    crate::security::hardening::run_startup_self_check()?;
+
     let wasm_dir = crate::wasm_bundle::ensure_bundled_wasm_tools()?;
     tracing::info!(
         wasm_dir = %wasm_dir.to_string_lossy(),
@@ -1586,6 +2440,8 @@ where
     } else {
         tracing::error!("Daemon could not load any config from store!");
     }
+
+    bootstrap_solana_wallets(config.as_ref())?;
 
     let tick_seconds = config
         .as_ref()
@@ -1684,6 +2540,7 @@ where
     let state = AppState {
         agent,
         reminder_store,
+        signer_service: SignerService::default(),
         token: token.to_string(),
         ui_event_tx,
         db_path: db_path.to_string(),
@@ -1694,6 +2551,7 @@ where
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    tracing::info!(address = %addr, "Daemon listener bound");
     let shutdown = async move {
         shutdown.await;
         scheduler.stop().await;

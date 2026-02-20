@@ -15,8 +15,6 @@ use butterfly_bot::error::Result;
 use butterfly_bot::ui;
 #[cfg(not(test))]
 use butterfly_bot::vault;
-#[cfg(not(test))]
-use tracing_subscriber::EnvFilter;
 
 #[cfg(not(test))]
 #[derive(Parser, Debug)]
@@ -36,9 +34,7 @@ struct Cli {
 #[cfg(not(test))]
 #[tokio::main]
 async fn main() -> Result<()> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,butterfly_bot=info"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    butterfly_bot::logging::init_tracing("butterfly_bot");
     force_dbusrs();
 
     let cli = Cli::parse();
@@ -53,7 +49,11 @@ async fn main() -> Result<()> {
     let config = ensure_default_config(&cli.db)?;
     ensure_ollama_installed(&config)?;
     ensure_ollama_models(&config)?;
-    ui::launch_ui();
+    ui::launch_ui_with_config(ui::UiLaunchConfig {
+        db_path: cli.db,
+        daemon_url: cli.daemon,
+        user_id: cli.user_id,
+    });
     Ok(())
 }
 

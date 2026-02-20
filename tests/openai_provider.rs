@@ -2,6 +2,7 @@ use futures::StreamExt;
 use httpmock::Method::POST;
 use httpmock::MockServer;
 use serde_json::json;
+use std::sync::OnceLock;
 
 use butterfly_bot::client::ButterflyBot;
 use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
@@ -9,6 +10,29 @@ use butterfly_bot::error::ButterflyBotError;
 use butterfly_bot::interfaces::providers::{ImageData, ImageInput, LlmProvider};
 use butterfly_bot::providers::openai::OpenAiProvider;
 use butterfly_bot::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
+
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("butterfly-openai-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "openai-provider-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "openai-provider-test-sqlcipher-key")
+        .expect("set deterministic openai test db key");
+}
 
 #[tokio::test]
 async fn openai_provider_via_httpmock() {
@@ -353,6 +377,7 @@ async fn openai_provider_additional_branches() {
 
 #[tokio::test]
 async fn openai_provider_variants_and_agent_process() {
+    setup_security_env();
     let chat_server = MockServer::start_async().await;
     let chat_mock = chat_server
         .mock_async(|when, then| {
@@ -646,6 +671,7 @@ async fn openai_provider_variants_and_agent_process() {
         .await;
 
     let config = Config {
+        provider: None,
         openai: Some(OpenAiConfig {
             api_key: Some("key".to_string()),
             model: Some("gpt-4o-mini".to_string()),
@@ -736,4 +762,33 @@ async fn openai_provider_error_paths() {
         .unwrap_err();
     assert!(matches!(err, ButterflyBotError::Serialization(_)));
     bad_mock.assert_calls(1);
+}
+
+#[tokio::test]
+async fn openai_provider_does_not_fallback_on_server_rejection() {
+    let server = MockServer::start_async().await;
+    let reject_mock = server
+        .mock_async(|when, then| {
+            when.method(POST).path("/chat/completions");
+            then.status(404)
+                .json_body(json!({"error": {"message": "model 'not-real' not found"}}));
+        })
+        .await;
+
+    let provider = OpenAiProvider::new(
+        "key".to_string(),
+        Some("not-real".to_string()),
+        Some(server.base_url()),
+    );
+
+    let err = provider.generate_text("hi", "", None).await.unwrap_err();
+    match err {
+        ButterflyBotError::Http(message) => {
+            assert!(message.contains("Chat completion failed"));
+            assert!(message.contains("404"));
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+
+    reject_mock.assert_calls(1);
 }

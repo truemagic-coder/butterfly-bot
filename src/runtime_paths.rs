@@ -1,23 +1,29 @@
 use std::path::PathBuf;
+use std::sync::{OnceLock, RwLock};
 
-fn env_trimmed(name: &str) -> Option<String> {
-    std::env::var(name).ok().and_then(|value| {
+#[cfg(target_os = "macos")]
+fn home_dir() -> Option<PathBuf> {
+    std::env::var("HOME").ok().and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() {
             None
         } else {
-            Some(trimmed.to_string())
+            Some(PathBuf::from(trimmed))
         }
     })
 }
 
-#[cfg(target_os = "macos")]
-fn home_dir() -> Option<PathBuf> {
-    env_trimmed("HOME").map(PathBuf::from)
-}
-
 fn env_app_root() -> Option<PathBuf> {
-    env_trimmed("BUTTERFLY_BOT_APP_ROOT").map(PathBuf::from)
+    std::env::var("BUTTERFLY_BOT_APP_ROOT")
+        .ok()
+        .and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        })
 }
 
 #[cfg(target_os = "macos")]
@@ -33,36 +39,26 @@ fn platform_app_root() -> PathBuf {
 
 #[cfg(not(target_os = "macos"))]
 fn platform_app_root() -> PathBuf {
-    if let Some(value) = env_trimmed("SNAP_USER_COMMON") {
-        return PathBuf::from(value).join("butterfly-bot");
+    if let Ok(value) = std::env::var("SNAP_USER_COMMON") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed).join("butterfly-bot");
+        }
     }
-
-    if let Some(value) = env_trimmed("XDG_DATA_HOME") {
-        return PathBuf::from(value).join("butterfly-bot");
-    }
-
-    if let Some(home) = env_trimmed("HOME") {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("butterfly-bot");
-    }
-
-    if let Some(value) = env_trimmed("APPDATA") {
-        return PathBuf::from(value).join("butterfly-bot");
-    }
-
-    if let Some(home) = env_trimmed("USERPROFILE") {
-        return PathBuf::from(home)
-            .join("AppData")
-            .join("Roaming")
-            .join("butterfly-bot");
-    }
-
-    std::env::temp_dir().join("butterfly-bot")
+    PathBuf::from(".")
 }
 
 pub fn app_root() -> PathBuf {
+    if let Some(lock) = DEBUG_APP_ROOT_OVERRIDE.get() {
+        let override_root = match lock.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        if let Some(path) = override_root {
+            return path;
+        }
+    }
+
     env_app_root().unwrap_or_else(platform_app_root)
 }
 
@@ -75,63 +71,46 @@ pub fn default_db_path() -> String {
 }
 
 pub fn default_wasm_dir_candidates() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
+    let mut candidates = Vec::new();
 
-    if let Some(value) = env_trimmed("BUTTERFLY_BOT_WASM_DIR") {
-        roots.push(PathBuf::from(value));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(home) = home_dir() {
-            roots.push(
-                home.join("Library")
-                    .join("Application Support")
-                    .join("butterfly-bot")
-                    .join("wasm"),
-            );
+    if let Ok(value) = std::env::var("BUTTERFLY_BOT_WASM_DIR") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            candidates.push(PathBuf::from(trimmed));
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        if let Some(value) = env_trimmed("XDG_DATA_HOME") {
-            roots.push(PathBuf::from(value).join("butterfly-bot").join("wasm"));
-        }
+    candidates.push(app_root().join("wasm"));
 
-        if let Some(home) = env_trimmed("HOME") {
-            roots.push(
-                PathBuf::from(home)
-                    .join(".local")
-                    .join("share")
-                    .join("butterfly-bot")
-                    .join("wasm"),
-            );
-        }
+    if let Ok(current) = std::env::current_dir() {
+        candidates.push(current.join("wasm"));
+    }
 
-        if let Some(value) = env_trimmed("APPDATA") {
-            roots.push(PathBuf::from(value).join("butterfly-bot").join("wasm"));
-        }
+    candidates.push(PathBuf::from("wasm"));
 
-        if let Some(home) = env_trimmed("USERPROFILE") {
-            roots.push(
-                PathBuf::from(home)
-                    .join("AppData")
-                    .join("Roaming")
-                    .join("butterfly-bot")
-                    .join("wasm"),
-            );
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
         }
     }
 
-    let app_root = app_root();
-    if !app_root.as_os_str().is_empty() {
-        roots.push(app_root.join("wasm"));
+    deduped
+}
+
+static DEBUG_APP_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+pub fn set_debug_app_root_override(path: Option<PathBuf>) {
+    let lock = DEBUG_APP_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None));
+    match lock.write() {
+        Ok(mut guard) => *guard = path,
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            *guard = path;
+        }
     }
+}
 
-    roots.push(std::env::temp_dir().join("butterfly-bot").join("wasm"));
-    roots.push(PathBuf::from(".").join("wasm"));
-
-    roots.dedup();
-    roots
+pub fn set_app_root_override_for_tests(path: Option<PathBuf>) {
+    set_debug_app_root_override(path);
 }

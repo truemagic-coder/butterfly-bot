@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -9,6 +10,34 @@ use butterfly_bot::interfaces::providers::{
     ChatEvent, ImageInput, LlmProvider, LlmResponse, MemoryProvider,
 };
 use butterfly_bot::providers::sqlite::{SqliteMemoryProvider, SqliteMemoryProviderConfig};
+
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "butterfly-memory-summarization-tests-root-{unique}"
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "memory-summarization-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret(
+        "db_encryption_key",
+        "memory-summarization-test-sqlcipher-key",
+    )
+    .expect("set deterministic memory summarization db key");
+}
 
 struct SummarizerMock;
 
@@ -94,6 +123,7 @@ impl LlmProvider for SummarizerMock {
 
 #[tokio::test]
 async fn summarization_inserts_memory() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("mem.db");
     let summarizer = Arc::new(SummarizerMock);

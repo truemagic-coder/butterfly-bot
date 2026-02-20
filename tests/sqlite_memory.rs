@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use tempfile::tempdir;
 
 use butterfly_bot::interfaces::providers::MemoryProvider;
@@ -5,8 +6,33 @@ use butterfly_bot::providers::sqlite::{SqliteMemoryProvider, SqliteMemoryProvide
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 
+fn setup_security_env() {
+    static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    let root = ROOT
+        .get_or_init(|| {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("butterfly-sqlite-memory-tests-root-{unique}"));
+            std::fs::create_dir_all(&path).unwrap();
+            path
+        })
+        .clone();
+
+    butterfly_bot::runtime_paths::set_debug_app_root_override(Some(root));
+    butterfly_bot::security::tpm_provider::set_debug_tpm_available_override(Some(true));
+    butterfly_bot::security::tpm_provider::set_debug_dek_passphrase_override(Some(
+        "sqlite-memory-test-dek".to_string(),
+    ));
+    butterfly_bot::vault::set_secret("db_encryption_key", "sqlite-memory-test-sqlcipher-key")
+        .expect("set deterministic sqlite memory db key");
+}
+
 #[tokio::test]
 async fn sqlite_memory_appends_and_reads() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("mem.db");
     let provider =
@@ -31,6 +57,7 @@ async fn sqlite_memory_appends_and_reads() {
 
 #[tokio::test]
 async fn sqlite_memory_search_uses_fts() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("mem.db");
     let provider =
@@ -49,6 +76,7 @@ async fn sqlite_memory_search_uses_fts() {
 
 #[tokio::test]
 async fn sqlite_memory_clear_history_repairs_memories_fts_before_delete() {
+    setup_security_env();
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("mem.db");
     let provider =

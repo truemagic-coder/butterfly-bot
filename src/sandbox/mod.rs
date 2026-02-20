@@ -282,8 +282,10 @@ mod tests {
     #[test]
     fn wasm_module_path_defaults_to_convention() {
         let cfg = ToolSandboxConfig::default();
+        let path = WasmRuntime::resolve_module_path("coding", &cfg);
         assert!(
-            WasmRuntime::resolve_module_path("coding", &cfg).ends_with("/wasm/coding_tool.wasm")
+            path.ends_with("/coding_tool.wasm") || path.ends_with("\\coding_tool.wasm"),
+            "unexpected module path: {path}"
         );
     }
 
@@ -478,8 +480,76 @@ impl WasmRuntime {
         format!("{tool_name}_tool.wasm")
     }
 
+    fn env_wasm_root() -> Option<PathBuf> {
+        std::env::var("BUTTERFLY_BOT_WASM_DIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn platform_wasm_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                roots.push(
+                    PathBuf::from(trimmed)
+                        .join("Library")
+                        .join("Application Support")
+                        .join("butterfly-bot")
+                        .join("wasm"),
+                );
+            }
+        }
+
+        roots
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn platform_wasm_roots() -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+
+        if let Ok(value) = std::env::var("XDG_DATA_HOME") {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                roots.push(PathBuf::from(trimmed).join("butterfly-bot").join("wasm"));
+            }
+        }
+
+        if let Ok(home) = std::env::var("HOME") {
+            let trimmed = home.trim();
+            if !trimmed.is_empty() {
+                roots.push(
+                    PathBuf::from(trimmed)
+                        .join(".local")
+                        .join("share")
+                        .join("butterfly-bot")
+                        .join("wasm"),
+                );
+            }
+        }
+
+        roots
+    }
+
     fn candidate_wasm_roots() -> Vec<PathBuf> {
-        let mut roots = crate::runtime_paths::default_wasm_dir_candidates();
+        let mut roots = Vec::new();
+
+        if let Some(root) = Self::env_wasm_root() {
+            roots.push(root);
+        }
+
+        roots.extend(Self::platform_wasm_roots());
+
+        let app_root = crate::runtime_paths::app_root();
+        if !app_root.as_os_str().is_empty() {
+            roots.push(app_root.join("wasm"));
+        }
+
+        roots.push(std::env::temp_dir().join("butterfly-bot").join("wasm"));
 
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {

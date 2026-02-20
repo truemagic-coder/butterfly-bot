@@ -29,7 +29,7 @@ impl MotivationMicroCoachBrain {
     fn coach(message: &str) -> MotivationPrompt {
         let lower = message.to_lowercase();
         let encouragement = if lower.contains("tired") || lower.contains("burned out") {
-            "It's okay to go slower—momentum still counts".to_string()
+            "It's okay to go slower—small progress still counts".to_string()
         } else {
             "You can make progress with one small step".to_string()
         };

@@ -147,14 +147,6 @@ impl Tool for GitHubTool {
             }
         }
 
-        if next.pat.is_none() {
-            if let Some(secret) = vault::get_secret("github_pat")? {
-                if !secret.trim().is_empty() {
-                    next.pat = Some(secret);
-                }
-            }
-        }
-
         if let Some(pat) = next.pat.clone() {
             Self::insert_pat_header(&mut next.headers, &pat);
         }
@@ -174,7 +166,15 @@ impl Tool for GitHubTool {
             .unwrap_or("")
             .to_string();
 
-        let config = self.config.read().await.clone();
+        let mut config = self.config.read().await.clone();
+
+        if !config.headers.contains_key("Authorization") {
+            if let Some(secret) = vault::get_secret("github_pat")? {
+                if !secret.trim().is_empty() {
+                    Self::insert_pat_header(&mut config.headers, &secret);
+                }
+            }
+        }
 
         if !config.headers.contains_key("Authorization") {
             return Err(ButterflyBotError::Runtime(

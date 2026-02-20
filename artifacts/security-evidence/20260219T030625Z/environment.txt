@@ -1,0 +1,6 @@
+stamp=20260219T030625Z
+workspace=/mnt/speedy/butterfly-bot
+git_commit=74bdc8f63c7c0245a25e5c6b3d92adb8123a70dc
+git_status=23
+cargo 1.93.0 (083ac5135 2025-12-15)
+rustc 1.93.0 (254b59607 2026-01-19)

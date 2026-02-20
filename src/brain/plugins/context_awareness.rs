@@ -60,12 +60,10 @@ impl ContextAwarenessBrain {
     }
 
     fn detect_pronoun(text: &str) -> bool {
-        let lower = text.to_lowercase();
-        [
-            " it ", " this ", " that ", " they ", " them ", " he ", " she ",
-        ]
-        .iter()
-        .any(|token| lower.contains(token))
+        let pronouns = ["it", "this", "that", "they", "them", "he", "she"];
+        text.to_lowercase()
+            .split_whitespace()
+            .any(|word| pronouns.contains(&word.trim_matches(|c: char| !c.is_alphanumeric())))
     }
 }
 

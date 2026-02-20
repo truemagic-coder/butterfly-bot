@@ -1,0 +1,22 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run daemon (background)",
+			"type": "shell",
+			"command": "cargo",
+			"args": [
+				"run",
+				"--bin",
+				"butterfly-botd",
+				"--",
+				"--host",
+				"127.0.0.1",
+				"--port",
+				"7979"
+			],
+			"isBackground": true,
+			"group": "build"
+		}
+	]
+}
