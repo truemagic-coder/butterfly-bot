@@ -622,9 +622,7 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
             push_candidate(dir.join("butterfly-botd.exe"));
 
             if let Some(profile_dir) = dir.file_name().and_then(|value| value.to_str()) {
-                if (profile_dir == "release" || profile_dir == "debug")
-                    && dir.parent().is_some()
-                {
+                if (profile_dir == "release" || profile_dir == "debug") && dir.parent().is_some() {
                     let target_dir = dir.parent().unwrap();
                     let other_profile = if profile_dir == "release" {
                         "debug"
@@ -645,7 +643,11 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
         #[cfg(windows)]
         {
             push_candidate(cwd.join("target").join("debug").join("butterfly-botd.exe"));
-            push_candidate(cwd.join("target").join("release").join("butterfly-botd.exe"));
+            push_candidate(
+                cwd.join("target")
+                    .join("release")
+                    .join("butterfly-botd.exe"),
+            );
         }
     }
 
@@ -795,21 +797,25 @@ fn start_local_daemon() -> Result<(), String> {
 
 fn daemon_health_ok(host: &str, port: u16) -> bool {
     let address = format!("{host}:{port}");
-    let socket = match address.to_socket_addrs().ok().and_then(|mut addrs| addrs.next()) {
+    let socket = match address
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+    {
         Some(value) => value,
         None => return false,
     };
 
-    let mut stream = match std::net::TcpStream::connect_timeout(&socket, StdDuration::from_millis(500)) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
+    let mut stream =
+        match std::net::TcpStream::connect_timeout(&socket, StdDuration::from_millis(500)) {
+            Ok(value) => value,
+            Err(_) => return false,
+        };
     let _ = stream.set_write_timeout(Some(StdDuration::from_millis(500)));
     let _ = stream.set_read_timeout(Some(StdDuration::from_millis(700)));
 
-    let request = format!(
-        "GET /health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n"
-    );
+    let request =
+        format!("GET /health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
     if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
@@ -1262,9 +1268,8 @@ fn app_view() -> Element {
                             if let Some(status) = daemon_exit {
                                 daemon_running.set(false);
                                 boot_ready.set(false);
-                                daemon_status.set(format!(
-                                    "Daemon exited during startup: {status}."
-                                ));
+                                daemon_status
+                                    .set(format!("Daemon exited during startup: {status}."));
                                 boot_status.set(
                                     "Daemon failed to start. Check daemon logs/token and retry."
                                         .to_string(),
@@ -1313,11 +1318,14 @@ fn app_view() -> Element {
                                     let status = resp.status();
                                     if status == reqwest::StatusCode::UNAUTHORIZED {
                                         let refreshed = env_auth_token();
-                                        if !refreshed.trim().is_empty() && refreshed != token_value {
+                                        if !refreshed.trim().is_empty() && refreshed != token_value
+                                        {
                                             token.set(refreshed.clone());
                                             token_value = refreshed;
                                             match send_preload(&token_value).send().await {
-                                                Ok(retry_resp) if retry_resp.status().is_success() => {
+                                                Ok(retry_resp)
+                                                    if retry_resp.status().is_success() =>
+                                                {
                                                     boot_status.set(
                                                         "Boot preload started in background…"
                                                             .to_string(),
@@ -1684,7 +1692,9 @@ fn app_view() -> Element {
                         Ok(resp) => resp,
                         Err(_) => {
                             if cfg!(debug_assertions) {
-                                tracing::debug!("Reminder stream request failed (daemon unreachable?)");
+                                tracing::debug!(
+                                    "Reminder stream request failed (daemon unreachable?)"
+                                );
                             }
                             sleep(Duration::from_secs(2)).await;
                             continue;
@@ -2656,7 +2666,8 @@ fn app_view() -> Element {
 
                 let mut openai_base_url_value = openai_base_url_input().trim().to_string();
                 let mut openai_model_value = openai_model_input().trim().to_string();
-                let mut openai_summary_model_value = openai_summary_model_input().trim().to_string();
+                let mut openai_summary_model_value =
+                    openai_summary_model_input().trim().to_string();
                 let mut openai_embedding_model_value =
                     openai_embedding_model_input().trim().to_string();
                 let mut openai_rerank_model_value = openai_rerank_model_input().trim().to_string();
