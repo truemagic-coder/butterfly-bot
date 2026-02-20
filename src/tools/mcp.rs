@@ -315,7 +315,10 @@ mod tests {
         assert_eq!(servers[0].name, "demo");
         assert_eq!(servers[0].url, "http://localhost:3001");
         assert_eq!(servers[0].headers.len(), 1);
-        assert_eq!(servers[0].headers.get("x-api-key"), Some(&"abc".to_string()));
+        assert_eq!(
+            servers[0].headers.get("x-api-key"),
+            Some(&"abc".to_string())
+        );
     }
 
     #[tokio::test]
@@ -332,7 +335,10 @@ mod tests {
         }))
         .expect("configure single server");
 
-        let auto = tool.find_server(None).await.expect("single server auto selection");
+        let auto = tool
+            .find_server(None)
+            .await
+            .expect("single server auto selection");
         assert_eq!(auto.name, "primary");
 
         let named = tool

@@ -131,7 +131,11 @@ mod tests {
             let path = dir.path().join(file_name);
             assert!(path.exists(), "expected bundled module {file_name}");
             let bytes = std::fs::read(&path).expect("read provisioned module");
-            assert_eq!(bytes.as_slice(), content, "content mismatch for {file_name}");
+            assert_eq!(
+                bytes.as_slice(),
+                content,
+                "content mismatch for {file_name}"
+            );
         }
     }
 

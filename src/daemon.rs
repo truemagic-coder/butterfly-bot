@@ -1110,12 +1110,9 @@ async fn signer_preview(
         return err.into_response();
     }
 
-    match state
-        .signer_service
-        .process(SignerRequest::Preview {
-            intent: Box::new(intent),
-        })
-    {
+    match state.signer_service.process(SignerRequest::Preview {
+        intent: Box::new(intent),
+    }) {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(err) => (
             StatusCode::FORBIDDEN,

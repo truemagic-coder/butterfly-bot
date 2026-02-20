@@ -303,6 +303,7 @@ trait KekStore {
 struct DeviceTpmBackend;
 
 impl DeviceTpmBackend {
+    #[cfg(any(target_os = "linux", test))]
     fn parse_tpm_index(name: &str, prefix: &str) -> Option<u32> {
         let suffix = name.strip_prefix(prefix)?;
         if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
@@ -549,7 +550,7 @@ impl TpmBackend for DeviceTpmBackend {
             }
 
             hasher.update(path.to_string_lossy().as_bytes());
-            return Ok(format!("{:x}", hasher.finalize()));
+            Ok(format!("{:x}", hasher.finalize()))
         }
     }
 }

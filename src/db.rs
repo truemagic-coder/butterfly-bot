@@ -2,8 +2,8 @@ use std::sync::{OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use diesel::Connection;
 use diesel::sqlite::SqliteConnection;
+use diesel::Connection;
 use diesel_async::sync_connection_wrapper::SyncConnectionWrapper;
 #[cfg(not(test))]
 use rand::rngs::SysRng;

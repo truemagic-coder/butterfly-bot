@@ -765,12 +765,11 @@ mod tests {
 
     #[test]
     fn parse_allowlist_and_extract_query_handle_invalid_inputs() {
-        let parsed = SearchInternetTool::parse_allowlist(&json!([
-            "api.openai.com",
-            1,
-            "*.x.ai"
-        ]));
-        assert_eq!(parsed, vec!["api.openai.com".to_string(), "*.x.ai".to_string()]);
+        let parsed = SearchInternetTool::parse_allowlist(&json!(["api.openai.com", 1, "*.x.ai"]));
+        assert_eq!(
+            parsed,
+            vec!["api.openai.com".to_string(), "*.x.ai".to_string()]
+        );
 
         assert!(SearchInternetTool::extract_query(json!({"query": "   "})).is_none());
         assert_eq!(
@@ -909,7 +908,10 @@ mod tests {
             .await
             .expect("perplexity execute");
         assert_eq!(perplexity_response["status"], json!("error"));
-        assert_eq!(perplexity_response["message"], json!("API key not configured"));
+        assert_eq!(
+            perplexity_response["message"],
+            json!("API key not configured")
+        );
 
         let grok = SearchInternetTool::new();
         grok.configure(&json!({

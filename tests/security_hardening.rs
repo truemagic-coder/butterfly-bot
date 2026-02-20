@@ -1,6 +1,6 @@
-use butterfly_bot::security::hardening::{
-    run_startup_self_check, with_sensitive_string, StartupComplianceReport,
-};
+use butterfly_bot::security::hardening::{with_sensitive_string, StartupComplianceReport};
+#[cfg(target_os = "linux")]
+use butterfly_bot::security::hardening::run_startup_self_check;
 
 #[test]
 fn sensitive_string_executes_in_bounded_scope() {

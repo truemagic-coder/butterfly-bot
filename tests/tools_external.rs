@@ -646,8 +646,9 @@ async fn solana_tool_wallet_balance_transfer_status_and_history_workflow() {
             when.method(POST)
                 .path("/")
                 .body_includes("\"method\":\"getBalance\"");
-            then.status(200)
-                .json_body(json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":42}}));
+            then.status(200).json_body(
+                json!({"jsonrpc":"2.0","id":1,"result":{"context":{"slot":1},"value":42}}),
+            );
         })
         .await;
 
@@ -738,7 +739,10 @@ async fn solana_tool_wallet_balance_transfer_status_and_history_workflow() {
         .await
         .expect("wallet action alias should work");
     assert_eq!(wallet["status"], json!("ok"));
-    let address = wallet["address"].as_str().expect("wallet address").to_string();
+    let address = wallet["address"]
+        .as_str()
+        .expect("wallet address")
+        .to_string();
 
     let balance = tool
         .execute(json!({"action":"get_balance","address":address}))
@@ -782,10 +786,7 @@ async fn solana_tool_wallet_balance_transfer_status_and_history_workflow() {
         .await
         .expect("history alias should work");
     assert_eq!(tx_history["status"], json!("ok"));
-    assert_eq!(
-        tx_history["entries"][0]["signature"],
-        json!("sig-tool-123")
-    );
+    assert_eq!(tx_history["entries"][0]["signature"], json!("sig-tool-123"));
 
     get_balance.assert_calls(1);
     get_latest_blockhash.assert_calls(2);

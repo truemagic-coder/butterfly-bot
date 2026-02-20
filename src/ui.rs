@@ -528,7 +528,10 @@ fn set_daemon_last_error(message: Option<String>) {
 }
 
 fn take_daemon_last_error() -> Option<String> {
-    daemon_last_error().lock().ok().and_then(|mut guard| guard.take())
+    daemon_last_error()
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
 }
 
 fn ui_http_client() -> reqwest::Client {
@@ -2586,7 +2589,7 @@ fn app_view() -> Element {
             .daemon-trash-btn:hover {{
                 background: rgba(239,68,68,0.50);
             }}
-            .title {{ font-size: 18px; font-weight: 700; letter-spacing: 0.2px; }}
+            .title-logo {{ height: 30px; width: auto; display: block; }}
             .chat {{ flex: 1; min-height: 0; overflow-y: auto; padding: 20px; background: rgba(10,16,34,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; }}
             .bubble {{
                 max-width: 72%;
@@ -2853,7 +2856,7 @@ fn app_view() -> Element {
         "# }
         div { class: "container",
             div { class: "header",
-                div { class: "title", "Butterfly Bot" }
+                img { class: "title-logo", src: asset!("/assets/icon.png"), alt: "Butterfly Bot" }
                 div { class: "nav",
                     button {
                         class: if *active_tab.read() == UiTab::Chat { "active" } else { "" },
