@@ -1,3 +1,37 @@
+use crate::iced_ui::{self, IcedUiLaunchConfig};
+
+#[derive(Clone)]
+pub struct UiLaunchConfig {
+    pub db_path: String,
+    pub daemon_url: String,
+    pub user_id: String,
+}
+
+impl Default for UiLaunchConfig {
+    fn default() -> Self {
+        Self {
+            db_path: crate::runtime_paths::default_db_path(),
+            daemon_url: "http://127.0.0.1:7878".to_string(),
+            user_id: "user".to_string(),
+        }
+    }
+}
+
+pub fn launch_ui() {
+    launch_ui_with_config(UiLaunchConfig::default());
+}
+
+pub fn launch_ui_with_config(config: UiLaunchConfig) {
+    let result = iced_ui::launch_ui(IcedUiLaunchConfig {
+        daemon_url: config.daemon_url,
+        user_id: config.user_id,
+        db_path: config.db_path,
+    });
+
+    if let Err(err) = result {
+        tracing::error!(error = %err, "failed to launch iced UI");
+    }
+}
 #![allow(
     clippy::clone_on_copy,
     clippy::collapsible_match,
@@ -19,6 +53,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration as StdDuration;
 use syntect::easy::HighlightLines;
@@ -28,7 +63,7 @@ use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 use time::format_description::well_known::Rfc3339;
 use time::{macros::format_description, OffsetDateTime, UtcOffset};
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -247,7 +282,7 @@ async fn run_clear_user_history_request(
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct ChatMessage {
     id: u64,
     role: MessageRole,
@@ -267,14 +302,6 @@ impl ChatMessage {
             timestamp,
         }
     }
-
-    fn append_text(&mut self, chunk: &str) {
-        self.text.push_str(chunk);
-    }
-
-    fn refresh_html(&mut self) {
-        self.html = markdown_to_html(&self.text);
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -283,10 +310,132 @@ enum MessageRole {
     Bot,
 }
 
+#[derive(Props, Clone, PartialEq)]
+struct ChatTimelineProps {
+    messages: Signal<Vec<ChatMessage>>,
+    busy: Signal<bool>,
+}
+
+fn chat_timeline(props: ChatTimelineProps) -> Element {
+    rsx! {
+        div { class: "chat", id: "chat-scroll",
+            onwheel: move |_| {
+                suspend_chat_autoscroll_for(1500);
+            },
+            onscroll: move |_| {
+                suspend_chat_autoscroll_for(1200);
+            },
+            for message in props
+                .messages
+                .read()
+                .iter()
+                .filter(|msg| msg.role == MessageRole::User || !msg.text.is_empty())
+            {
+                div {
+                    class: if message.role == MessageRole::User {
+                        "bubble user"
+                    } else {
+                        "bubble bot"
+                    },
+                    div {
+                        class: "bubble-content",
+                        dangerous_inner_html: message.html.clone(),
+                    }
+                    div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
+                }
+            }
+            if *props.busy.read() {
+                div { class: "hint", "Bot is typing…" }
+            }
+        }
+    }
+}
+
+#[derive(Props, Clone, PartialEq)]
+struct ChatComposerProps {
+    busy: bool,
+    on_send: EventHandler<String>,
+}
+
+fn chat_composer(props: ChatComposerProps) -> Element {
+    let draft = use_signal(String::new);
+    rsx! {
+        div { class: "composer",
+            div { class: "composer-row",
+                label { "Message" }
+                div { class: "composer-input",
+                    textarea {
+                        id: "composer-textarea",
+                        value: "{draft}",
+                        oninput: move |evt| {
+                            let mut draft = draft.clone();
+                            draft.set(evt.value());
+                        },
+                        onkeydown: move |evt| {
+                            if evt.key() == Key::Enter && !evt.modifiers().shift() {
+                                evt.prevent_default();
+                                let text = draft();
+                                let mut draft = draft.clone();
+                                draft.set(String::new());
+                                props.on_send.call(text);
+                            }
+                        },
+                    }
+                    button {
+                        class: "send",
+                        disabled: props.busy,
+                        onclick: move |_| {
+                            let text = draft();
+                            let mut draft = draft.clone();
+                            draft.set(String::new());
+                            props.on_send.call(text);
+                        },
+                        "Send"
+                    }
+                }
+            }
+        }
+    }
+}
+
 const HISTORY_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]");
-const MAX_CHAT_MESSAGES: usize = 180;
+const MAX_CHAT_MESSAGES: usize = 100;
 const MAX_ACTIVITY_MESSAGES: usize = 260;
+const SEND_COOLDOWN_MS: i64 = 150;
+const STREAM_SLOW_RENDER_WARN_MS: i64 = 60;
+const STREAM_HARD_TIMEOUT_SECS: u64 = 75;
+const CHAT_SCROLL_SUSPEND_MS_DEFAULT: i64 = 1200;
+const CHAT_SCROLL_THROTTLE_MS: i64 = 250;
+
+fn chat_scroll_suspend_until_ms() -> &'static AtomicI64 {
+    static VALUE: OnceLock<AtomicI64> = OnceLock::new();
+    VALUE.get_or_init(|| AtomicI64::new(0))
+}
+
+fn last_chat_scroll_ms() -> &'static AtomicI64 {
+    static VALUE: OnceLock<AtomicI64> = OnceLock::new();
+    VALUE.get_or_init(|| AtomicI64::new(0))
+}
+
+fn suspend_chat_autoscroll_for(duration_ms: i64) {
+    let until = now_unix_ms().saturating_add(duration_ms.max(CHAT_SCROLL_SUSPEND_MS_DEFAULT));
+    chat_scroll_suspend_until_ms().store(until, Ordering::Relaxed);
+}
+
+fn chat_autoscroll_suspended() -> bool {
+    now_unix_ms() < chat_scroll_suspend_until_ms().load(Ordering::Relaxed)
+}
+
+fn chat_scroll_allowed_now() -> bool {
+    let now = now_unix_ms();
+    let last = last_chat_scroll_ms().load(Ordering::Relaxed);
+    if now.saturating_sub(last) < CHAT_SCROLL_THROTTLE_MS {
+        return false;
+    }
+    last_chat_scroll_ms().store(now, Ordering::Relaxed);
+    true
+}
 
 fn push_bounded_message(list: &mut Vec<ChatMessage>, message: ChatMessage, max_len: usize) {
     list.push(message);
@@ -301,6 +450,13 @@ fn now_unix_ts() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn format_local_time(ts: i64) -> String {
@@ -436,6 +592,22 @@ fn markdown_to_html(input: &str) -> String {
     output
 }
 
+fn plain_text_to_html(input: &str) -> String {
+    let mut out = String::with_capacity(input.len() + 32);
+    for ch in input.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            '\n' => out.push_str("<br/>"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn is_empty_list_result(payload: &Value) -> bool {
     let action = payload
         .get("args")
@@ -458,18 +630,35 @@ fn is_empty_list_result(payload: &Value) -> bool {
         })
 }
 
-async fn scroll_chat_to_bottom() {
-    let _ = eval("const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
+async fn scroll_chat_to_bottom(force: bool) {
+    if !force && chat_autoscroll_suspended() {
+        return;
+    }
+    if !chat_scroll_allowed_now() {
+        return;
+    }
+    let script = if force {
+        "const el = document.getElementById('chat-scroll'); if (el) { el.scrollTop = el.scrollHeight; }"
+    } else {
+        "const el = document.getElementById('chat-scroll'); if (el) { const atBottom = (el.scrollHeight - el.scrollTop - el.clientHeight) < 120; if (atBottom) { el.scrollTop = el.scrollHeight; } }"
+    };
+    let eval_future = eval(script);
+    if timeout(Duration::from_millis(80), eval_future).await.is_err() {
+        tracing::warn!("chat scroll eval timed out");
+    }
 }
 
 async fn scroll_chat_after_render() {
-    scroll_chat_to_bottom().await;
-    sleep(Duration::from_millis(16)).await;
-    scroll_chat_to_bottom().await;
+    scroll_chat_to_bottom(false).await;
 }
 
 async fn scroll_activity_to_bottom() {
-    let _ = eval("const el = document.getElementById('activity-scroll'); if (el) { el.scrollTop = el.scrollHeight; }").await;
+    let eval_future = eval(
+        "const el = document.getElementById('activity-scroll'); if (el) { el.scrollTop = el.scrollHeight; }",
+    );
+    if timeout(Duration::from_millis(120), eval_future).await.is_err() {
+        tracing::warn!("activity scroll eval timed out");
+    }
 }
 
 async fn scroll_activity_after_render() {
@@ -556,10 +745,16 @@ fn ui_launch_config() -> UiLaunchConfig {
 pub fn launch_ui_with_config(config: UiLaunchConfig) {
     set_ui_launch_config(config);
     force_dbusrs();
+    normalize_oom_score_adj_best_effort();
     install_shutdown_hooks_once();
-    kill_all_daemons_best_effort();
+    install_process_watchdog_once();
+    if ui_manage_local_daemon_enabled() {
+        kill_all_daemons_best_effort();
+    }
     launch(app_view);
-    kill_all_daemons_best_effort();
+    if ui_manage_local_daemon_enabled() {
+        kill_all_daemons_best_effort();
+    }
 }
 
 fn shutdown_spawned_daemon_best_effort() {
@@ -605,6 +800,109 @@ fn install_shutdown_hooks_once() {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn normalize_oom_score_adj_best_effort() {
+    let current = std::fs::read_to_string("/proc/self/oom_score_adj")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+    if current <= 0 {
+        return;
+    }
+
+    match std::fs::write("/proc/self/oom_score_adj", b"0") {
+        Ok(_) => tracing::info!(from = current, to = 0, "normalized oom_score_adj"),
+        Err(err) => tracing::warn!(
+            from = current,
+            error = %err,
+            "could not lower oom_score_adj; process may still be preferred kill target"
+        ),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn normalize_oom_score_adj_best_effort() {}
+
+#[cfg(target_os = "linux")]
+fn install_process_watchdog_once() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let pid = std::process::id();
+        let cgroup_path = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|raw| {
+                raw.lines()
+                    .find_map(|line| line.split_once("::").map(|(_, path)| path.trim().to_string()))
+            })
+            .unwrap_or_else(|| "/".to_string());
+        let cgroup_dir = if cgroup_path == "/" {
+            "/sys/fs/cgroup".to_string()
+        } else {
+            format!("/sys/fs/cgroup{}", cgroup_path)
+        };
+        tracing::info!(pid, cgroup = %cgroup_path, cgroup_dir = %cgroup_dir, "ui watchdog initialized");
+
+        std::thread::spawn(move || loop {
+            let mut rss_kb: Option<u64> = None;
+            let mut hwm_kb: Option<u64> = None;
+            let oom_score = std::fs::read_to_string("/proc/self/oom_score")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .unwrap_or(0);
+            let oom_score_adj = std::fs::read_to_string("/proc/self/oom_score_adj")
+                .ok()
+                .and_then(|raw| raw.trim().parse::<i64>().ok())
+                .unwrap_or(0);
+            let cgroup_current_kb = std::fs::read_to_string(format!("{}/memory.current", cgroup_dir))
+                .ok()
+                .and_then(|raw| raw.trim().parse::<u64>().ok())
+                .map(|bytes| bytes / 1024);
+            let cgroup_max_kb = std::fs::read_to_string(format!("{}/memory.max", cgroup_dir))
+                .ok()
+                .and_then(|raw| {
+                    let trimmed = raw.trim();
+                    if trimmed == "max" {
+                        None
+                    } else {
+                        trimmed.parse::<u64>().ok().map(|bytes| bytes / 1024)
+                    }
+                });
+            if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+                for line in status.lines() {
+                    if rss_kb.is_none() && line.starts_with("VmRSS:") {
+                        rss_kb = line
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|value| value.parse::<u64>().ok());
+                    }
+                    if hwm_kb.is_none() && line.starts_with("VmHWM:") {
+                        hwm_kb = line
+                            .split_whitespace()
+                            .nth(1)
+                            .and_then(|value| value.parse::<u64>().ok());
+                    }
+                }
+            }
+
+            if let Some(rss_kb) = rss_kb {
+                tracing::debug!(
+                    rss_kb,
+                    hwm_kb = hwm_kb.unwrap_or(0),
+                    oom_score,
+                    oom_score_adj,
+                    cgroup_current_kb = cgroup_current_kb.unwrap_or(0),
+                    cgroup_max_kb = cgroup_max_kb.unwrap_or(0),
+                    "ui process memory"
+                );
+            }
+            std::thread::sleep(StdDuration::from_secs(2));
+        });
+    });
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_process_watchdog_once() {}
+
 fn stream_timeout_duration() -> Duration {
     Duration::from_secs(45)
 }
@@ -620,8 +918,34 @@ fn daemon_request_client() -> reqwest::Client {
 fn daemon_stream_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(StdDuration::from_secs(2))
+    .timeout(StdDuration::from_secs(STREAM_HARD_TIMEOUT_SECS))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn env_flag_enabled(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            let trimmed = value.trim();
+            !trimmed.eq_ignore_ascii_case("0")
+                && !trimmed.eq_ignore_ascii_case("false")
+                && !trimmed.eq_ignore_ascii_case("off")
+                && !trimmed.eq_ignore_ascii_case("no")
+        })
+        .unwrap_or(default)
+}
+
+fn ui_manage_local_daemon_enabled() -> bool {
+    env_flag_enabled("BUTTERFLY_UI_MANAGE_DAEMON", true)
+}
+
+fn ui_daemon_autostart_enabled() -> bool {
+    env_flag_enabled("BUTTERFLY_UI_DAEMON_AUTOSTART", true)
+}
+
+fn ui_autoboot_enabled() -> bool {
+    env_flag_enabled("BUTTERFLY_UI_AUTOBOOT", false)
 }
 
 #[cfg(target_os = "linux")]
@@ -824,6 +1148,7 @@ fn start_local_daemon() -> Result<(), String> {
     let tpm_mode = daemon_tpm_mode(&db_path);
 
     let mut child = spawn_daemon_process(host.clone(), port, db_path, token, tpm_mode)?;
+    bias_daemon_oom_priority_best_effort(child.id());
 
     // Detect immediate exit (e.g. bind conflict) so UI doesn't talk to a different
     // daemon instance with a mismatched auth token and then fail with HTTP 401.
@@ -845,6 +1170,19 @@ fn start_local_daemon() -> Result<(), String> {
 
     Ok(())
 }
+
+#[cfg(target_os = "linux")]
+fn bias_daemon_oom_priority_best_effort(pid: u32) {
+    let path = format!("/proc/{pid}/oom_score_adj");
+    if let Err(err) = std::fs::write(&path, b"500") {
+        tracing::debug!(pid, path = %path, error = %err, "could not raise daemon oom_score_adj");
+    } else {
+        tracing::info!(pid, oom_score_adj = 500, "raised daemon oom_score_adj to protect UI process");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bias_daemon_oom_priority_best_effort(_pid: u32) {}
 
 fn daemon_health_ok(host: &str, port: u16) -> bool {
     let address = format!("{host}:{port}");
@@ -955,7 +1293,6 @@ fn app_view() -> Element {
     let daemon_url = use_signal(|| normalize_daemon_url(&launch_config.daemon_url));
     let token = use_signal(env_auth_token);
     let user_id = use_signal(|| launch_config.user_id.clone());
-    let input = use_signal(String::new);
     let busy = use_signal(|| false);
     let error = use_signal(String::new);
     let messages = use_signal(Vec::<ChatMessage>::new);
@@ -966,6 +1303,8 @@ fn app_view() -> Element {
     let daemon_exit_watch_started = use_signal(|| false);
     let daemon_status = use_signal(String::new);
     let next_id = use_signal(|| 1u64);
+    let send_request_epoch = use_signal(|| 0u64);
+    let last_send_ms = use_signal(|| 0i64);
     let active_tab = use_signal(|| UiTab::Chat);
     let reminders_listening = use_signal(|| false);
     let reminders_listener_started = use_signal(|| false);
@@ -1034,41 +1373,64 @@ fn app_view() -> Element {
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
-        let input = input.clone();
         let busy = busy.clone();
         let error = error.clone();
         let messages = messages.clone();
         let next_id = next_id.clone();
+        let send_request_epoch = send_request_epoch.clone();
+        let last_send_ms = last_send_ms.clone();
 
-        use_callback(move |_: ()| {
+        use_callback(move |text: String| {
             let daemon_url = daemon_url();
             let token = token();
             let user_id = user_id();
-            let text = input();
-            let busy = busy.clone();
-            let error = error.clone();
+            let mut busy = busy.clone();
+            let mut error = error.clone();
             let messages = messages.clone();
             let next_id = next_id.clone();
+            let mut send_request_epoch = send_request_epoch.clone();
+            let mut last_send_ms = last_send_ms.clone();
+
+            if *busy.read() {
+                return;
+            }
+
+            if text.trim().is_empty() {
+                error.set("Enter a message to send.".to_string());
+                return;
+            }
+
+            let now_ms = now_unix_ms();
+            let elapsed_ms = now_ms.saturating_sub(last_send_ms());
+            if elapsed_ms < SEND_COOLDOWN_MS {
+                return;
+            }
+            last_send_ms.set(now_ms);
+
+            let request_epoch = send_request_epoch().saturating_add(1);
+            send_request_epoch.set(request_epoch);
+
+            busy.set(true);
+            error.set(String::new());
 
             spawn(async move {
                 let mut busy = busy;
                 let mut error = error;
                 let mut messages = messages;
                 let mut next_id = next_id;
-                let mut input = input;
+                let send_request_epoch = send_request_epoch;
+                let request_started_ms = now_unix_ms();
+                let input_len = text.len();
 
-                if *busy.read() {
-                    error.set("A request is already in progress. Please wait.".to_string());
+                if send_request_epoch() != request_epoch {
                     return;
                 }
 
-                if text.trim().is_empty() {
-                    error.set("Enter a message to send.".to_string());
-                    return;
-                }
-
-                busy.set(true);
-                error.set(String::new());
+                tracing::info!(
+                    request_epoch,
+                    input_len,
+                    "chat stream request started"
+                );
 
                 let user_message_id = {
                     let id = next_id();
@@ -1105,8 +1467,6 @@ fn app_view() -> Element {
                         MAX_CHAT_MESSAGES,
                     );
                 }
-
-                input.set(String::new());
                 scroll_chat_after_render().await;
 
                 let client = daemon_stream_client();
@@ -1130,69 +1490,102 @@ fn app_view() -> Element {
 
                 match make_request(&client, &url, &token, &body).send().await {
                     Ok(response) => {
+                        if send_request_epoch() != request_epoch {
+                            return;
+                        }
                         let mut messages = messages.clone();
                         let mut error = error.clone();
                         if response.status().is_success() {
+                            tracing::debug!(request_epoch, "chat stream connected");
                             let mut stream = response.bytes_stream();
                             let mut chunk_counter = 0usize;
-                            let mut bytes_since_refresh = 0usize;
+                            let mut full_text = String::new();
+                            let stream_deadline =
+                                Instant::now() + Duration::from_secs(STREAM_HARD_TIMEOUT_SECS);
+
                             loop {
+                                if send_request_epoch() != request_epoch {
+                                    break;
+                                }
+
+                                if Instant::now() >= stream_deadline {
+                                    if send_request_epoch() == request_epoch {
+                                        error.set(format!(
+                                            "Stream exceeded {}s; request canceled.",
+                                            STREAM_HARD_TIMEOUT_SECS
+                                        ));
+                                    }
+                                    tracing::warn!(
+                                        request_epoch,
+                                        timeout_secs = STREAM_HARD_TIMEOUT_SECS,
+                                        "chat stream hard-timeout"
+                                    );
+                                    break;
+                                }
+
                                 let next_chunk =
                                     match timeout(stream_timeout_duration(), stream.next()).await {
                                         Ok(value) => value,
                                         Err(_) => {
-                                            error.set(
-                                                "Stream timed out waiting for response."
-                                                    .to_string(),
-                                            );
+                                            if send_request_epoch() == request_epoch {
+                                                error.set(
+                                                    "Stream timed out waiting for response."
+                                                        .to_string(),
+                                                );
+                                            }
                                             break;
                                         }
                                     };
+
                                 let Some(chunk) = next_chunk else {
                                     break;
                                 };
+
                                 match chunk {
                                     Ok(bytes) => {
                                         if let Ok(text_chunk) = std::str::from_utf8(&bytes) {
                                             if !text_chunk.is_empty() {
-                                                let mut list = messages.write();
-                                                if let Some(last) = list
-                                                    .iter_mut()
-                                                    .rev()
-                                                    .find(|msg| msg.id == bot_message_id)
-                                                {
-                                                    last.append_text(text_chunk);
-                                                    bytes_since_refresh += text_chunk.len();
-                                                    let next_chunk_index = chunk_counter + 1;
-                                                    if next_chunk_index == 1
-                                                        || bytes_since_refresh >= 1024
-                                                    {
-                                                        last.refresh_html();
-                                                        bytes_since_refresh = 0;
-                                                    }
-                                                }
+                                                full_text.push_str(text_chunk);
                                                 chunk_counter += 1;
                                             }
                                         }
-                                        if chunk_counter > 0 && chunk_counter.is_multiple_of(8) {
-                                            scroll_chat_to_bottom().await;
-                                        }
                                     }
                                     Err(err) => {
-                                        error.set(format!("Stream error: {err}"));
+                                        if send_request_epoch() == request_epoch {
+                                            error.set(format!("Stream error: {err}"));
+                                        }
                                         break;
                                     }
                                 }
                             }
-                            if chunk_counter > 0 {
+
+                            if send_request_epoch() == request_epoch {
+                                let render_started_ms = now_unix_ms();
                                 let mut list = messages.write();
                                 if let Some(last) =
                                     list.iter_mut().rev().find(|msg| msg.id == bot_message_id)
                                 {
-                                    last.refresh_html();
+                                    last.text = full_text;
+                                    last.html = plain_text_to_html(&last.text);
                                 }
                                 drop(list);
+                                let render_elapsed_ms =
+                                    now_unix_ms().saturating_sub(render_started_ms);
+                                if render_elapsed_ms >= STREAM_SLOW_RENDER_WARN_MS {
+                                    tracing::warn!(
+                                        request_epoch,
+                                        render_elapsed_ms,
+                                        chunk_counter,
+                                        "final markdown render was slow"
+                                    );
+                                }
                                 scroll_chat_after_render().await;
+                                tracing::info!(
+                                    request_epoch,
+                                    chunk_counter,
+                                    elapsed_ms = now_unix_ms().saturating_sub(request_started_ms),
+                                    "chat stream request completed"
+                                );
                             }
                         } else {
                             let status = response.status();
@@ -1200,17 +1593,25 @@ fn app_view() -> Element {
                                 .text()
                                 .await
                                 .unwrap_or_else(|_| "Unable to read error body".to_string());
-                            error.set(format!("Request failed ({status}): {text}"));
+                            tracing::warn!(request_epoch, status = %status, "chat stream returned non-success status");
+                            if send_request_epoch() == request_epoch {
+                                error.set(format!("Request failed ({status}): {text}"));
+                            }
                         }
                     }
                     Err(err) => {
-                        error.set(format!(
-                            "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start on the main page (Chat tab)."
-                        ));
+                        tracing::warn!(request_epoch, error = %err, "chat stream request failed");
+                        if send_request_epoch() == request_epoch {
+                            error.set(format!(
+                                "Request failed: {err}. Daemon unreachable at {daemon_url}. Use Start on the main page (Chat tab)."
+                            ));
+                        }
                     }
                 }
 
-                busy.set(false);
+                if send_request_epoch() == request_epoch {
+                    busy.set(false);
+                }
             });
         })
     };
@@ -1311,6 +1712,36 @@ fn app_view() -> Element {
                     return;
                 }
 
+                if !ui_manage_local_daemon_enabled() {
+                    let daemon_url_value = daemon_url();
+                    let (host, port) = parse_daemon_address(&daemon_url_value);
+                    if daemon_health_ok(&host, port) {
+                        daemon_running.set(true);
+                        boot_ready.set(true);
+                        daemon_status.set("External daemon is healthy.".to_string());
+                        if ui_autoboot_enabled() {
+                            boot_status
+                                .set("External daemon ready; auto preload is enabled.".to_string());
+                        } else {
+                            boot_status
+                                .set("External daemon ready; auto preload disabled.".to_string());
+                        }
+                    } else {
+                        daemon_running.set(false);
+                        boot_ready.set(false);
+                        daemon_status.set(
+                            "External daemon is not reachable. Start butterfly-botd separately."
+                                .to_string(),
+                        );
+                        boot_status.set(
+                            "Run butterfly-botd outside UI process, then press Start again."
+                                .to_string(),
+                        );
+                    }
+                    daemon_starting.set(false);
+                    return;
+                }
+
                 daemon_starting.set(true);
                 daemon_status.set("Starting daemon…".to_string());
 
@@ -1371,109 +1802,122 @@ fn app_view() -> Element {
                             }
                         } else {
                             daemon_running.set(true);
-                            let url =
-                                format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
-                            let preload_body = PreloadBootRequest { user_id: user_id() };
-                            let mut token_value = token();
-                            if token_value.trim().is_empty() {
-                                let refreshed = env_auth_token();
-                                if !refreshed.trim().is_empty() {
-                                    token.set(refreshed.clone());
-                                    token_value = refreshed;
-                                }
-                            }
-
-                            let send_preload = |token_value: &str| {
-                                let mut request = client.post(&url).json(&preload_body);
-                                if !token_value.trim().is_empty() {
-                                    request = request
-                                        .header("authorization", format!("Bearer {token_value}"));
-                                }
-                                request
-                            };
-
-                            match send_preload(&token_value).send().await {
-                                Ok(resp) if resp.status().is_success() => {
-                                    boot_status
-                                        .set("Boot preload started in background…".to_string());
-                                }
-                                Ok(resp) => {
-                                    let status = resp.status();
-                                    if status == reqwest::StatusCode::UNAUTHORIZED {
-                                        let refreshed = env_auth_token();
-                                        if !refreshed.trim().is_empty() && refreshed != token_value
-                                        {
-                                            token.set(refreshed.clone());
-                                            token_value = refreshed;
-                                            match send_preload(&token_value).send().await {
-                                                Ok(retry_resp)
-                                                    if retry_resp.status().is_success() =>
-                                                {
-                                                    boot_status.set(
-                                                        "Boot preload started in background…"
-                                                            .to_string(),
-                                                    );
-                                                }
-                                                Ok(retry_resp)
-                                                    if retry_resp.status()
-                                                        == reqwest::StatusCode::UNAUTHORIZED =>
-                                                {
-                                                    boot_status.set(
-                                                        "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
-                                                            .to_string(),
-                                                    );
-                                                    daemon_status.set(
-                                                        "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
-                                                            .to_string(),
-                                                    );
-                                                }
-                                                Ok(retry_resp) => {
-                                                    let retry_status = retry_resp.status();
-                                                    boot_status.set(format!(
-                                                        "Boot preload failed: HTTP {retry_status}"
-                                                    ));
-                                                }
-                                                Err(err) => {
-                                                    boot_status
-                                                        .set(format!("Boot preload error: {err}"));
-                                                }
-                                            }
-                                        } else {
-                                            boot_status.set(
-                                                "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
-                                                    .to_string(),
-                                            );
-                                            daemon_status.set(
-                                                "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
-                                                    .to_string(),
-                                            );
-                                        }
-                                    } else {
-                                        boot_status
-                                            .set(format!("Boot preload failed: HTTP {status}"));
+                            if !ui_autoboot_enabled() {
+                                boot_status.set(
+                                    "Daemon ready. Auto preload/doctor disabled for stability."
+                                        .to_string(),
+                                );
+                                doctor_running.set(false);
+                            } else {
+                                let url =
+                                    format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
+                                let preload_body = PreloadBootRequest { user_id: user_id() };
+                                let mut token_value = token();
+                                if token_value.trim().is_empty() {
+                                    let refreshed = env_auth_token();
+                                    if !refreshed.trim().is_empty() {
+                                        token.set(refreshed.clone());
+                                        token_value = refreshed;
                                     }
                                 }
-                                Err(err) => {
-                                    boot_status.set(format!("Boot preload error: {err}"));
-                                }
-                            }
 
-                            doctor_running.set(true);
-                            doctor_error.set(String::new());
-                            doctor_status.set("Running diagnostics…".to_string());
-                            match run_doctor_request(daemon_url(), token()).await {
-                                Ok(report) => {
-                                    let overall = report.overall.clone();
-                                    doctor_overall.set(overall.clone());
-                                    doctor_checks.set(report.checks);
-                                    doctor_status.set(format!("Diagnostics complete ({overall})."));
+                                let send_preload = |token_value: &str| {
+                                    let mut request = client.post(&url).json(&preload_body);
+                                    if !token_value.trim().is_empty() {
+                                        request = request.header(
+                                            "authorization",
+                                            format!("Bearer {token_value}"),
+                                        );
+                                    }
+                                    request
+                                };
+
+                                match send_preload(&token_value).send().await {
+                                    Ok(resp) if resp.status().is_success() => {
+                                        boot_status
+                                            .set("Boot preload started in background…".to_string());
+                                    }
+                                    Ok(resp) => {
+                                        let status = resp.status();
+                                        if status == reqwest::StatusCode::UNAUTHORIZED {
+                                            let refreshed = env_auth_token();
+                                            if !refreshed.trim().is_empty()
+                                                && refreshed != token_value
+                                            {
+                                                token.set(refreshed.clone());
+                                                token_value = refreshed;
+                                                match send_preload(&token_value).send().await {
+                                                    Ok(retry_resp)
+                                                        if retry_resp.status().is_success() =>
+                                                    {
+                                                        boot_status.set(
+                                                            "Boot preload started in background…"
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    Ok(retry_resp)
+                                                        if retry_resp.status()
+                                                            == reqwest::StatusCode::UNAUTHORIZED =>
+                                                    {
+                                                        boot_status.set(
+                                                            "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
+                                                                .to_string(),
+                                                        );
+                                                        daemon_status.set(
+                                                            "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
+                                                                .to_string(),
+                                                        );
+                                                    }
+                                                    Ok(retry_resp) => {
+                                                        let retry_status = retry_resp.status();
+                                                        boot_status.set(format!(
+                                                            "Boot preload failed: HTTP {retry_status}"
+                                                        ));
+                                                    }
+                                                    Err(err) => {
+                                                        boot_status.set(format!(
+                                                            "Boot preload error: {err}"
+                                                        ));
+                                                    }
+                                                }
+                                            } else {
+                                                boot_status.set(
+                                                    "Boot preload failed: HTTP 401 Unauthorized. Likely daemon auth token mismatch. Stop other daemon instances and start daemon from this UI session."
+                                                        .to_string(),
+                                                );
+                                                daemon_status.set(
+                                                    "Daemon auth mismatch detected (401). Ensure one daemon instance and shared BUTTERFLY_BOT_TOKEN."
+                                                        .to_string(),
+                                                );
+                                            }
+                                        } else {
+                                            boot_status
+                                                .set(format!("Boot preload failed: HTTP {status}"));
+                                        }
+                                    }
+                                    Err(err) => {
+                                        boot_status.set(format!("Boot preload error: {err}"));
+                                    }
                                 }
-                                Err(err) => {
-                                    doctor_error.set(format!("Diagnostics failed: {err}"));
-                                    doctor_status.set(String::new());
+
+                                doctor_running.set(true);
+                                doctor_error.set(String::new());
+                                doctor_status.set("Running diagnostics…".to_string());
+                                match run_doctor_request(daemon_url(), token()).await {
+                                    Ok(report) => {
+                                        let overall = report.overall.clone();
+                                        doctor_overall.set(overall.clone());
+                                        doctor_checks.set(report.checks);
+                                        doctor_status
+                                            .set(format!("Diagnostics complete ({overall})."));
+                                    }
+                                    Err(err) => {
+                                        doctor_error.set(format!("Diagnostics failed: {err}"));
+                                        doctor_status.set(String::new());
+                                    }
                                 }
+                                doctor_running.set(false);
                             }
-                            doctor_running.set(false);
                         }
                     }
                     Err(err) => {
@@ -1537,6 +1981,30 @@ fn app_view() -> Element {
                 let mut security_audit_error = security_audit_error;
                 let mut security_audit_overall = security_audit_overall;
                 let mut security_audit_findings = security_audit_findings;
+
+                if !ui_manage_local_daemon_enabled() {
+                    daemon_starting.set(false);
+                    daemon_running.set(false);
+                    reminders_listening.set(false);
+                    ui_events_listening.set(false);
+                    boot_ready.set(false);
+                    boot_status.set(
+                        "External daemon mode: stop it from its own service/process."
+                            .to_string(),
+                    );
+                    daemon_status
+                        .set("Local daemon control disabled in this UI session.".to_string());
+                    doctor_status.set(String::new());
+                    doctor_error.set(String::new());
+                    doctor_overall.set(String::new());
+                    doctor_checks.set(Vec::new());
+                    security_audit_status.set(String::new());
+                    security_audit_error.set(String::new());
+                    security_audit_overall.set(String::new());
+                    security_audit_findings.set(Vec::new());
+                    return;
+                }
+
                 let result = stop_local_daemon();
                 match result {
                     Ok(()) => {
@@ -1642,6 +2110,13 @@ fn app_view() -> Element {
                 return;
             }
             if *daemon_starting.read() {
+                return;
+            }
+            if !ui_daemon_autostart_enabled() {
+                let mut daemon_status = daemon_status.clone();
+                daemon_status.set(
+                    "Daemon autostart disabled; using external daemon mode.".to_string(),
+                );
                 return;
             }
 
@@ -1879,7 +2354,7 @@ fn app_view() -> Element {
                                             MAX_CHAT_MESSAGES,
                                         );
                                         if *active_tab.read() == UiTab::Chat {
-                                            scroll_chat_to_bottom().await;
+                                            scroll_chat_to_bottom(false).await;
                                         }
                                         send_desktop_notification(title);
                                     }
@@ -2674,7 +3149,7 @@ fn app_view() -> Element {
                     boot_status.set(
                         "Daemon is stopped. Start it to preload prompt + heartbeat.".to_string(),
                     );
-                } else {
+                } else if ui_autoboot_enabled() {
                     // Preload prompt into memory and heartbeat into agent.
                     boot_ready.set(true);
                     boot_status.set("Initializing prompt + heartbeat in background...".to_string());
@@ -2703,6 +3178,11 @@ fn app_view() -> Element {
                             ));
                         }
                     }
+                } else {
+                    boot_ready.set(true);
+                    boot_status.set(
+                        "Daemon ready. Auto preload disabled for stability.".to_string(),
+                    );
                 }
 
                 tools_loaded.set(true);
@@ -3504,7 +3984,6 @@ fn app_view() -> Element {
     let active_tab_config = active_tab.clone();
     let active_tab_context = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
-    let message_input = input.clone();
 
     rsx! {
         style { r#"
@@ -4034,54 +4513,10 @@ fn app_view() -> Element {
                 if !daemon_status.read().is_empty() {
                     div { class: "hint", "{daemon_status}" }
                 }
-                div { class: "chat", id: "chat-scroll",
-                    for message in messages
-                        .read()
-                        .iter()
-                        .filter(|msg| msg.role == MessageRole::User || !msg.text.is_empty())
-                    {
-                        div {
-                            class: if message.role == MessageRole::User {
-                                "bubble user"
-                            } else {
-                                "bubble bot"
-                            },
-                            div {
-                                class: "bubble-content",
-                                dangerous_inner_html: message.html.clone(),
-                            }
-                            div { class: "bubble-time", "{format_local_time(message.timestamp)}" }
-                        }
-                    }
-                    if *busy.read() {
-                        div { class: "hint", "Bot is typing…" }
-                    }
-                }
-                div { class: "composer",
-                    div { class: "composer-row",
-                        label { "Message" }
-                        div { class: "composer-input",
-                            textarea {
-                                value: "{input}",
-                                oninput: move |evt| {
-                                    let mut message_input = message_input.clone();
-                                    message_input.set(evt.value());
-                                },
-                                onkeydown: move |evt| {
-                                    if evt.key() == Key::Enter && !evt.modifiers().shift() {
-                                        evt.prevent_default();
-                                        on_send_key.call(());
-                                    }
-                                },
-                            }
-                            button {
-                                class: "send",
-                                disabled: *busy.read(),
-                                onclick: move |_| on_send.call(()),
-                                "Send"
-                            }
-                        }
-                    }
+                chat_timeline { messages: messages, busy: busy }
+                chat_composer {
+                    busy: *busy.read(),
+                    on_send: on_send_key,
                 }
             }
             if *active_tab.read() == UiTab::Config {

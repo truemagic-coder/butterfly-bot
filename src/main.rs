@@ -8,8 +8,6 @@ use butterfly_bot::config_store;
 #[cfg(not(test))]
 use butterfly_bot::error::Result;
 #[cfg(not(test))]
-use butterfly_bot::ui;
-#[cfg(not(test))]
 use butterfly_bot::vault;
 
 #[cfg(not(test))]
@@ -28,10 +26,8 @@ struct Cli {
 }
 
 #[cfg(not(test))]
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     butterfly_bot::logging::init_tracing("butterfly_bot");
-    force_dbusrs();
 
     let cli = Cli::parse();
     std::env::set_var("BUTTERFLY_BOT_DB", &cli.db);
@@ -43,25 +39,14 @@ async fn main() -> Result<()> {
     }
 
     ensure_default_config(&cli.db)?;
-    ui::launch_ui_with_config(ui::UiLaunchConfig {
-        db_path: cli.db,
+    butterfly_bot::iced_ui::launch_ui(butterfly_bot::iced_ui::IcedUiLaunchConfig {
         daemon_url: cli.daemon,
         user_id: cli.user_id,
-    });
+        db_path: cli.db,
+    })
+    .map_err(|err| butterfly_bot::ButterflyBotError::Config(err.to_string()))?;
     Ok(())
 }
-
-#[cfg(not(test))]
-#[cfg(target_os = "linux")]
-fn force_dbusrs() {
-    if std::env::var("DBUSRS").is_err() {
-        std::env::set_var("DBUSRS", "1");
-    }
-}
-
-#[cfg(not(test))]
-#[cfg(not(target_os = "linux"))]
-fn force_dbusrs() {}
 
 #[cfg(not(test))]
 fn ensure_default_config(db_path: &str) -> Result<Config> {

@@ -6,7 +6,7 @@ This page holds the detailed material moved out of README to keep onboarding fas
 
 Butterfly Bot runs as:
 
-- Desktop UI (Dioxus)
+- Desktop UI (iced)
 - Local daemon (`butterfly-botd`)
 - Tooling/runtime layer (WASM-first tools + policy)
 - Memory layer (SQLCipher + sqlite-vec)
