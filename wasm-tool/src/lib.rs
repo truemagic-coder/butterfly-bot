@@ -124,6 +124,7 @@ fn execute_todo(input: &Value) -> Value {
         "create_list" | "create_many" | "add_many" | "bulk_create" | "create_items" => {
             "create_many"
         }
+        "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear",
         other => other,
     };
     args.insert("action".to_string(), Value::String(action.to_string()));
@@ -155,7 +156,7 @@ fn execute_todo(input: &Value) -> Value {
                 Err(invalid_args("Missing ordered_ids"))
             }
         }
-        "list" => Ok(()),
+        "list" | "clear" => Ok(()),
         _ => Err(invalid_args("Unsupported action")),
     };
 
@@ -170,6 +171,7 @@ fn execute_todo(input: &Value) -> Value {
         "complete" => "kv.sqlite.todo.complete",
         "reopen" => "kv.sqlite.todo.reopen",
         "delete" => "kv.sqlite.todo.delete",
+        "clear" => "kv.sqlite.todo.clear",
         "reorder" => "kv.sqlite.todo.reorder",
         _ => return invalid_args("Unsupported action"),
     };
@@ -194,6 +196,7 @@ fn execute_tasks(input: &Value) -> Value {
         .to_string();
     let action = match action.as_str() {
         "cancel" => "disable".to_string(),
+        "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear".to_string(),
         other => other.to_string(),
     };
     args.insert("action".to_string(), Value::String(action.clone()));
@@ -205,7 +208,7 @@ fn execute_tasks(input: &Value) -> Value {
                 .and_then(|_| require_i64(&args, "run_at"))
         }
         "cancel" | "disable" | "enable" | "delete" => require_i64(&args, "id"),
-        "list" => Ok(()),
+        "list" | "clear" => Ok(()),
         _ => Err(invalid_args("Unsupported action")),
     };
 
@@ -219,6 +222,7 @@ fn execute_tasks(input: &Value) -> Value {
         "enable" => "kv.sqlite.tasks.enable",
         "disable" => "kv.sqlite.tasks.disable",
         "delete" => "kv.sqlite.tasks.delete",
+        "clear" => "kv.sqlite.tasks.clear",
         _ => return invalid_args("Unsupported action"),
     };
 
@@ -305,16 +309,22 @@ fn execute_planning(input: &Value) -> Value {
         return err;
     }
 
-    let action = args
+    let raw_action = args
         .get("action")
         .and_then(|value| value.as_str())
         .unwrap_or("")
         .to_string();
+    let action = match raw_action.as_str() {
+        "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear".to_string(),
+        other => other.to_string(),
+    };
+    let mut args = args;
+    args.insert("action".to_string(), Value::String(action.clone()));
 
     let valid = match action.as_str() {
         "create" => require_string(&args, "title").and_then(|_| require_string(&args, "goal")),
         "get" | "update" | "delete" => require_i64(&args, "id"),
-        "list" => Ok(()),
+        "list" | "clear" => Ok(()),
         _ => Err(invalid_args("Unsupported action")),
     };
 
@@ -328,6 +338,7 @@ fn execute_planning(input: &Value) -> Value {
         "get" => "kv.sqlite.planning.get",
         "update" => "kv.sqlite.planning.update",
         "delete" => "kv.sqlite.planning.delete",
+        "clear" => "kv.sqlite.planning.clear",
         _ => return invalid_args("Unsupported action"),
     };
 
@@ -560,6 +571,54 @@ fn execute_solana(input: &Value) -> Value {
         }
     }
 
+    if args
+        .get("mint")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        if let Some(mint) = args
+            .get("token_mint")
+            .or_else(|| args.get("asset"))
+            .or_else(|| args.get("asset_id"))
+            .cloned()
+        {
+            args.insert("mint".to_string(), mint);
+        }
+    }
+
+    if args
+        .get("amount_atomic")
+        .and_then(|value| value.as_u64())
+        .is_none()
+    {
+        if let Some(amount_atomic) = args
+            .get("token_amount_atomic")
+            .or_else(|| args.get("amount_atomic_units"))
+            .cloned()
+        {
+            args.insert("amount_atomic".to_string(), amount_atomic);
+        } else if args
+            .get("mint")
+            .and_then(|value| value.as_str())
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        {
+            if let Some(amount) = args.get("amount") {
+                match amount {
+                    Value::Number(number) if number.as_u64().is_some() => {
+                        args.insert("amount_atomic".to_string(), amount.clone());
+                    }
+                    Value::String(text) => {
+                        if let Ok(parsed) = text.trim().parse::<u64>() {
+                            args.insert("amount_atomic".to_string(), Value::from(parsed));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     let amount_sol_alias = args
         .get("amount_sol")
         .or_else(|| args.get("sol"))
@@ -607,14 +666,32 @@ fn execute_solana(input: &Value) -> Value {
         .get("action")
         .and_then(|value| value.as_str())
         .unwrap_or("")
-        .to_string();
+        .to_ascii_lowercase();
     let action = match raw_action.as_str() {
-        "address" | "get_wallet" => "wallet",
-        "get_balance" => "balance",
-        "send" | "send_transfer" | "transact" | "transaction" | "pay" => "transfer",
-        "simulate" | "dry_run" => "simulate_transfer",
+        "address"
+        | "get_wallet"
+        | "inspect_wallet"
+        | "check_wallet"
+        | "wallet_address"
+        | "get_wallet_address" => "wallet",
+        "get_balance" | "inspect_balance" | "check_balance" | "wallet_balance" => "balance",
+        "send"
+        | "send_transfer"
+        | "transact"
+        | "transaction"
+        | "pay"
+        | "send_token"
+        | "payment"
+        | "execute_payment"
+        | "submit_payment"
+        | "x402_payment" => "transfer",
+        "simulate" | "dry_run" | "simulate_payment" | "preview_payment" | "x402_preview" => {
+            "simulate_transfer"
+        }
         "simulate_transaction" | "simulate_tx" => "simulate_transfer",
-        "status" | "signature_status" => "tx_status",
+        "status" | "signature_status" | "txstatus" | "check_tx" | "transaction_status" => {
+            "tx_status"
+        }
         "history" => "tx_history",
         "" => {
             if args
@@ -655,7 +732,28 @@ fn execute_solana(input: &Value) -> Value {
         "transfer" | "simulate_transfer" => {
             require_string(&args, "user_id")
                 .and_then(|_| require_string(&args, "to"))
-                .and_then(|_| require_u64(&args, "lamports"))
+                .and_then(|_| {
+                    let has_lamports = args
+                        .get("lamports")
+                        .and_then(|value| value.as_u64())
+                        .is_some();
+                    let has_token_args = args
+                        .get("mint")
+                        .and_then(|value| value.as_str())
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(false)
+                        && args
+                            .get("amount_atomic")
+                            .and_then(|value| value.as_u64())
+                            .is_some();
+                    if has_lamports || has_token_args {
+                        Ok(())
+                    } else {
+                        Err(invalid_args(
+                            "Missing lamports for SOL transfer or mint+amount_atomic for SPL transfer",
+                        ))
+                    }
+                })
         }
         "tx_status" => require_string(&args, "signature"),
         "tx_history" => {
@@ -801,6 +899,27 @@ mod tests {
         assert_eq!(
             output["capability_call"]["args"]["lamports"].as_u64(),
             Some(20000000)
+        );
+    }
+
+    #[test]
+    fn solana_execute_payment_alias_normalizes() {
+        let output = execute_for_tool(
+            "solana",
+            &json!({
+                "action":"execute_payment",
+                "recipient":"11111111111111111111111111111111",
+                "amount": 0.01
+            }),
+        );
+        assert_eq!(output["status"].as_str(), Some("capability_call"));
+        assert_eq!(
+            output["capability_call"]["name"].as_str(),
+            Some("solana.transfer")
+        );
+        assert_eq!(
+            output["capability_call"]["args"]["lamports"].as_u64(),
+            Some(10_000_000)
         );
     }
 

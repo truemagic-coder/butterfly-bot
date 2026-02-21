@@ -197,6 +197,15 @@ impl PlanStore {
         Ok(count > 0)
     }
 
+    pub async fn clear_plans(&self, user_id: &str) -> Result<usize> {
+        let mut conn = self.conn().await?;
+        let deleted = diesel::delete(plans::table.filter(plans::user_id.eq(user_id)))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(deleted)
+    }
+
     async fn conn(&self) -> Result<SqlitePooledConn<'_>> {
         let mut conn = self
             .pool

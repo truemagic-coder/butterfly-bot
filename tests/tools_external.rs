@@ -130,6 +130,34 @@ async fn http_call_tool_infers_json_from_string_body() {
 }
 
 #[tokio::test]
+async fn http_call_tool_accepts_absolute_endpoint_without_server_config() {
+    setup_security_env();
+    let server = MockServer::start_async().await;
+    let request_mock = server
+        .mock_async(|when, then| {
+            when.method(GET).path("/healthz");
+            then.status(200)
+                .header("content-type", "application/json")
+                .json_body(json!({"ok": true}));
+        })
+        .await;
+
+    let tool = HttpCallTool::new();
+    let result = tool
+        .execute(json!({
+            "method": "GET",
+            "endpoint": format!("{}/healthz", server.base_url())
+        }))
+        .await
+        .expect("execute http_call with absolute endpoint");
+
+    assert_eq!(result["status"], json!("ok"));
+    assert_eq!(result["http_status"], json!(200));
+    assert_eq!(result["json"]["ok"], json!(true));
+    request_mock.assert_calls(1);
+}
+
+#[tokio::test]
 async fn http_call_tool_requires_server_when_multiple_configured() {
     setup_security_env();
     let tool = HttpCallTool::new();
@@ -794,4 +822,97 @@ async fn solana_tool_wallet_balance_transfer_status_and_history_workflow() {
     send_transaction.assert_calls(1);
     signature_status.assert_calls(1);
     history.assert_calls(1);
+}
+
+#[tokio::test]
+async fn solana_tool_balance_with_mint_uses_spl_token_rpc() {
+    setup_security_env();
+    let rpc = MockServer::start_async().await;
+
+    let get_token_accounts = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getTokenAccountsByOwner\"")
+                .body_includes("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
+            then.status(200).json_body(json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "result":{
+                    "context":{"slot":1},
+                    "value":[{
+                        "pubkey":"9f1MFK8nQ7kkh2YkSK36D6cvn18PkEhGj4N8rn4vQ6iX",
+                        "account":{
+                            "data":{
+                                "program":"spl-token",
+                                "parsed":{},
+                                "space":165
+                            },
+                            "executable":false,
+                            "lamports":2039280,
+                            "owner":"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                            "rentEpoch":1
+                        }
+                    }]
+                }
+            }));
+        })
+        .await;
+
+    let get_token_balance = rpc
+        .mock_async(|when, then| {
+            when.method(POST)
+                .path("/")
+                .body_includes("\"method\":\"getTokenAccountBalance\"")
+                .body_includes("9f1MFK8nQ7kkh2YkSK36D6cvn18PkEhGj4N8rn4vQ6iX");
+            then.status(200).json_body(json!({
+                "jsonrpc":"2.0",
+                "id":1,
+                "result":{
+                    "context":{"slot":1},
+                    "value":{
+                        "amount":"10000",
+                        "decimals":6,
+                        "uiAmountString":"0.01"
+                    }
+                }
+            }));
+        })
+        .await;
+
+    let tool = SolanaTool::new();
+    tool.configure(&json!({
+        "tools": {
+            "settings": {
+                "solana": {
+                    "rpc": {
+                        "provider": "custom",
+                        "endpoint": rpc.base_url()
+                    }
+                }
+            }
+        }
+    }))
+    .expect("configure solana tool");
+
+    let balance = tool
+        .execute(json!({
+            "action": "balance",
+            "address": "CvkK9CeYhhh1Vtkw6WZQkS8wGmmZsmZMcaXssD8pKZts",
+            "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        }))
+        .await
+        .expect("token balance should work");
+
+    assert_eq!(balance["status"], json!("ok"));
+    assert_eq!(
+        balance["mint"],
+        json!("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    );
+    assert_eq!(balance["amount_atomic"], json!("10000"));
+    assert_eq!(balance["decimals"], json!(6));
+    assert_eq!(balance["ui_amount_string"], json!("0.01"));
+
+    get_token_accounts.assert_calls(1);
+    get_token_balance.assert_calls(1);
 }

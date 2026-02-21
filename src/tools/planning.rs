@@ -58,7 +58,7 @@ impl Tool for PlanningTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "get", "update", "delete"]
+                    "enum": ["create", "list", "get", "update", "delete", "clear"]
                 },
                 "user_id": { "type": "string" },
                 "id": { "type": "integer" },
@@ -88,6 +88,10 @@ impl Tool for PlanningTool {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let action = match action.as_str() {
+            "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear",
+            other => other,
+        };
         let user_id = params
             .get("user_id")
             .and_then(|v| v.as_str())
@@ -96,7 +100,7 @@ impl Tool for PlanningTool {
         let store = self.get_store().await?;
         let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
-        match action.as_str() {
+        match action {
             "create" => {
                 let title = params
                     .get("title")
@@ -146,6 +150,10 @@ impl Tool for PlanningTool {
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing id".to_string()))?
                     as i32;
                 let deleted = store.delete_plan(id).await?;
+                Ok(json!({"status": "ok", "deleted": deleted}))
+            }
+            "clear" => {
+                let deleted = store.clear_plans(user_id).await?;
                 Ok(json!({"status": "ok", "deleted": deleted}))
             }
             _ => Err(ButterflyBotError::Runtime("Unsupported action".to_string())),

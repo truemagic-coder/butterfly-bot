@@ -134,6 +134,41 @@ impl SolanaTool {
 
         None
     }
+
+    fn resolve_token_mint(params: &Value) -> Option<String> {
+        params
+            .get("mint")
+            .or_else(|| params.get("token_mint"))
+            .or_else(|| params.get("asset"))
+            .or_else(|| params.get("asset_id"))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+    }
+
+    fn resolve_amount_atomic(params: &Value) -> Option<u64> {
+        if let Some(value) = params
+            .get("amount_atomic")
+            .or_else(|| params.get("token_amount_atomic"))
+        {
+            return match value {
+                Value::Number(number) => number.as_u64(),
+                Value::String(text) => text.trim().parse::<u64>().ok(),
+                _ => None,
+            };
+        }
+
+        if let Some(value) = params.get("amount") {
+            return match value {
+                Value::Number(number) => number.as_u64(),
+                Value::String(text) => text.trim().parse::<u64>().ok(),
+                _ => None,
+            };
+        }
+
+        None
+    }
 }
 
 #[async_trait]
@@ -143,7 +178,7 @@ impl Tool for SolanaTool {
     }
 
     fn description(&self) -> &str {
-        "Solana wallet operations: get wallet address, get balance, simulate transfers, submit transfers, and inspect transaction status/history."
+        "Solana wallet operations: get wallet address, SOL balance, SPL-token balance by mint, simulate/submit SOL transfers (lamports), simulate/submit SPL-token transfers by mint+amount_atomic, and inspect transaction status/history."
     }
 
     fn parameters(&self) -> Value {
@@ -152,16 +187,37 @@ impl Tool for SolanaTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["wallet", "balance", "transfer", "tx_status", "tx_history"]
+                    "enum": [
+                        "wallet",
+                        "address",
+                        "get_wallet",
+                        "balance",
+                        "get_balance",
+                        "transfer",
+                        "send",
+                        "send_transfer",
+                        "simulate_transfer",
+                        "simulate",
+                        "dry_run",
+                        "tx_status",
+                        "status",
+                        "signature_status",
+                        "tx_history",
+                        "history"
+                    ]
                 },
                 "request_id": { "type": "string" },
                 "user_id": { "type": "string" },
                 "actor": { "type": "string", "description": "Defaults to agent" },
                 "address": { "type": "string" },
                 "to": { "type": "string", "description": "Destination Solana address" },
+                "mint": { "type": "string", "description": "SPL token mint address (required for token balance/transfer)" },
+                "from_token_account": { "type": "string" },
+                "to_token_account": { "type": "string" },
+                "amount_atomic": { "type": "integer", "description": "Atomic units for SPL-token transfer" },
+                "decimals": { "type": "integer", "description": "Optional mint decimals override" },
                 "lamports": { "type": "integer" },
                 "amount_sol": { "type": "number", "description": "SOL amount (preferred over lamports when provided)" },
-                "amount": { "description": "Amount alias; integer = lamports, decimal/string = SOL" },
                 "signature": { "type": "string" },
                 "limit": { "type": "integer" }
             },
@@ -185,13 +241,19 @@ impl Tool for SolanaTool {
             .get("action")
             .and_then(|v| v.as_str())
             .unwrap_or("")
-            .to_string();
+            .to_ascii_lowercase();
         let action = match action.as_str() {
-            "address" | "get_wallet" => "wallet",
-            "get_balance" => "balance",
-            "send" | "send_transfer" => "transfer",
-            "simulate" | "dry_run" => "simulate_transfer",
-            "status" | "signature_status" => "tx_status",
+            "address" | "get_wallet" | "inspect_wallet" | "check_wallet" | "wallet_address"
+            | "get_wallet_address" => "wallet",
+            "get_balance" | "inspect_balance" | "check_balance" | "wallet_balance" => "balance",
+            "send" | "send_transfer" | "send_token" | "pay" | "payment" | "execute_payment"
+            | "submit_payment" | "x402_payment" => "transfer",
+            "simulate" | "dry_run" | "simulate_payment" | "preview_payment" | "x402_preview" => {
+                "simulate_transfer"
+            }
+            "status" | "signature_status" | "txstatus" | "check_tx" | "transaction_status" => {
+                "tx_status"
+            }
             "history" => "tx_history",
             other => other,
         };
@@ -226,6 +288,45 @@ impl Tool for SolanaTool {
                     "agent",
                 )?;
 
+                if let Some(mint) = Self::resolve_token_mint(&params) {
+                    let token_account = crate::solana_rpc::find_token_account_by_owner_and_mint(
+                        &endpoint,
+                        &address,
+                        &mint,
+                        &policy.commitment,
+                    )
+                    .await?;
+
+                    let Some(token_account) = token_account else {
+                        return Ok(json!({
+                            "status": "ok",
+                            "address": address,
+                            "mint": mint,
+                            "token_account": Value::Null,
+                            "amount_atomic": "0",
+                            "decimals": Value::Null,
+                            "ui_amount_string": "0"
+                        }));
+                    };
+
+                    let token_balance = crate::solana_rpc::get_token_account_balance(
+                        &endpoint,
+                        &token_account,
+                        &policy.commitment,
+                    )
+                    .await?;
+
+                    return Ok(json!({
+                        "status": "ok",
+                        "address": address,
+                        "mint": mint,
+                        "token_account": token_account,
+                        "amount_atomic": token_balance.get("value").and_then(|v| v.get("amount")).cloned().unwrap_or(Value::String("0".to_string())),
+                        "decimals": token_balance.get("value").and_then(|v| v.get("decimals")).cloned().unwrap_or(Value::Null),
+                        "ui_amount_string": token_balance.get("value").and_then(|v| v.get("uiAmountString")).cloned().unwrap_or(Value::String("0".to_string()))
+                    }));
+                }
+
                 let lamports =
                     crate::solana_rpc::get_balance(&endpoint, &address, &policy.commitment).await?;
                 Ok(json!({
@@ -250,8 +351,25 @@ impl Tool for SolanaTool {
                     .get("to")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing to".to_string()))?;
-                let lamports = Self::resolve_lamports(&params)
-                    .ok_or_else(|| ButterflyBotError::Runtime("Missing lamports".to_string()))?;
+                let mint = Self::resolve_token_mint(&params);
+                let mint_for_response = mint.clone();
+                let mut token_decimals_for_response: Option<u8> = None;
+                let lamports = if mint.is_none() {
+                    Some(Self::resolve_lamports(&params).ok_or_else(|| {
+                        ButterflyBotError::Runtime("Missing lamports".to_string())
+                    })?)
+                } else {
+                    None
+                };
+                let amount_atomic = if mint.is_some() {
+                    Some(Self::resolve_amount_atomic(&params).ok_or_else(|| {
+                        ButterflyBotError::Runtime(
+                            "Missing amount_atomic for token transfer".to_string(),
+                        )
+                    })?)
+                } else {
+                    None
+                };
 
                 let request_id = params
                     .get("request_id")
@@ -269,13 +387,124 @@ impl Tool for SolanaTool {
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
-                let (tx_base64, wallet_address, simulation_result) = if policy.simulation.enabled {
+                let (tx_base64, wallet_address, simulation_result) = if let Some(mint) =
+                    mint.as_ref()
+                {
+                    let owner_address =
+                        crate::security::solana_signer::wallet_address(user_id, actor)?;
+                    let source_token_account = params
+                        .get("from_token_account")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_string())
+                        .or(crate::solana_rpc::find_token_account_by_owner_and_mint(
+                            &endpoint,
+                            &owner_address,
+                            mint,
+                            &policy.commitment,
+                        )
+                        .await?)
+                        .ok_or_else(|| {
+                            ButterflyBotError::Runtime(
+                                "Missing source token account for owner+mint".to_string(),
+                            )
+                        })?;
+
+                    let destination_token_account = params
+                        .get("to_token_account")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_string())
+                        .or(crate::solana_rpc::find_token_account_by_owner_and_mint(
+                            &endpoint,
+                            to,
+                            mint,
+                            &policy.commitment,
+                        )
+                        .await?)
+                        .ok_or_else(|| {
+                            ButterflyBotError::Runtime(
+                                "Destination token account for payee+mint not found".to_string(),
+                            )
+                        })?;
+
+                    let decimals = params
+                        .get("decimals")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u8)
+                        .unwrap_or(
+                            crate::solana_rpc::get_token_decimals(
+                                &endpoint,
+                                mint,
+                                &policy.commitment,
+                            )
+                            .await?,
+                        );
+                    token_decimals_for_response = Some(decimals);
+
+                    if policy.simulation.enabled {
+                        let probe_unit_limit = crate::solana_rpc::probe_compute_unit_limit(&policy);
+                        let (probe_tx_base64, wallet_address) =
+                            crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
+                                &from_seed,
+                                &source_token_account,
+                                mint,
+                                &destination_token_account,
+                                amount_atomic.unwrap_or_default(),
+                                decimals,
+                                &latest_blockhash,
+                                &policy,
+                                probe_unit_limit,
+                            )?;
+
+                        let simulation = crate::solana_rpc::simulate_transaction(
+                            &endpoint,
+                            &probe_tx_base64,
+                            &policy,
+                        )
+                        .await?;
+                        let adjusted_unit_limit = crate::solana_rpc::recommended_compute_unit_limit(
+                            &simulation,
+                            policy.compute_budget.unit_limit,
+                        );
+
+                        let tx_base64 = if adjusted_unit_limit == probe_unit_limit {
+                            probe_tx_base64
+                        } else {
+                            crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
+                                &from_seed,
+                                &source_token_account,
+                                mint,
+                                &destination_token_account,
+                                amount_atomic.unwrap_or_default(),
+                                decimals,
+                                &latest_blockhash,
+                                &policy,
+                                adjusted_unit_limit,
+                            )?
+                            .0
+                        };
+                        (tx_base64, wallet_address, Some(simulation))
+                    } else {
+                        let (tx_base64, wallet_address) =
+                            crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
+                                &from_seed,
+                                &source_token_account,
+                                &mint,
+                                &destination_token_account,
+                                amount_atomic.unwrap_or_default(),
+                                decimals,
+                                &latest_blockhash,
+                                &policy,
+                                policy.compute_budget.unit_limit,
+                            )?;
+                        (tx_base64, wallet_address, None)
+                    }
+                } else if policy.simulation.enabled {
                     let probe_unit_limit = crate::solana_rpc::probe_compute_unit_limit(&policy);
                     let (probe_tx_base64, wallet_address) =
                         crate::solana_rpc::build_transfer_transaction_base64_with_unit_limit(
                             &from_seed,
                             to,
-                            lamports,
+                            lamports.unwrap_or_default(),
                             &latest_blockhash,
                             &policy,
                             probe_unit_limit,
@@ -298,7 +527,7 @@ impl Tool for SolanaTool {
                         crate::solana_rpc::build_transfer_transaction_base64_with_unit_limit(
                             &from_seed,
                             to,
-                            lamports,
+                            lamports.unwrap_or_default(),
                             &latest_blockhash,
                             &policy,
                             adjusted_unit_limit,
@@ -311,7 +540,7 @@ impl Tool for SolanaTool {
                         crate::solana_rpc::build_transfer_transaction_base64(
                             &from_seed,
                             to,
-                            lamports,
+                            lamports.unwrap_or_default(),
                             &latest_blockhash,
                             &policy,
                         )?;
@@ -323,6 +552,9 @@ impl Tool for SolanaTool {
                         "status": "simulated",
                         "request_id": request_id,
                         "wallet_address": wallet_address,
+                        "mint": mint_for_response,
+                        "amount_atomic": amount_atomic,
+                        "decimals": token_decimals_for_response,
                         "simulation": simulation_result,
                         "signature": Value::Null
                     }));
@@ -335,6 +567,9 @@ impl Tool for SolanaTool {
                     "status": "submitted",
                     "request_id": request_id,
                     "wallet_address": wallet_address,
+                    "mint": mint_for_response,
+                    "amount_atomic": amount_atomic,
+                    "decimals": token_decimals_for_response,
                     "simulated_before_send": simulation_result.is_some(),
                     "signature": signature
                 }))

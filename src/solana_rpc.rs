@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 use solana_compute_budget_interface::ComputeBudgetInstruction;
 use solana_sdk::{
     hash::Hash,
+    instruction::{AccountMeta, Instruction},
     message::Message,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
@@ -145,6 +146,128 @@ pub fn build_transfer_transaction_base64_with_unit_limit(
         .map_err(|e| ButterflyBotError::Runtime(format!("failed to serialize tx: {e}")))?;
 
     Ok((STANDARD.encode(bytes), from_address))
+}
+
+pub fn build_spl_transfer_transaction_base64_with_unit_limit(
+    from_seed: &[u8; 32],
+    source_token_account: &str,
+    mint: &str,
+    destination_token_account: &str,
+    amount_atomic: u64,
+    decimals: u8,
+    latest_blockhash: &str,
+    policy: &SolanaRpcExecutionPolicy,
+    unit_limit: u32,
+) -> Result<(String, String)> {
+    let signer = Keypair::new_from_array(*from_seed);
+    let source = Pubkey::from_str(source_token_account).map_err(|e| {
+        ButterflyBotError::Runtime(format!("invalid source token account pubkey: {e}"))
+    })?;
+    let mint = Pubkey::from_str(mint)
+        .map_err(|e| ButterflyBotError::Runtime(format!("invalid mint pubkey: {e}")))?;
+    let destination = Pubkey::from_str(destination_token_account).map_err(|e| {
+        ButterflyBotError::Runtime(format!("invalid destination token account pubkey: {e}"))
+    })?;
+
+    let recent_blockhash = Hash::from_str(latest_blockhash)
+        .map_err(|e| ButterflyBotError::Runtime(format!("invalid blockhash: {e}")))?;
+
+    let from_address = signer.pubkey().to_string();
+    let token_program = Pubkey::from_str("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+        .map_err(|e| ButterflyBotError::Runtime(format!("invalid token program id: {e}")))?;
+
+    // SPL Token TransferChecked layout:
+    // discriminator: 12, amount: u64 LE, decimals: u8
+    let mut data = Vec::with_capacity(10);
+    data.push(12u8);
+    data.extend_from_slice(&amount_atomic.to_le_bytes());
+    data.push(decimals);
+
+    let transfer_checked_ix = Instruction {
+        program_id: token_program,
+        accounts: vec![
+            AccountMeta::new(source, false),
+            AccountMeta::new_readonly(mint, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(signer.pubkey(), true),
+        ],
+        data,
+    };
+
+    let instructions = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(unit_limit),
+        ComputeBudgetInstruction::set_compute_unit_price(
+            policy.compute_budget.unit_price_microlamports,
+        ),
+        transfer_checked_ix,
+    ];
+
+    let message = Message::new(&instructions, Some(&signer.pubkey()));
+    let tx = Transaction::new(&[&signer], message, recent_blockhash);
+
+    let bytes = wincode::serialize(&tx)
+        .map_err(|e| ButterflyBotError::Runtime(format!("failed to serialize tx: {e}")))?;
+
+    Ok((STANDARD.encode(bytes), from_address))
+}
+
+pub async fn find_token_account_by_owner_and_mint(
+    endpoint: &str,
+    owner: &str,
+    mint: &str,
+    commitment: &str,
+) -> Result<Option<String>> {
+    let result = rpc_call(
+        endpoint,
+        "getTokenAccountsByOwner",
+        json!([
+            owner,
+            {"mint": mint},
+            {"encoding": "jsonParsed", "commitment": commitment}
+        ]),
+    )
+    .await?;
+
+    let first = result
+        .get("value")
+        .and_then(|value| value.as_array())
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry.get("pubkey"))
+        .and_then(|pubkey| pubkey.as_str())
+        .map(|value| value.to_string());
+
+    Ok(first)
+}
+
+pub async fn get_token_account_balance(
+    endpoint: &str,
+    token_account: &str,
+    commitment: &str,
+) -> Result<Value> {
+    rpc_call(
+        endpoint,
+        "getTokenAccountBalance",
+        json!([token_account, {"commitment": commitment}]),
+    )
+    .await
+}
+
+pub async fn get_token_decimals(endpoint: &str, mint: &str, commitment: &str) -> Result<u8> {
+    let result = rpc_call(
+        endpoint,
+        "getTokenSupply",
+        json!([mint, {"commitment": commitment}]),
+    )
+    .await?;
+
+    result
+        .get("value")
+        .and_then(|value| value.get("decimals"))
+        .and_then(|decimals| decimals.as_u64())
+        .map(|value| value as u8)
+        .ok_or_else(|| {
+            ButterflyBotError::Runtime("solana rpc getTokenSupply missing decimals".to_string())
+        })
 }
 
 pub fn probe_compute_unit_limit(policy: &SolanaRpcExecutionPolicy) -> u32 {

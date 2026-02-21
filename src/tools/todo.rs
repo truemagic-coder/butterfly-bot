@@ -49,7 +49,7 @@ impl Tool for TodoTool {
     }
 
     fn description(&self) -> &str {
-        "Manage an ordered todo list (create, list, reorder, complete, delete)."
+        "Manage an ordered todo list (create, list, reorder, complete, delete, clear)."
     }
 
     fn parameters(&self) -> Value {
@@ -58,7 +58,7 @@ impl Tool for TodoTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["create", "list", "complete", "reopen", "delete", "reorder", "create_many"]
+                    "enum": ["create", "list", "complete", "reopen", "delete", "clear", "reorder", "create_many"]
                 },
                 "user_id": { "type": "string" },
                 "title": { "type": "string" },
@@ -102,6 +102,7 @@ impl Tool for TodoTool {
             "create_list" | "create_many" | "add_many" | "bulk_create" | "create_items" => {
                 "create_many"
             }
+            "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear",
             other => other,
         };
         let user_id = params
@@ -185,6 +186,11 @@ impl Tool for TodoTool {
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing id".to_string()))?
                     as i32;
                 let deleted = store.delete_item(id).await?;
+                Ok(json!({"status": "ok", "deleted": deleted}))
+            }
+            "clear" => {
+                let status = TodoStatus::from_option(params.get("status").and_then(|v| v.as_str()));
+                let deleted = store.clear_items(user_id, status).await?;
                 Ok(json!({"status": "ok", "deleted": deleted}))
             }
             "reorder" => {

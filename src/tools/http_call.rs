@@ -86,6 +86,9 @@ impl HttpCallTool {
                 "Missing url or endpoint".to_string(),
             ));
         }
+        if endpoint.starts_with("http://") || endpoint.starts_with("https://") {
+            return Ok(endpoint.to_string());
+        }
         let base = server
             .map(|s| s.url.as_str())
             .map(|v| v.trim().trim_end_matches('/').to_string())

@@ -32,10 +32,10 @@ use tokio::time::{sleep, timeout, Duration};
 
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
-const OPENAI_DEFAULT_CHAT_MODEL: &str = "ministral-3:8b";
-const OPENAI_DEFAULT_SUMMARY_MODEL: &str = "ministral-3:8b";
+const OPENAI_DEFAULT_CHAT_MODEL: &str = "gpt-4.1-mini";
+const OPENAI_DEFAULT_SUMMARY_MODEL: &str = "gpt-5-mini";
 const OPENAI_DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
-const OPENAI_DEFAULT_RERANK_MODEL: &str = "ministral-3:8b";
+const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-5-mini";
 
 #[cfg(target_os = "linux")]
 fn send_desktop_notification(title: &str) {
@@ -554,12 +554,38 @@ pub fn launch_ui_with_config(config: UiLaunchConfig) {
     set_ui_launch_config(config);
     force_dbusrs();
     install_shutdown_hooks_once();
+    kill_all_daemons_best_effort();
     launch(app_view);
-    shutdown_spawned_daemon_best_effort();
+    kill_all_daemons_best_effort();
 }
 
 fn shutdown_spawned_daemon_best_effort() {
     let _ = stop_local_daemon();
+}
+
+fn kill_all_daemons_best_effort() {
+    shutdown_spawned_daemon_best_effort();
+
+    #[cfg(unix)]
+    {
+        let _ = Command::new("pkill").arg("-f").arg("butterfly-botd").status();
+        std::thread::sleep(StdDuration::from_millis(120));
+        let _ = Command::new("pkill")
+            .arg("-9")
+            .arg("-f")
+            .arg("butterfly-botd")
+            .status();
+    }
+
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .arg("/F")
+            .arg("/T")
+            .arg("/IM")
+            .arg("butterfly-botd.exe")
+            .status();
+    }
 }
 
 fn install_shutdown_hooks_once() {
@@ -567,7 +593,7 @@ fn install_shutdown_hooks_once() {
     INSTALLED.get_or_init(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            shutdown_spawned_daemon_best_effort();
+            kill_all_daemons_best_effort();
             previous(info);
         }));
     });
@@ -748,6 +774,8 @@ fn spawn_daemon_process(
 }
 
 fn start_local_daemon() -> Result<(), String> {
+    kill_all_daemons_best_effort();
+
     let control = daemon_control();
     let mut guard = control
         .lock()
@@ -965,7 +993,7 @@ fn app_view() -> Element {
     let heartbeat_status = use_signal(String::new);
     let heartbeat_error = use_signal(String::new);
 
-    let search_provider = use_signal(|| "openai".to_string());
+    let search_provider = use_signal(|| "grok".to_string());
     let search_model = use_signal(String::new);
     let search_citations = use_signal(|| true);
     let search_grok_web = use_signal(|| true);
@@ -974,8 +1002,6 @@ fn app_view() -> Element {
     let search_network_allow = use_signal(String::new);
     let search_default_deny = use_signal(|| false);
     let search_api_key_status = use_signal(String::new);
-    let openai_settings_expanded = use_signal(|| false);
-
     let reminders_sqlite_path = use_signal(String::new);
     let memory_enabled = use_signal(|| true);
 
@@ -2145,18 +2171,15 @@ fn app_view() -> Element {
                         openai_model_input.set(model.clone());
                     }
                 }
-
-                if let Some(memory) = &config.memory {
-                    if let Some(summary_model) = &memory.summary_model {
-                        openai_summary_model_input.set(summary_model.clone());
-                    }
-                    if let Some(embedding_model) = &memory.embedding_model {
-                        openai_embedding_model_input.set(embedding_model.clone());
-                    }
-                    if let Some(rerank_model) = &memory.rerank_model {
-                        openai_rerank_model_input.set(rerank_model.clone());
-                    }
+                if openai_base_url_input().trim().is_empty() {
+                    openai_base_url_input.set(OPENAI_DEFAULT_BASE_URL.to_string());
                 }
+                if openai_model_input().trim().is_empty() {
+                    openai_model_input.set(OPENAI_DEFAULT_CHAT_MODEL.to_string());
+                }
+                openai_summary_model_input.set(OPENAI_DEFAULT_SUMMARY_MODEL.to_string());
+                openai_embedding_model_input.set(OPENAI_DEFAULT_EMBED_MODEL.to_string());
+                openai_rerank_model_input.set(OPENAI_DEFAULT_RERANK_MODEL.to_string());
 
                 if let Some(tools_value) = &config.tools {
                     if let Some(wakeup_cfg) = tools_value.get("wakeup") {
@@ -2384,7 +2407,7 @@ fn app_view() -> Element {
                         {
                             let normalized = match provider {
                                 "openai" | "grok" | "perplexity" => provider,
-                                _ => "openai",
+                                _ => "grok",
                             };
                             search_provider.set(normalized.to_string());
                         }
@@ -2512,39 +2535,22 @@ fn app_view() -> Element {
                     }
                 }
 
-                match crate::vault::get_secret("coding_openai_api_key") {
+                search_provider.set("grok".to_string());
+                coding_api_key_input.set(openai_api_key_input());
+                match crate::vault::get_secret("search_internet_grok_api_key") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
-                        coding_api_key_input.set(secret);
-                    }
-                    Ok(_) => coding_api_key_input.set(String::new()),
-                    Err(err) => {
-                        settings_error.set(format!("Vault error: {err}"));
-                        tools_loaded.set(true);
-                        return;
-                    }
-                }
-
-                let provider_name = search_provider();
-                let secret_name = match provider_name.as_str() {
-                    "perplexity" => "search_internet_perplexity_api_key",
-                    "grok" => "search_internet_grok_api_key",
-                    _ => "search_internet_openai_api_key",
-                };
-                match crate::vault::get_secret(secret_name) {
-                    Ok(Some(secret)) if !secret.trim().is_empty() => {
-                        search_api_key_input.set(secret);
-                        search_api_key_status.set("Stored in vault".to_string());
+                        if secret.trim_start().starts_with("sk-") {
+                            search_api_key_input.set(String::new());
+                            search_api_key_status
+                                .set("Stored key looks like OpenAI. Please paste your Grok key."
+                                    .to_string());
+                        } else {
+                            search_api_key_input.set(secret);
+                            search_api_key_status.set("Stored in vault".to_string());
+                        }
                     }
                     Ok(_) => {
-                        let fallback = config
-                            .tools
-                            .as_ref()
-                            .and_then(|tools| tools.get("search_internet"))
-                            .and_then(|search| search.get("api_key"))
-                            .and_then(|value| value.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        search_api_key_input.set(fallback);
+                        search_api_key_input.set(String::new());
                         search_api_key_status.set("Not set".to_string());
                     }
                     Err(err) => {
@@ -2603,15 +2609,8 @@ fn app_view() -> Element {
         let zapier_token_input = zapier_token_input.clone();
         let tpm_mode_input = tpm_mode_input.clone();
         let openai_api_key_input = openai_api_key_input.clone();
-        let openai_base_url_input = openai_base_url_input.clone();
-        let openai_model_input = openai_model_input.clone();
-        let openai_summary_model_input = openai_summary_model_input.clone();
-        let openai_embedding_model_input = openai_embedding_model_input.clone();
-        let openai_rerank_model_input = openai_rerank_model_input.clone();
-        let coding_api_key_input = coding_api_key_input.clone();
-        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
-        let search_provider = search_provider.clone();
         let search_api_key_input = search_api_key_input.clone();
+        let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
         let mcp_servers_form = mcp_servers_form.clone();
         let http_call_servers_form = http_call_servers_form.clone();
         let network_allow_form = network_allow_form.clone();
@@ -2628,15 +2627,8 @@ fn app_view() -> Element {
             let zapier_token_input = zapier_token_input.clone();
             let tpm_mode_input = tpm_mode_input.clone();
             let openai_api_key_input = openai_api_key_input.clone();
-            let openai_base_url_input = openai_base_url_input.clone();
-            let openai_model_input = openai_model_input.clone();
-            let openai_summary_model_input = openai_summary_model_input.clone();
-            let openai_embedding_model_input = openai_embedding_model_input.clone();
-            let openai_rerank_model_input = openai_rerank_model_input.clone();
-            let coding_api_key_input = coding_api_key_input.clone();
-            let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
-            let search_provider = search_provider.clone();
             let search_api_key_input = search_api_key_input.clone();
+            let solana_rpc_endpoint_input = solana_rpc_endpoint_input.clone();
             let mcp_servers_form = mcp_servers_form.clone();
             let http_call_servers_form = http_call_servers_form.clone();
             let network_allow_form = network_allow_form.clone();
@@ -2670,43 +2662,11 @@ fn app_view() -> Element {
                     }
                 };
 
-                let mut openai_base_url_value = openai_base_url_input().trim().to_string();
-                let mut openai_model_value = openai_model_input().trim().to_string();
-                let mut openai_summary_model_value =
-                    openai_summary_model_input().trim().to_string();
-                let mut openai_embedding_model_value =
-                    openai_embedding_model_input().trim().to_string();
-                let mut openai_rerank_model_value = openai_rerank_model_input().trim().to_string();
-
-                let runtime_provider_value = if openai_base_url_value
-                    .to_ascii_lowercase()
-                    .starts_with("http://localhost:11434")
-                    || openai_base_url_value
-                        .to_ascii_lowercase()
-                        .starts_with("http://127.0.0.1:11434")
-                {
-                    "ollama"
-                } else {
-                    "openai"
-                };
-
-                if runtime_provider_value == "openai" {
-                    if openai_base_url_value.is_empty() {
-                        openai_base_url_value = OPENAI_DEFAULT_BASE_URL.to_string();
-                    }
-                    if openai_model_value.is_empty() {
-                        openai_model_value = OPENAI_DEFAULT_CHAT_MODEL.to_string();
-                    }
-                    if openai_embedding_model_value.is_empty() {
-                        openai_embedding_model_value = OPENAI_DEFAULT_EMBED_MODEL.to_string();
-                    }
-                    if openai_summary_model_value.is_empty() {
-                        openai_summary_model_value = OPENAI_DEFAULT_SUMMARY_MODEL.to_string();
-                    }
-                    if openai_rerank_model_value.is_empty() {
-                        openai_rerank_model_value = OPENAI_DEFAULT_RERANK_MODEL.to_string();
-                    }
-                }
+                let openai_base_url_value = OPENAI_DEFAULT_BASE_URL.to_string();
+                let openai_model_value = OPENAI_DEFAULT_CHAT_MODEL.to_string();
+                let openai_summary_model_value = OPENAI_DEFAULT_SUMMARY_MODEL.to_string();
+                let openai_embedding_model_value = OPENAI_DEFAULT_EMBED_MODEL.to_string();
+                let openai_rerank_model_value = OPENAI_DEFAULT_RERANK_MODEL.to_string();
 
                 let mut mcp_servers = Vec::new();
                 for entry in mcp_servers_form().iter() {
@@ -2796,15 +2756,7 @@ fn app_view() -> Element {
                     .filter(|value| !value.is_empty())
                     .collect::<Vec<_>>();
 
-                let search_provider_value = match search_provider().trim() {
-                    "openai" | "grok" | "perplexity" => search_provider().trim().to_string(),
-                    _ => {
-                        settings_error.set(
-                            "Search provider must be openai, grok, or perplexity.".to_string(),
-                        );
-                        return;
-                    }
-                };
+                let search_provider_value = "grok".to_string();
 
                 let solana_rpc_endpoint = solana_rpc_endpoint_input().trim().to_string();
 
@@ -2823,16 +2775,8 @@ fn app_view() -> Element {
                     model: None,
                     base_url: None,
                 });
-                openai_cfg.base_url = if openai_base_url_value.is_empty() {
-                    None
-                } else {
-                    Some(openai_base_url_value)
-                };
-                openai_cfg.model = if openai_model_value.is_empty() {
-                    None
-                } else {
-                    Some(openai_model_value)
-                };
+                openai_cfg.base_url = Some(openai_base_url_value);
+                openai_cfg.model = Some(openai_model_value);
                 openai_cfg.api_key = None;
 
                 let memory_cfg = config.memory.get_or_insert(crate::config::MemoryConfig {
@@ -2846,21 +2790,10 @@ fn app_view() -> Element {
                     summary_threshold: None,
                     retention_days: None,
                 });
-                memory_cfg.embedding_model = if openai_embedding_model_value.is_empty() {
-                    None
-                } else {
-                    Some(openai_embedding_model_value)
-                };
-                memory_cfg.summary_model = if openai_summary_model_value.is_empty() {
-                    None
-                } else {
-                    Some(openai_summary_model_value)
-                };
-                memory_cfg.rerank_model = if openai_rerank_model_value.is_empty() {
-                    None
-                } else {
-                    Some(openai_rerank_model_value)
-                };
+                memory_cfg.embedding_model = Some(openai_embedding_model_value);
+                memory_cfg.summary_model = Some(openai_summary_model_value);
+                memory_cfg.rerank_model = Some(openai_rerank_model_value);
+                memory_cfg.openai = None;
 
                 let tools_value = config
                     .tools
@@ -2989,6 +2922,7 @@ fn app_view() -> Element {
                         Value::String(search_provider_value.clone()),
                     );
                     search_obj.remove("api_key");
+                    search_obj.remove("model");
                 }
 
                 let settings_cfg = tools_obj
@@ -3068,20 +3002,16 @@ fn app_view() -> Element {
                     return;
                 }
 
-                let coding_api_key = coding_api_key_input().trim().to_string();
-                if let Err(err) = crate::vault::set_secret("coding_openai_api_key", &coding_api_key)
+                if let Err(err) = crate::vault::set_secret("coding_openai_api_key", &openai_api_key)
                 {
                     settings_error.set(format!("Failed to store coding API key: {err}"));
                     return;
                 }
 
-                let search_secret_name = match search_provider_value.as_str() {
-                    "perplexity" => "search_internet_perplexity_api_key",
-                    "grok" => "search_internet_grok_api_key",
-                    _ => "search_internet_openai_api_key",
-                };
                 let search_api_key = search_api_key_input().trim().to_string();
-                if let Err(err) = crate::vault::set_secret(search_secret_name, &search_api_key) {
+                if let Err(err) =
+                    crate::vault::set_secret("search_internet_grok_api_key", &search_api_key)
+                {
                     settings_error.set(format!("Failed to store search API key: {err}"));
                     return;
                 }
@@ -3738,6 +3668,21 @@ fn app_view() -> Element {
                 gap: 10px;
                 padding-top: 6px;
             }}
+            .api-key-section {{
+                gap: 6px;
+                padding-top: 2px;
+            }}
+            .api-key-section input {{
+                padding: 7px 10px;
+                border-radius: 10px;
+                font-size: 13px;
+            }}
+            .simple-section-highlight {{
+                padding: 10px;
+                border-radius: 14px;
+                border: 1px solid rgba(59,130,246,0.65);
+                background: rgba(37,99,235,0.16);
+            }}
             .simple-list {{
                 display: flex;
                 flex-direction: column;
@@ -4039,6 +3984,34 @@ fn app_view() -> Element {
                             p { class: "hint", "Only essential settings are editable here." }
 
                             div { class: "simple-settings",
+                                div { class: "simple-section simple-section-highlight api-key-section",
+                                    label { "OpenAI API Key (Required)" }
+                                    input {
+                                        r#type: "password",
+                                        value: "{openai_api_key_input}",
+                                        oninput: move |evt| {
+                                            let mut openai_api_key_input = openai_api_key_input.clone();
+                                            openai_api_key_input.set(evt.value());
+                                        },
+                                        placeholder: "Paste OpenAI API key",
+                                    }
+                                    p { class: "hint", "This key is used for router and coding." }
+                                    p { class: "hint", "Router: gpt-4.1-mini on api.openai.com. Memory uses OpenAI defaults." }
+                                }
+
+                                div { class: "simple-section api-key-section",
+                                    label { "Grok API Key for Internet Search" }
+                                    input {
+                                        r#type: "password",
+                                        value: "{search_api_key_input}",
+                                        oninput: move |evt| {
+                                            let mut search_api_key_input = search_api_key_input.clone();
+                                            search_api_key_input.set(evt.value());
+                                        },
+                                        placeholder: "Paste Grok API key",
+                                    }
+                                }
+
                                 div { class: "simple-top",
                                     div {
                                         label { "Wakeup Interval (seconds)" }
@@ -4118,173 +4091,6 @@ fn app_view() -> Element {
                                         }
                                     }
                                     div {}
-                                }
-
-                                div { class: "simple-section",
-                                    label { "OpenAI Settings" }
-                                    button {
-                                        class: "text-btn",
-                                        onclick: move |_| {
-                                            let mut openai_settings_expanded = openai_settings_expanded.clone();
-                                            openai_settings_expanded.set(!openai_settings_expanded());
-                                        },
-                                        if openai_settings_expanded() {
-                                            "Hide"
-                                        } else {
-                                            "Show"
-                                        }
-                                    }
-
-                                    if openai_settings_expanded() {
-                                        div { class: "simple-top",
-                                            div {
-                                                label { "OpenAI Base URL" }
-                                                input {
-                                                    value: "{openai_base_url_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_base_url_input = openai_base_url_input.clone();
-                                                        openai_base_url_input.set(evt.value());
-                                                    },
-                                                    placeholder: "https://api.openai.com/v1",
-                                                }
-                                            }
-                                            div {
-                                                label { "OpenAI API Key" }
-                                                input {
-                                                    r#type: "password",
-                                                    value: "{openai_api_key_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_api_key_input = openai_api_key_input.clone();
-                                                        openai_api_key_input.set(evt.value());
-                                                    },
-                                                    placeholder: "Paste OpenAI API key",
-                                                }
-                                            }
-                                            div {
-                                                label { "Runtime Model" }
-                                                input {
-                                                    value: "{openai_model_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_model_input = openai_model_input.clone();
-                                                        openai_model_input.set(evt.value());
-                                                    },
-                                                    placeholder: "gpt-4.1-mini",
-                                                }
-                                            }
-                                        }
-
-                                        div { class: "simple-top",
-                                            div {
-                                                label { "Summary Model" }
-                                                input {
-                                                    value: "{openai_summary_model_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_summary_model_input = openai_summary_model_input.clone();
-                                                        openai_summary_model_input.set(evt.value());
-                                                    },
-                                                    placeholder: "gpt-4.1-mini",
-                                                }
-                                            }
-                                            div {
-                                                label { "Embedding Model (small)" }
-                                                input {
-                                                    value: "{openai_embedding_model_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_embedding_model_input = openai_embedding_model_input.clone();
-                                                        openai_embedding_model_input.set(evt.value());
-                                                    },
-                                                    placeholder: "text-embedding-3-small",
-                                                }
-                                            }
-                                            div {
-                                                label { "Rerank Model" }
-                                                input {
-                                                    value: "{openai_rerank_model_input}",
-                                                    oninput: move |evt| {
-                                                        let mut openai_rerank_model_input = openai_rerank_model_input.clone();
-                                                        openai_rerank_model_input.set(evt.value());
-                                                    },
-                                                    placeholder: "owner-selected reranker",
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                div { class: "simple-top",
-                                    div {
-                                        label { "Coding OpenAI API Key" }
-                                        input {
-                                            r#type: "password",
-                                            value: "{coding_api_key_input}",
-                                            oninput: move |evt| {
-                                                let mut coding_api_key_input = coding_api_key_input.clone();
-                                                coding_api_key_input.set(evt.value());
-                                            },
-                                            placeholder: "Paste coding API key",
-                                        }
-                                    }
-                                    div {
-                                        label { "Search Provider" }
-                                        select {
-                                            value: "{search_provider()}",
-                                            onchange: move |evt| {
-                                                let selected = evt.value();
-                                                let normalized = match selected.as_str() {
-                                                    "openai" | "grok" | "perplexity" => selected,
-                                                    _ => "openai".to_string(),
-                                                };
-                                                let mut search_provider = search_provider.clone();
-                                                search_provider.set(normalized.clone());
-
-                                                let secret_name = match normalized.as_str() {
-                                                    "perplexity" => "search_internet_perplexity_api_key",
-                                                    "grok" => "search_internet_grok_api_key",
-                                                    _ => "search_internet_openai_api_key",
-                                                };
-                                                let mut search_api_key_input = search_api_key_input.clone();
-                                                let mut search_api_key_status = search_api_key_status.clone();
-                                                match crate::vault::get_secret(secret_name) {
-                                                    Ok(Some(secret)) if !secret.trim().is_empty() => {
-                                                        search_api_key_input.set(secret);
-                                                        search_api_key_status.set("Stored in vault".to_string());
-                                                    }
-                                                    Ok(_) => {
-                                                        search_api_key_input.set(String::new());
-                                                        search_api_key_status.set("Not set".to_string());
-                                                    }
-                                                    Err(err) => {
-                                                        search_api_key_input.set(String::new());
-                                                        search_api_key_status.set(format!("Vault error: {err}"));
-                                                    }
-                                                }
-                                            },
-                                            option {
-                                                value: "openai",
-                                                "OpenAI"
-                                            }
-                                            option {
-                                                value: "grok",
-                                                "Grok"
-                                            }
-                                            option {
-                                                value: "perplexity",
-                                                "Perplexity"
-                                            }
-                                        }
-                                    }
-                                    div {
-                                        label { "Search API Key" }
-                                        input {
-                                            r#type: "password",
-                                            value: "{search_api_key_input}",
-                                            oninput: move |evt| {
-                                                let mut search_api_key_input = search_api_key_input.clone();
-                                                search_api_key_input.set(evt.value());
-                                            },
-                                            placeholder: "Paste search API key",
-                                        }
-                                    }
                                 }
 
                                 div { class: "simple-section",

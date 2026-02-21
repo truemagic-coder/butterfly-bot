@@ -152,10 +152,31 @@ impl ToolRegistry {
             .audit_sandbox_decision(tool_name, plan.runtime.as_str(), &plan.reason)
             .await;
 
+        let original_params = params.clone();
         let wasm_result = self
             .wasm_runtime
             .execute(tool_name, &plan.tool_config, params)
             .await?;
+
+        if tool_name == "solana" {
+            let is_invalid_args = wasm_result.get("status").and_then(|value| value.as_str())
+                == Some("error")
+                && wasm_result.get("code").and_then(|value| value.as_str()) == Some("invalid_args");
+
+            let has_spl_transfer_args = original_params
+                .get("mint")
+                .and_then(|value| value.as_str())
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+                && original_params
+                    .get("amount_atomic")
+                    .and_then(|value| value.as_u64())
+                    .is_some();
+
+            if is_invalid_args && has_spl_transfer_args {
+                return tool.execute(original_params).await;
+            }
+        }
 
         let is_stub = wasm_result
             .get("stub")
@@ -352,6 +373,16 @@ impl ToolRegistry {
                 })
                 .await?
             }
+            "kv.sqlite.todo.clear" => {
+                self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "clear",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("open")
+                    }))
+                })
+                .await?
+            }
             "kv.sqlite.todo.reorder" => {
                 self.execute_tool_capability(tool_name, tool, "todo", capability, &args, |args| {
                     let user_id = Self::require_str(args, "user_id")?;
@@ -422,6 +453,16 @@ impl ToolRegistry {
                         "action": "delete",
                         "user_id": Self::require_str(args, "user_id")?,
                         "id": Self::require_i64(args, "id")?
+                    }))
+                })
+                .await?
+            }
+            "kv.sqlite.tasks.clear" => {
+                self.execute_tool_capability(tool_name, tool, "tasks", capability, &args, |args| {
+                    Ok(serde_json::json!({
+                        "action": "clear",
+                        "user_id": Self::require_str(args, "user_id")?,
+                        "status": args.get("status").and_then(|v| v.as_str()).unwrap_or("all")
                     }))
                 })
                 .await?
@@ -622,6 +663,22 @@ impl ToolRegistry {
                             "action": "delete",
                             "user_id": Self::require_str(args, "user_id")?,
                             "id": Self::require_i64(args, "id")?
+                        }))
+                    },
+                )
+                .await?
+            }
+            "kv.sqlite.planning.clear" => {
+                self.execute_tool_capability(
+                    tool_name,
+                    tool,
+                    "planning",
+                    capability,
+                    &args,
+                    |args| {
+                        Ok(serde_json::json!({
+                            "action": "clear",
+                            "user_id": Self::require_str(args, "user_id")?
                         }))
                     },
                 )
@@ -851,14 +908,60 @@ impl ToolRegistry {
                     capability,
                     &args,
                     |args| {
-                        Ok(serde_json::json!({
-                            "action": "transfer",
-                            "request_id": args.get("request_id").and_then(|v| v.as_str()),
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "actor": args.get("actor").and_then(|v| v.as_str()),
-                            "to": Self::require_str(args, "to")?,
-                            "lamports": args.get("lamports").and_then(|v| v.as_u64()).ok_or_else(|| ButterflyBotError::Runtime("capability args missing lamports".to_string()))?
-                        }))
+                        let lamports = args.get("lamports").and_then(|v| v.as_u64());
+                        let mint = args
+                            .get("mint")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(str::to_string);
+                        let amount_atomic = args.get("amount_atomic").and_then(|v| v.as_u64());
+
+                        if lamports.is_none() && (mint.is_none() || amount_atomic.is_none()) {
+                            return Err(ButterflyBotError::Runtime(
+                                "capability args missing lamports (or mint+amount_atomic)"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let mut payload = serde_json::Map::new();
+                        payload.insert(
+                            "action".to_string(),
+                            serde_json::Value::String("transfer".to_string()),
+                        );
+                        payload.insert(
+                            "user_id".to_string(),
+                            serde_json::Value::String(Self::require_str(args, "user_id")?.to_string()),
+                        );
+                        payload.insert(
+                            "to".to_string(),
+                            serde_json::Value::String(Self::require_str(args, "to")?.to_string()),
+                        );
+                        if let Some(request_id) = args.get("request_id").and_then(|v| v.as_str()) {
+                            payload.insert(
+                                "request_id".to_string(),
+                                serde_json::Value::String(request_id.to_string()),
+                            );
+                        }
+                        if let Some(actor) = args.get("actor").and_then(|v| v.as_str()) {
+                            payload.insert(
+                                "actor".to_string(),
+                                serde_json::Value::String(actor.to_string()),
+                            );
+                        }
+                        if let Some(lamports) = lamports {
+                            payload.insert("lamports".to_string(), serde_json::Value::from(lamports));
+                        }
+                        if let Some(mint) = mint {
+                            payload.insert("mint".to_string(), serde_json::Value::String(mint));
+                        }
+                        if let Some(amount_atomic) = amount_atomic {
+                            payload.insert(
+                                "amount_atomic".to_string(),
+                                serde_json::Value::from(amount_atomic),
+                            );
+                        }
+                        Ok(serde_json::Value::Object(payload))
                     },
                 )
                 .await?
@@ -871,14 +974,60 @@ impl ToolRegistry {
                     capability,
                     &args,
                     |args| {
-                        Ok(serde_json::json!({
-                            "action": "simulate_transfer",
-                            "request_id": args.get("request_id").and_then(|v| v.as_str()),
-                            "user_id": Self::require_str(args, "user_id")?,
-                            "actor": args.get("actor").and_then(|v| v.as_str()),
-                            "to": Self::require_str(args, "to")?,
-                            "lamports": args.get("lamports").and_then(|v| v.as_u64()).ok_or_else(|| ButterflyBotError::Runtime("capability args missing lamports".to_string()))?
-                        }))
+                        let lamports = args.get("lamports").and_then(|v| v.as_u64());
+                        let mint = args
+                            .get("mint")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|v| !v.is_empty())
+                            .map(str::to_string);
+                        let amount_atomic = args.get("amount_atomic").and_then(|v| v.as_u64());
+
+                        if lamports.is_none() && (mint.is_none() || amount_atomic.is_none()) {
+                            return Err(ButterflyBotError::Runtime(
+                                "capability args missing lamports (or mint+amount_atomic)"
+                                    .to_string(),
+                            ));
+                        }
+
+                        let mut payload = serde_json::Map::new();
+                        payload.insert(
+                            "action".to_string(),
+                            serde_json::Value::String("simulate_transfer".to_string()),
+                        );
+                        payload.insert(
+                            "user_id".to_string(),
+                            serde_json::Value::String(Self::require_str(args, "user_id")?.to_string()),
+                        );
+                        payload.insert(
+                            "to".to_string(),
+                            serde_json::Value::String(Self::require_str(args, "to")?.to_string()),
+                        );
+                        if let Some(request_id) = args.get("request_id").and_then(|v| v.as_str()) {
+                            payload.insert(
+                                "request_id".to_string(),
+                                serde_json::Value::String(request_id.to_string()),
+                            );
+                        }
+                        if let Some(actor) = args.get("actor").and_then(|v| v.as_str()) {
+                            payload.insert(
+                                "actor".to_string(),
+                                serde_json::Value::String(actor.to_string()),
+                            );
+                        }
+                        if let Some(lamports) = lamports {
+                            payload.insert("lamports".to_string(), serde_json::Value::from(lamports));
+                        }
+                        if let Some(mint) = mint {
+                            payload.insert("mint".to_string(), serde_json::Value::String(mint));
+                        }
+                        if let Some(amount_atomic) = amount_atomic {
+                            payload.insert(
+                                "amount_atomic".to_string(),
+                                serde_json::Value::from(amount_atomic),
+                            );
+                        }
+                        Ok(serde_json::Value::Object(payload))
                     },
                 )
                 .await?

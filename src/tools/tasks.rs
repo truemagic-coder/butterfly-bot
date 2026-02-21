@@ -58,7 +58,7 @@ impl Tool for TasksTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["schedule", "list", "cancel", "enable", "disable", "delete"]
+                    "enum": ["schedule", "list", "cancel", "enable", "disable", "delete", "clear"]
                 },
                 "user_id": { "type": "string" },
                 "name": { "type": "string" },
@@ -89,6 +89,10 @@ impl Tool for TasksTool {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let action = match action.as_str() {
+            "clear_all" | "delete_all" | "remove_all" | "wipe" | "clean" => "clear",
+            other => other,
+        };
         let user_id = params
             .get("user_id")
             .and_then(|v| v.as_str())
@@ -97,7 +101,7 @@ impl Tool for TasksTool {
         let store = self.get_store().await?;
         let limit = params.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
 
-        match action.as_str() {
+        match action {
             "schedule" => {
                 let name = params
                     .get("name")
@@ -147,6 +151,11 @@ impl Tool for TasksTool {
                     .ok_or_else(|| ButterflyBotError::Runtime("Missing id".to_string()))?
                     as i32;
                 let deleted = store.delete_task(id).await?;
+                Ok(json!({"status": "ok", "deleted": deleted}))
+            }
+            "clear" => {
+                let status = TaskStatus::from_option(params.get("status").and_then(|v| v.as_str()));
+                let deleted = store.clear_tasks(user_id, status).await?;
                 Ok(json!({"status": "ok", "deleted": deleted}))
             }
             _ => Err(ButterflyBotError::Runtime("Unsupported action".to_string())),

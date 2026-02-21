@@ -36,12 +36,24 @@ Download the `deb` file for Ubuntu from the latest [GitHub Release](https://gith
 ### Why users pick it:
 
 - **Fast value:** works out-of-the-box with default settings.
-- **Unlimited tokens:** designed to support Ollama to run privately on your computer with unlimited use.
+- **OpenAI-first:** optimized for OpenAI routing and coding with simple key-based setup.
 - **UI-first:** polished desktop app with chat, AI activity, and settings.
 - **Automation:** full toolset provided for your always-on agent.
 - **Integrations:** Zapier-first MCP integration model for connecting your existing SaaS stack in minutes.
 - **Security:** WASM-only execution for tools plus OS keychain-backed secrets - no plaintext secrets or insecure tools.
 - **Memory:** best-in-class memory that remembers the facts and when they happened.
+
+### OpenAI setup (recommended)
+
+1. Open the app and go to `Config`.
+2. Paste your **OpenAI API key**.
+3. Save the config and start chatting.
+
+Notes:
+
+- Router model defaults to **`gpt-4.1-mini`** on `api.openai.com`.
+- Memory models run on OpenAI defaults.
+- **Grok API key** is optional and only used for internet search.
 
 ### Zapier-first setup (60 seconds)
 

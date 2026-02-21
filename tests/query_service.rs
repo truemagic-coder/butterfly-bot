@@ -104,8 +104,18 @@ impl Tool for MockTodoTool {
 
     async fn execute(
         &self,
-        _params: serde_json::Value,
+        params: serde_json::Value,
     ) -> butterfly_bot::error::Result<serde_json::Value> {
+        if params
+            .get("action")
+            .and_then(|value| value.as_str())
+            == Some("clear")
+        {
+            return Ok(json!({
+                "status": "ok",
+                "deleted": 3
+            }));
+        }
         Ok(json!({
             "status": "ok",
             "items": [
@@ -429,6 +439,36 @@ async fn todo_queries_use_todo_tool_output() {
 
     assert!(response.contains("Here are your open todos:"));
     assert!(response.contains("Buy strawberries"));
+}
+
+#[tokio::test]
+async fn clear_todo_queries_use_todo_clear_action() {
+    let llm = Arc::new(QueueLlmProvider::new(vec![]));
+    let brain = Arc::new(BrainManager::new(json!({})));
+    let agent = AIAgent {
+        name: "agent".to_string(),
+        instructions: "inst".to_string(),
+        specialization: "spec".to_string(),
+    };
+    let service = Arc::new(AgentService::new(
+        llm, agent, None, None, None, None, brain, None,
+    ));
+
+    assert!(
+        service
+            .tool_registry
+            .register_tool(Arc::new(MockTodoTool))
+            .await
+    );
+
+    let query = QueryService::new(service, None, None);
+    let response = query
+        .process_text("user", "clear my todos", None)
+        .await
+        .unwrap();
+
+    assert!(response.contains("Cleared "), "unexpected response: {response}");
+    assert!(response.contains("todo(s)."), "unexpected response: {response}");
 }
 
 #[tokio::test]
