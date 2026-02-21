@@ -941,12 +941,12 @@ impl AgentService {
 
                     let should_force_x402_solana = x402_intent.is_some() && !x402_solana_attempted;
 
-                    if should_force_x402_solana || claims_x402_not_supported {
-                        if x402_transfer_retries < 3 {
-                            x402_transfer_retries += 1;
-                            prompt.push_str("\n\nSYSTEM CORRECTION:\nFor x402 requests, do NOT claim unsupported flow. You MUST attempt a `solana` tool call using `action=transfer` or `action=simulate_transfer` with canonical challenge fields (`to=payTo`, plus either `lamports` for SOL or `mint`+`amount_atomic` for SPL). Use actual tool output only.\n");
-                            continue;
-                        }
+                    if (should_force_x402_solana || claims_x402_not_supported)
+                        && x402_transfer_retries < 3
+                    {
+                        x402_transfer_retries += 1;
+                        prompt.push_str("\n\nSYSTEM CORRECTION:\nFor x402 requests, do NOT claim unsupported flow. You MUST attempt a `solana` tool call using `action=transfer` or `action=simulate_transfer` with canonical challenge fields (`to=payTo`, plus either `lamports` for SOL or `mint`+`amount_atomic` for SPL). Use actual tool output only.\n");
+                        continue;
                     }
                 }
                 last_text = response.text.clone();

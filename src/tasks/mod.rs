@@ -201,32 +201,28 @@ impl TaskStore {
     pub async fn clear_tasks(&self, user_id: &str, status: TaskStatus) -> Result<usize> {
         let mut conn = self.conn().await?;
         let deleted = match status {
-            TaskStatus::Enabled => {
-                diesel::delete(
-                    scheduled_tasks::table
-                        .filter(scheduled_tasks::user_id.eq(user_id))
-                        .filter(scheduled_tasks::enabled.eq(true)),
-                )
-                .execute(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-            }
-            TaskStatus::Disabled => {
-                diesel::delete(
-                    scheduled_tasks::table
-                        .filter(scheduled_tasks::user_id.eq(user_id))
-                        .filter(scheduled_tasks::enabled.eq(false)),
-                )
-                .execute(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-            }
-            TaskStatus::All => diesel::delete(
-                scheduled_tasks::table.filter(scheduled_tasks::user_id.eq(user_id)),
+            TaskStatus::Enabled => diesel::delete(
+                scheduled_tasks::table
+                    .filter(scheduled_tasks::user_id.eq(user_id))
+                    .filter(scheduled_tasks::enabled.eq(true)),
             )
             .execute(&mut conn)
             .await
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?,
+            TaskStatus::Disabled => diesel::delete(
+                scheduled_tasks::table
+                    .filter(scheduled_tasks::user_id.eq(user_id))
+                    .filter(scheduled_tasks::enabled.eq(false)),
+            )
+            .execute(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?,
+            TaskStatus::All => {
+                diesel::delete(scheduled_tasks::table.filter(scheduled_tasks::user_id.eq(user_id)))
+                    .execute(&mut conn)
+                    .await
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+            }
         };
         Ok(deleted)
     }

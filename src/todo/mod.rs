@@ -199,30 +199,28 @@ impl TodoStore {
     pub async fn clear_items(&self, user_id: &str, status: TodoStatus) -> Result<usize> {
         let mut conn = self.conn().await?;
         let deleted = match status {
-            TodoStatus::Open => {
-                diesel::delete(
-                    todo_items::table
-                        .filter(todo_items::user_id.eq(user_id))
-                        .filter(todo_items::completed_at.is_null()),
-                )
-                .execute(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
+            TodoStatus::Open => diesel::delete(
+                todo_items::table
+                    .filter(todo_items::user_id.eq(user_id))
+                    .filter(todo_items::completed_at.is_null()),
+            )
+            .execute(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?,
+            TodoStatus::Completed => diesel::delete(
+                todo_items::table
+                    .filter(todo_items::user_id.eq(user_id))
+                    .filter(todo_items::completed_at.is_not_null()),
+            )
+            .execute(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?,
+            TodoStatus::All => {
+                diesel::delete(todo_items::table.filter(todo_items::user_id.eq(user_id)))
+                    .execute(&mut conn)
+                    .await
+                    .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             }
-            TodoStatus::Completed => {
-                diesel::delete(
-                    todo_items::table
-                        .filter(todo_items::user_id.eq(user_id))
-                        .filter(todo_items::completed_at.is_not_null()),
-                )
-                .execute(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
-            }
-            TodoStatus::All => diesel::delete(todo_items::table.filter(todo_items::user_id.eq(user_id)))
-                .execute(&mut conn)
-                .await
-                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?,
         };
         Ok(deleted)
     }

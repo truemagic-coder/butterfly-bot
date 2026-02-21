@@ -568,7 +568,10 @@ fn kill_all_daemons_best_effort() {
 
     #[cfg(unix)]
     {
-        let _ = Command::new("pkill").arg("-f").arg("butterfly-botd").status();
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg("butterfly-botd")
+            .status();
         std::thread::sleep(StdDuration::from_millis(120));
         let _ = Command::new("pkill")
             .arg("-9")
@@ -2541,9 +2544,10 @@ fn app_view() -> Element {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         if secret.trim_start().starts_with("sk-") {
                             search_api_key_input.set(String::new());
-                            search_api_key_status
-                                .set("Stored key looks like OpenAI. Please paste your Grok key."
-                                    .to_string());
+                            search_api_key_status.set(
+                                "Stored key looks like OpenAI. Please paste your Grok key."
+                                    .to_string(),
+                            );
                         } else {
                             search_api_key_input.set(secret);
                             search_api_key_status.set("Stored in vault".to_string());

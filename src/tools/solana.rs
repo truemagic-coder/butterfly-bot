@@ -442,18 +442,19 @@ impl Tool for SolanaTool {
 
                     if policy.simulation.enabled {
                         let probe_unit_limit = crate::solana_rpc::probe_compute_unit_limit(&policy);
-                        let (probe_tx_base64, wallet_address) =
-                            crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
-                                &from_seed,
-                                &source_token_account,
+                        let (probe_tx_base64, wallet_address) = crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
+                            crate::solana_rpc::SplTransferTransactionBuildArgs {
+                                from_seed: &from_seed,
+                                source_token_account: &source_token_account,
                                 mint,
-                                &destination_token_account,
-                                amount_atomic.unwrap_or_default(),
+                                destination_token_account: &destination_token_account,
+                                amount_atomic: amount_atomic.unwrap_or_default(),
                                 decimals,
-                                &latest_blockhash,
-                                &policy,
-                                probe_unit_limit,
-                            )?;
+                                latest_blockhash: &latest_blockhash,
+                                policy: &policy,
+                                unit_limit: probe_unit_limit,
+                            },
+                        )?;
 
                         let simulation = crate::solana_rpc::simulate_transaction(
                             &endpoint,
@@ -470,15 +471,17 @@ impl Tool for SolanaTool {
                             probe_tx_base64
                         } else {
                             crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
-                                &from_seed,
-                                &source_token_account,
-                                mint,
-                                &destination_token_account,
-                                amount_atomic.unwrap_or_default(),
-                                decimals,
-                                &latest_blockhash,
-                                &policy,
-                                adjusted_unit_limit,
+                                crate::solana_rpc::SplTransferTransactionBuildArgs {
+                                    from_seed: &from_seed,
+                                    source_token_account: &source_token_account,
+                                    mint,
+                                    destination_token_account: &destination_token_account,
+                                    amount_atomic: amount_atomic.unwrap_or_default(),
+                                    decimals,
+                                    latest_blockhash: &latest_blockhash,
+                                    policy: &policy,
+                                    unit_limit: adjusted_unit_limit,
+                                },
                             )?
                             .0
                         };
@@ -486,15 +489,17 @@ impl Tool for SolanaTool {
                     } else {
                         let (tx_base64, wallet_address) =
                             crate::solana_rpc::build_spl_transfer_transaction_base64_with_unit_limit(
-                                &from_seed,
-                                &source_token_account,
-                                &mint,
-                                &destination_token_account,
-                                amount_atomic.unwrap_or_default(),
-                                decimals,
-                                &latest_blockhash,
-                                &policy,
-                                policy.compute_budget.unit_limit,
+                                crate::solana_rpc::SplTransferTransactionBuildArgs {
+                                    from_seed: &from_seed,
+                                    source_token_account: &source_token_account,
+                                    mint,
+                                    destination_token_account: &destination_token_account,
+                                    amount_atomic: amount_atomic.unwrap_or_default(),
+                                    decimals,
+                                    latest_blockhash: &latest_blockhash,
+                                    policy: &policy,
+                                    unit_limit: policy.compute_budget.unit_limit,
+                                },
                             )?;
                         (tx_base64, wallet_address, None)
                     }

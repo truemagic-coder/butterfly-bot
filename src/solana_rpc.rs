@@ -148,28 +148,32 @@ pub fn build_transfer_transaction_base64_with_unit_limit(
     Ok((STANDARD.encode(bytes), from_address))
 }
 
+pub struct SplTransferTransactionBuildArgs<'a> {
+    pub from_seed: &'a [u8; 32],
+    pub source_token_account: &'a str,
+    pub mint: &'a str,
+    pub destination_token_account: &'a str,
+    pub amount_atomic: u64,
+    pub decimals: u8,
+    pub latest_blockhash: &'a str,
+    pub policy: &'a SolanaRpcExecutionPolicy,
+    pub unit_limit: u32,
+}
+
 pub fn build_spl_transfer_transaction_base64_with_unit_limit(
-    from_seed: &[u8; 32],
-    source_token_account: &str,
-    mint: &str,
-    destination_token_account: &str,
-    amount_atomic: u64,
-    decimals: u8,
-    latest_blockhash: &str,
-    policy: &SolanaRpcExecutionPolicy,
-    unit_limit: u32,
+    args: SplTransferTransactionBuildArgs<'_>,
 ) -> Result<(String, String)> {
-    let signer = Keypair::new_from_array(*from_seed);
-    let source = Pubkey::from_str(source_token_account).map_err(|e| {
+    let signer = Keypair::new_from_array(*args.from_seed);
+    let source = Pubkey::from_str(args.source_token_account).map_err(|e| {
         ButterflyBotError::Runtime(format!("invalid source token account pubkey: {e}"))
     })?;
-    let mint = Pubkey::from_str(mint)
+    let mint = Pubkey::from_str(args.mint)
         .map_err(|e| ButterflyBotError::Runtime(format!("invalid mint pubkey: {e}")))?;
-    let destination = Pubkey::from_str(destination_token_account).map_err(|e| {
+    let destination = Pubkey::from_str(args.destination_token_account).map_err(|e| {
         ButterflyBotError::Runtime(format!("invalid destination token account pubkey: {e}"))
     })?;
 
-    let recent_blockhash = Hash::from_str(latest_blockhash)
+    let recent_blockhash = Hash::from_str(args.latest_blockhash)
         .map_err(|e| ButterflyBotError::Runtime(format!("invalid blockhash: {e}")))?;
 
     let from_address = signer.pubkey().to_string();
@@ -180,8 +184,8 @@ pub fn build_spl_transfer_transaction_base64_with_unit_limit(
     // discriminator: 12, amount: u64 LE, decimals: u8
     let mut data = Vec::with_capacity(10);
     data.push(12u8);
-    data.extend_from_slice(&amount_atomic.to_le_bytes());
-    data.push(decimals);
+    data.extend_from_slice(&args.amount_atomic.to_le_bytes());
+    data.push(args.decimals);
 
     let transfer_checked_ix = Instruction {
         program_id: token_program,
@@ -195,9 +199,9 @@ pub fn build_spl_transfer_transaction_base64_with_unit_limit(
     };
 
     let instructions = vec![
-        ComputeBudgetInstruction::set_compute_unit_limit(unit_limit),
+        ComputeBudgetInstruction::set_compute_unit_limit(args.unit_limit),
         ComputeBudgetInstruction::set_compute_unit_price(
-            policy.compute_budget.unit_price_microlamports,
+            args.policy.compute_budget.unit_price_microlamports,
         ),
         transfer_checked_ix,
     ];

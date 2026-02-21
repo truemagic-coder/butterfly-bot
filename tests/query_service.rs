@@ -106,11 +106,7 @@ impl Tool for MockTodoTool {
         &self,
         params: serde_json::Value,
     ) -> butterfly_bot::error::Result<serde_json::Value> {
-        if params
-            .get("action")
-            .and_then(|value| value.as_str())
-            == Some("clear")
-        {
+        if params.get("action").and_then(|value| value.as_str()) == Some("clear") {
             return Ok(json!({
                 "status": "ok",
                 "deleted": 3
@@ -467,8 +463,14 @@ async fn clear_todo_queries_use_todo_clear_action() {
         .await
         .unwrap();
 
-    assert!(response.contains("Cleared "), "unexpected response: {response}");
-    assert!(response.contains("todo(s)."), "unexpected response: {response}");
+    assert!(
+        response.contains("Cleared "),
+        "unexpected response: {response}"
+    );
+    assert!(
+        response.contains("todo(s)."),
+        "unexpected response: {response}"
+    );
 }
 
 #[tokio::test]

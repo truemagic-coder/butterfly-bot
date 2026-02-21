@@ -557,12 +557,10 @@ mod tests {
                 .and_then(|cfg| cfg.base_url.as_deref()),
             Some("https://api.openai.com/v1")
         );
-        assert!(
-            secured
-                .memory
-                .as_ref()
-                .and_then(|memory| memory.openai.as_ref())
-                .is_none()
-        );
+        assert!(secured
+            .memory
+            .as_ref()
+            .and_then(|memory| memory.openai.as_ref())
+            .is_none());
     }
 }

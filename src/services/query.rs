@@ -801,7 +801,8 @@ impl QueryService {
                 .await
             {
                 let payload = Self::tool_payload(&result);
-                let is_error = payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
                 let deleted = payload
                     .get("deleted")
                     .and_then(|value| value.as_u64())
@@ -864,7 +865,11 @@ impl QueryService {
                     if delete_payload
                         .get("deleted")
                         .and_then(|value| value.as_bool())
-                        .or_else(|| delete_result.get("deleted").and_then(|value| value.as_bool()))
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
                         == Some(true)
                     {
                         deleted_count += 1;
@@ -984,7 +989,11 @@ impl QueryService {
                 ));
             };
 
-            let clear_status = if lower.contains("open") { "open" } else { "all" };
+            let clear_status = if lower.contains("open") {
+                "open"
+            } else {
+                "all"
+            };
 
             if let Ok(result) = self
                 .agent_service
@@ -1000,7 +1009,8 @@ impl QueryService {
                 .await
             {
                 let payload = Self::tool_payload(&result);
-                let is_error = payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
                 let deleted = payload
                     .get("deleted")
                     .and_then(|value| value.as_u64())
@@ -1028,7 +1038,10 @@ impl QueryService {
             {
                 Ok(value) => value,
                 Err(err) => {
-                    return Ok(Some(format!("I couldn’t clear reminders right now: {}", err)));
+                    return Ok(Some(format!(
+                        "I couldn’t clear reminders right now: {}",
+                        err
+                    )));
                 }
             };
 
@@ -1063,7 +1076,11 @@ impl QueryService {
                     if delete_payload
                         .get("deleted")
                         .and_then(|value| value.as_bool())
-                        .or_else(|| delete_result.get("deleted").and_then(|value| value.as_bool()))
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
                         == Some(true)
                     {
                         deleted_count += 1;
@@ -1319,7 +1336,8 @@ impl QueryService {
                 .await
             {
                 let payload = Self::tool_payload(&result);
-                let is_error = payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
                 let deleted = payload
                     .get("deleted")
                     .and_then(|value| value.as_u64())
@@ -1381,7 +1399,11 @@ impl QueryService {
                     if delete_payload
                         .get("deleted")
                         .and_then(|value| value.as_bool())
-                        .or_else(|| delete_result.get("deleted").and_then(|value| value.as_bool()))
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
                         == Some(true)
                     {
                         deleted_count += 1;
