@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -159,6 +160,7 @@ pub struct SqliteMemoryProvider {
     retention_days: Option<u32>,
     context_embed_enabled: bool,
     embedding_cache: Arc<tokio::sync::Mutex<LruCache<String, Vec<f32>>>>,
+    vector_store_enabled: Arc<AtomicBool>,
 }
 
 impl Clone for SqliteMemoryProvider {
@@ -176,6 +178,7 @@ impl Clone for SqliteMemoryProvider {
             retention_days: self.retention_days,
             context_embed_enabled: self.context_embed_enabled,
             embedding_cache: Arc::clone(&self.embedding_cache),
+            vector_store_enabled: Arc::clone(&self.vector_store_enabled),
         }
     }
 }
@@ -240,6 +243,7 @@ impl SqliteMemoryProvider {
             embedding_cache: Arc::new(tokio::sync::Mutex::new(LruCache::new(
                 NonZeroUsize::new(256).unwrap(),
             ))),
+            vector_store_enabled: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -550,10 +554,16 @@ impl MemoryProvider for SqliteMemoryProvider {
             inserted_id
         };
 
-        if let Some(embedder) = &self.embedder {
+        if self
+            .vector_store_enabled
+            .as_ref()
+            .load(Ordering::Relaxed)
+        {
+            if let Some(embedder) = &self.embedder {
             let provider = self.clone();
             let embedder = embedder.clone();
             let embedding_model = self.embedding_model.clone();
+            let vector_store_enabled = Arc::clone(&self.vector_store_enabled);
             let content = content.to_string();
             let role = role.to_string();
             let user_id = user_id.to_string();
@@ -584,12 +594,25 @@ impl MemoryProvider for SqliteMemoryProvider {
                         .store_vector_row(row_id, &user_id, &role, &content, ts, vector)
                         .await
                     {
+                        if err
+                            .to_string()
+                            .contains("store_vector step=dimension_mismatch")
+                        {
+                            let was_enabled =
+                                vector_store_enabled.as_ref().swap(false, Ordering::SeqCst);
+                            if was_enabled {
+                                warn!(
+                                    "Disabling sqlite-vec writes due to embedding dimension mismatch; restart after running memory migration"
+                                );
+                            }
+                        }
                         info!("sqlite-vec add error: {}", err);
                         return;
                     }
                     info!("Vector stored in sqlite-vec (dim={}, role={})", dim, role);
                 }
             });
+            }
         }
 
         if role == "assistant" {
@@ -933,10 +956,32 @@ impl SqliteMemoryProvider {
                         .parse::<i64>()
                         .map_err(|e| format!("store_vector step=parse_dim failed: {e}"))?;
                     if parsed != vector_dim {
-                        return Err(format!(
-                            "store_vector step=dimension_mismatch failed: expected {}, got {}",
-                            parsed, vector_dim
-                        ));
+                        warn!(
+                            "Resetting sqlite-vec store due to embedding dimension change ({} -> {})",
+                            parsed,
+                            vector_dim
+                        );
+
+                        deadpool_sqlite::rusqlite::Connection::execute(
+                            conn,
+                            "DELETE FROM message_vectors",
+                            [],
+                        )
+                        .map_err(|e| format!("store_vector step=reset_vectors failed: {e}"))?;
+
+                        deadpool_sqlite::rusqlite::Connection::execute(
+                            conn,
+                            "DELETE FROM message_vector_meta",
+                            [],
+                        )
+                        .map_err(|e| format!("store_vector step=reset_meta failed: {e}"))?;
+
+                        deadpool_sqlite::rusqlite::Connection::execute(
+                            conn,
+                            "INSERT INTO message_vector_meta(key, value) VALUES ('embedding_dim', ?1)",
+                            params![vector_dim.to_string()],
+                        )
+                        .map_err(|e| format!("store_vector step=write_dim_after_reset failed: {e}"))?;
                     }
                 } else {
                     deadpool_sqlite::rusqlite::Connection::execute(

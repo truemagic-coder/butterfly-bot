@@ -362,16 +362,24 @@ impl Config {
     pub fn resolve_vault(mut self) -> Result<Self> {
         if let Some(openai) = &mut self.openai {
             if openai.api_key.is_none() {
-                if let Some(secret) = crate::vault::get_secret("openai_api_key")? {
-                    openai.api_key = Some(secret);
+                if let Some(secret) = crate::vault::get_secret_required("openai_api_key")? {
+                    let trimmed = secret.trim();
+                    if !trimmed.is_empty() {
+                        openai.api_key = Some(trimmed.to_string());
+                    }
                 }
             }
         }
         if let Some(memory) = &mut self.memory {
             if let Some(openai) = &mut memory.openai {
                 if openai.api_key.is_none() {
-                    if let Some(secret) = crate::vault::get_secret("memory_openai_api_key")? {
-                        openai.api_key = Some(secret);
+                    if let Some(secret) =
+                        crate::vault::get_secret_required("memory_openai_api_key")?
+                    {
+                        let trimmed = secret.trim();
+                        if !trimmed.is_empty() {
+                            openai.api_key = Some(trimmed.to_string());
+                        }
                     }
                 }
             }

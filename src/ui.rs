@@ -104,7 +104,7 @@ struct FactoryResetConfigResponse {
 }
 
 async fn run_doctor_request(daemon_url: String, token: String) -> Result<DoctorResponse, String> {
-    let client = reqwest::Client::new();
+    let client = daemon_request_client();
     let url = format!("{}/doctor", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -130,7 +130,7 @@ async fn run_security_audit_request(
     daemon_url: String,
     token: String,
 ) -> Result<SecurityAuditResponse, String> {
-    let client = reqwest::Client::new();
+    let client = daemon_request_client();
     let url = format!("{}/security_audit", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -156,7 +156,7 @@ async fn run_factory_reset_config_request(
     daemon_url: String,
     token: String,
 ) -> Result<FactoryResetConfigResponse, String> {
-    let client = reqwest::Client::new();
+    let client = daemon_request_client();
     let url = format!("{}/factory_reset_config", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -183,7 +183,7 @@ async fn run_chat_history_request(
     user_id: String,
     limit: usize,
 ) -> Result<Vec<String>, String> {
-    let client = reqwest::Client::new();
+    let client = daemon_request_client();
     let url = format!(
         "{}/chat_history?user_id={}&limit={}",
         daemon_url.trim_end_matches('/'),
@@ -225,7 +225,7 @@ async fn run_clear_user_history_request(
     token: String,
     user_id: String,
 ) -> Result<(), String> {
-    let client = reqwest::Client::new();
+    let client = daemon_request_client();
     let url = format!("{}/clear_user_history", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
@@ -270,6 +270,9 @@ impl ChatMessage {
 
     fn append_text(&mut self, chunk: &str) {
         self.text.push_str(chunk);
+    }
+
+    fn refresh_html(&mut self) {
         self.html = markdown_to_html(&self.text);
     }
 }
@@ -282,8 +285,8 @@ enum MessageRole {
 
 const HISTORY_TIMESTAMP_FORMAT: &[time::format_description::FormatItem<'static>] =
     format_description!("[year]-[month]-[day] [hour]:[minute]");
-const MAX_CHAT_MESSAGES: usize = 400;
-const MAX_ACTIVITY_MESSAGES: usize = 600;
+const MAX_CHAT_MESSAGES: usize = 180;
+const MAX_ACTIVITY_MESSAGES: usize = 260;
 
 fn push_bounded_message(list: &mut Vec<ChatMessage>, message: ChatMessage, max_len: usize) {
     list.push(message);
@@ -603,7 +606,22 @@ fn install_shutdown_hooks_once() {
 }
 
 fn stream_timeout_duration() -> Duration {
-    Duration::from_secs(180)
+    Duration::from_secs(45)
+}
+
+fn daemon_request_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .timeout(StdDuration::from_secs(12))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+fn daemon_stream_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(StdDuration::from_secs(2))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 #[cfg(target_os = "linux")]
@@ -741,7 +759,8 @@ fn spawn_daemon_process(
                 log_path.to_string_lossy()
             )
         })?;
-        let result = Command::new(&candidate)
+        let mut command = Command::new(&candidate);
+        command
             .arg("--host")
             .arg(host.clone())
             .arg("--port")
@@ -752,8 +771,9 @@ fn spawn_daemon_process(
             .env("BUTTERFLY_TPM_MODE", tpm_mode.clone())
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout_log))
-            .stderr(Stdio::from(log_file))
-            .spawn();
+            .stderr(Stdio::from(log_file));
+
+        let result = command.spawn();
 
         match result {
             Ok(child) => return Ok(child),
@@ -941,7 +961,9 @@ fn app_view() -> Element {
     let messages = use_signal(Vec::<ChatMessage>::new);
     let activity_messages = use_signal(Vec::<ChatMessage>::new);
     let daemon_running = use_signal(|| false);
+    let daemon_starting = use_signal(|| false);
     let daemon_autostart_attempted = use_signal(|| false);
+    let daemon_exit_watch_started = use_signal(|| false);
     let daemon_status = use_signal(String::new);
     let next_id = use_signal(|| 1u64);
     let active_tab = use_signal(|| UiTab::Chat);
@@ -1087,7 +1109,7 @@ fn app_view() -> Element {
                 input.set(String::new());
                 scroll_chat_after_render().await;
 
-                let client = reqwest::Client::new();
+                let client = daemon_stream_client();
                 let url = format!("{}/process_text_stream", daemon_url.trim_end_matches('/'));
                 let body = ProcessTextRequest {
                     user_id,
@@ -1113,6 +1135,7 @@ fn app_view() -> Element {
                         if response.status().is_success() {
                             let mut stream = response.bytes_stream();
                             let mut chunk_counter = 0usize;
+                            let mut bytes_since_refresh = 0usize;
                             loop {
                                 let next_chunk =
                                     match timeout(stream_timeout_duration(), stream.next()).await {
@@ -1139,6 +1162,14 @@ fn app_view() -> Element {
                                                     .find(|msg| msg.id == bot_message_id)
                                                 {
                                                     last.append_text(text_chunk);
+                                                    bytes_since_refresh += text_chunk.len();
+                                                    let next_chunk_index = chunk_counter + 1;
+                                                    if next_chunk_index == 1
+                                                        || bytes_since_refresh >= 1024
+                                                    {
+                                                        last.refresh_html();
+                                                        bytes_since_refresh = 0;
+                                                    }
                                                 }
                                                 chunk_counter += 1;
                                             }
@@ -1154,6 +1185,13 @@ fn app_view() -> Element {
                                 }
                             }
                             if chunk_counter > 0 {
+                                let mut list = messages.write();
+                                if let Some(last) =
+                                    list.iter_mut().rev().find(|msg| msg.id == bot_message_id)
+                                {
+                                    last.refresh_html();
+                                }
+                                drop(list);
                                 scroll_chat_after_render().await;
                             }
                         } else {
@@ -1225,6 +1263,7 @@ fn app_view() -> Element {
     let on_daemon_start = {
         let daemon_status = daemon_status.clone();
         let daemon_running = daemon_running.clone();
+        let daemon_starting = daemon_starting.clone();
         let daemon_url = daemon_url.clone();
         let token = token.clone();
         let user_id = user_id.clone();
@@ -1239,6 +1278,7 @@ fn app_view() -> Element {
         use_callback(move |_: ()| {
             let daemon_status = daemon_status.clone();
             let daemon_running = daemon_running.clone();
+            let daemon_starting = daemon_starting.clone();
             let daemon_url = daemon_url.clone();
             let token = token.clone();
             let user_id = user_id.clone();
@@ -1252,6 +1292,7 @@ fn app_view() -> Element {
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
+                let mut daemon_starting = daemon_starting;
                 let mut token = token;
                 let mut boot_ready = boot_ready;
                 let mut boot_status = boot_status;
@@ -1260,6 +1301,19 @@ fn app_view() -> Element {
                 let mut doctor_running = doctor_running;
                 let mut doctor_overall = doctor_overall;
                 let mut doctor_checks = doctor_checks;
+
+                if daemon_starting() {
+                    daemon_status.set("Daemon start already in progress…".to_string());
+                    return;
+                }
+                if daemon_running() {
+                    daemon_status.set("Daemon already running.".to_string());
+                    return;
+                }
+
+                daemon_starting.set(true);
+                daemon_status.set("Starting daemon…".to_string());
+
                 let result = start_local_daemon();
                 match result {
                     Ok(()) => {
@@ -1273,7 +1327,7 @@ fn app_view() -> Element {
                         // Wait for daemon to be ready (retry up to 60 times with 500ms delay)
                         // Startup can take a while on first run while security checks, WASM
                         // provisioning, embeddings, and prompt/context bootstrapping complete.
-                        let client = reqwest::Client::new();
+                        let client = daemon_request_client();
                         let mut daemon_ready = false;
                         let mut daemon_exit: Option<std::process::ExitStatus> = None;
                         for i in 0..60 {
@@ -1423,9 +1477,13 @@ fn app_view() -> Element {
                         }
                     }
                     Err(err) => {
+                        daemon_running.set(false);
+                        boot_ready.set(false);
                         daemon_status.set(err);
                     }
                 }
+
+                daemon_starting.set(false);
             });
         })
     };
@@ -1433,6 +1491,7 @@ fn app_view() -> Element {
     let on_daemon_stop = {
         let daemon_status = daemon_status.clone();
         let daemon_running = daemon_running.clone();
+        let daemon_starting = daemon_starting.clone();
         let reminders_listening = reminders_listening.clone();
         let ui_events_listening = ui_events_listening.clone();
         let boot_ready = boot_ready.clone();
@@ -1449,6 +1508,7 @@ fn app_view() -> Element {
         use_callback(move |_: ()| {
             let daemon_status = daemon_status.clone();
             let daemon_running = daemon_running.clone();
+            let daemon_starting = daemon_starting.clone();
             let reminders_listening = reminders_listening.clone();
             let ui_events_listening = ui_events_listening.clone();
             let boot_ready = boot_ready.clone();
@@ -1464,6 +1524,7 @@ fn app_view() -> Element {
             spawn(async move {
                 let mut daemon_status = daemon_status;
                 let mut daemon_running = daemon_running;
+                let mut daemon_starting = daemon_starting;
                 let mut reminders_listening = reminders_listening;
                 let mut ui_events_listening = ui_events_listening;
                 let mut boot_ready = boot_ready;
@@ -1479,6 +1540,7 @@ fn app_view() -> Element {
                 let result = stop_local_daemon();
                 match result {
                     Ok(()) => {
+                        daemon_starting.set(false);
                         daemon_running.set(false);
                         reminders_listening.set(false);
                         ui_events_listening.set(false);
@@ -1565,6 +1627,7 @@ fn app_view() -> Element {
     {
         let daemon_autostart_attempted = daemon_autostart_attempted.clone();
         let daemon_running = daemon_running.clone();
+        let daemon_starting = daemon_starting.clone();
         let daemon_status = daemon_status.clone();
         let on_daemon_start = on_daemon_start.clone();
 
@@ -1578,10 +1641,53 @@ fn app_view() -> Element {
             if *daemon_running.read() {
                 return;
             }
+            if *daemon_starting.read() {
+                return;
+            }
 
             let mut daemon_status = daemon_status.clone();
             daemon_status.set("Starting daemon for zero-step onboarding…".to_string());
             on_daemon_start.call(());
+        });
+    }
+
+    {
+        let daemon_exit_watch_started = daemon_exit_watch_started.clone();
+        let daemon_running = daemon_running.clone();
+        let daemon_status = daemon_status.clone();
+        let boot_ready = boot_ready.clone();
+        let boot_status = boot_status.clone();
+        let daemon_starting = daemon_starting.clone();
+
+        use_effect(move || {
+            if *daemon_exit_watch_started.read() {
+                return;
+            }
+            let mut started = daemon_exit_watch_started.clone();
+            started.set(true);
+
+            spawn(async move {
+                let mut daemon_running = daemon_running;
+                let mut daemon_status = daemon_status;
+                let mut boot_ready = boot_ready;
+                let mut boot_status = boot_status;
+                let mut daemon_starting = daemon_starting;
+
+                loop {
+                    if *daemon_running.read() {
+                        if let Some(status) = local_daemon_exit_status() {
+                            daemon_running.set(false);
+                            daemon_starting.set(false);
+                            boot_ready.set(false);
+                            daemon_status.set(format!("Daemon exited: {status}."));
+                            boot_status.set(
+                                "Daemon exited. Check logs, then press Start again.".to_string(),
+                            );
+                        }
+                    }
+                    sleep(Duration::from_secs(1)).await;
+                }
+            });
         });
     }
 
@@ -1699,7 +1805,7 @@ fn app_view() -> Element {
                 let mut next_id = next_id;
 
                 reminders_listening.set(true);
-                let client = reqwest::Client::new();
+                let client = daemon_stream_client();
                 loop {
                     if !*daemon_running.read() {
                         reminders_listening.set(false);
@@ -1832,7 +1938,7 @@ fn app_view() -> Element {
                 let mut next_id = next_id;
 
                 ui_events_listening.set(true);
-                let client = reqwest::Client::new();
+                let client = daemon_stream_client();
                 loop {
                     if !*daemon_running.read() {
                         ui_events_listening.set(false);
@@ -2495,7 +2601,7 @@ fn app_view() -> Element {
                 }
                 network_allow_form.set(allowlist);
 
-                match crate::vault::get_secret("github_pat") {
+                match crate::vault::get_secret_required("github_pat") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         github_pat_input.set(secret);
                     }
@@ -2507,7 +2613,7 @@ fn app_view() -> Element {
                     }
                 }
 
-                match crate::vault::get_secret("zapier_token") {
+                match crate::vault::get_secret_required("zapier_token") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         zapier_token_input.set(secret);
                     }
@@ -2519,7 +2625,7 @@ fn app_view() -> Element {
                     }
                 }
 
-                match crate::vault::get_secret("openai_api_key") {
+                match crate::vault::get_secret_required("openai_api_key") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         openai_api_key_input.set(secret);
                     }
@@ -2540,7 +2646,7 @@ fn app_view() -> Element {
 
                 search_provider.set("grok".to_string());
                 coding_api_key_input.set(openai_api_key_input());
-                match crate::vault::get_secret("search_internet_grok_api_key") {
+                match crate::vault::get_secret_required("search_internet_grok_api_key") {
                     Ok(Some(secret)) if !secret.trim().is_empty() => {
                         if secret.trim_start().starts_with("sk-") {
                             search_api_key_input.set(String::new());
@@ -2572,7 +2678,7 @@ fn app_view() -> Element {
                     // Preload prompt into memory and heartbeat into agent.
                     boot_ready.set(true);
                     boot_status.set("Initializing prompt + heartbeat in background...".to_string());
-                    let client = reqwest::Client::new();
+                    let client = daemon_request_client();
                     let url = format!("{}/preload_boot", daemon_url().trim_end_matches('/'));
                     let mut request = client
                         .post(&url)
@@ -2989,36 +3095,9 @@ fn app_view() -> Element {
 
                 let github_pat = github_pat_input().trim().to_string();
                 std::env::set_var("BUTTERFLY_TPM_MODE", tpm_mode_value);
-                if let Err(err) = crate::vault::set_secret("github_pat", &github_pat) {
-                    settings_error.set(format!("Failed to store GitHub token: {err}"));
-                    return;
-                }
-
                 let zapier_token = zapier_token_input().trim().to_string();
-                if let Err(err) = crate::vault::set_secret("zapier_token", &zapier_token) {
-                    settings_error.set(format!("Failed to store Zapier token: {err}"));
-                    return;
-                }
-
                 let openai_api_key = openai_api_key_input().trim().to_string();
-                if let Err(err) = crate::vault::set_secret("openai_api_key", &openai_api_key) {
-                    settings_error.set(format!("Failed to store OpenAI API key: {err}"));
-                    return;
-                }
-
-                if let Err(err) = crate::vault::set_secret("coding_openai_api_key", &openai_api_key)
-                {
-                    settings_error.set(format!("Failed to store coding API key: {err}"));
-                    return;
-                }
-
                 let search_api_key = search_api_key_input().trim().to_string();
-                if let Err(err) =
-                    crate::vault::set_secret("search_internet_grok_api_key", &search_api_key)
-                {
-                    settings_error.set(format!("Failed to store search API key: {err}"));
-                    return;
-                }
 
                 let pretty = match serde_json::to_string_pretty(&config) {
                     Ok(value) => value,
@@ -3028,9 +3107,34 @@ fn app_view() -> Element {
                     }
                 };
 
-                if let Err(err) = crate::vault::set_secret("app_config_json", &pretty) {
-                    settings_error.set(format!("Failed to store config in keyring: {err}"));
-                    return;
+                let pretty_for_vault = pretty.clone();
+                let persist_secrets = tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    crate::vault::set_secret_required("github_pat", &github_pat)
+                        .map_err(|err| format!("Failed to store GitHub token: {err}"))?;
+                    crate::vault::set_secret_required("zapier_token", &zapier_token)
+                        .map_err(|err| format!("Failed to store Zapier token: {err}"))?;
+                    crate::vault::set_secret_required("openai_api_key", &openai_api_key)
+                        .map_err(|err| format!("Failed to store OpenAI API key: {err}"))?;
+                    crate::vault::set_secret_required("coding_openai_api_key", &openai_api_key)
+                        .map_err(|err| format!("Failed to store coding API key: {err}"))?;
+                    crate::vault::set_secret_required("search_internet_grok_api_key", &search_api_key)
+                        .map_err(|err| format!("Failed to store search API key: {err}"))?;
+                    crate::vault::set_secret_required("app_config_json", &pretty_for_vault)
+                        .map_err(|err| format!("Failed to store config in keyring: {err}"))?;
+                    Ok(())
+                })
+                .await;
+
+                match persist_secrets {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        settings_error.set(err);
+                        return;
+                    }
+                    Err(err) => {
+                        settings_error.set(format!("Failed to persist secrets: {err}"));
+                        return;
+                    }
                 }
 
                 let config_for_save = config.clone();
@@ -3044,7 +3148,7 @@ fn app_view() -> Element {
                 match result {
                     Ok(Ok(())) => {
                         config_json_text.set(pretty);
-                        let client = reqwest::Client::new();
+                        let client = daemon_request_client();
                         let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                         let mut request = client.post(url);
                         let token_value = token();
@@ -3076,6 +3180,9 @@ fn app_view() -> Element {
                     Ok(Err(err)) => settings_error.set(format!("Save failed: {err}")),
                     Err(err) => settings_error.set(format!("Save failed: {err}")),
                 }
+
+                return;
+                
             });
         })
     };
@@ -3225,7 +3332,7 @@ fn app_view() -> Element {
                 }
 
                 if *daemon_running.read() {
-                    let client = reqwest::Client::new();
+                    let client = daemon_request_client();
                     let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                     let mut request = client.post(url);
                     let token_value = token();
@@ -3361,7 +3468,7 @@ fn app_view() -> Element {
                 }
 
                 if *daemon_running.read() {
-                    let client = reqwest::Client::new();
+                    let client = daemon_request_client();
                     let url = format!("{}/reload_config", daemon_url().trim_end_matches('/'));
                     let mut request = client.post(url);
                     let token_value = token();
@@ -3898,14 +4005,14 @@ fn app_view() -> Element {
                             class: "daemon-icon-btn",
                             title: "Start daemon",
                             onclick: move |_| on_daemon_start.call(()),
-                            disabled: *daemon_running.read(),
+                            disabled: *daemon_running.read() || *daemon_starting.read(),
                             "▶"
                         }
                         button {
                             class: "daemon-icon-btn",
                             title: "Stop daemon",
                             onclick: move |_| on_daemon_stop.call(()),
-                            disabled: !*daemon_running.read(),
+                            disabled: !*daemon_running.read() || *daemon_starting.read(),
                             "⏹"
                         }
                         button {
