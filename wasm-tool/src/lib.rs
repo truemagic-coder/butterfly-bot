@@ -96,14 +96,6 @@ fn require_i64(args: &Map<String, Value>, key: &str) -> Result<(), Value> {
     }
 }
 
-fn require_u64(args: &Map<String, Value>, key: &str) -> Result<(), Value> {
-    if args.get(key).and_then(|value| value.as_u64()).is_some() {
-        Ok(())
-    } else {
-        Err(invalid_args(&format!("Missing {}", key)))
-    }
-}
-
 fn execute_todo(input: &Value) -> Value {
     let mut args = match input_object(input) {
         Ok(args) => args,

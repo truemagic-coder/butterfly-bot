@@ -13,6 +13,16 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
+const BUTTERFLY_BOT_LOGO_BYTES: &[u8] =
+    include_bytes!("../assets/icons/hicolor/512x512/apps/butterfly-bot.png");
+
+fn butterfly_bot_logo_handle() -> image::Handle {
+    static HANDLE: OnceLock<image::Handle> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| image::Handle::from_bytes(BUTTERFLY_BOT_LOGO_BYTES))
+        .clone()
+}
+
 #[derive(Clone, Debug)]
 pub struct IcedUiLaunchConfig {
     pub daemon_url: String,
@@ -973,14 +983,10 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
     .width(Length::Fill)
     .height(Length::Fill);
 
-    let logo: Element<'_, Message> = logo_asset_path()
-        .map(|path| {
-            image::<image::Handle>(image::Handle::from_path(path))
-                .width(40)
-                .height(40)
-                .into()
-        })
-        .unwrap_or_else(|| text("🦋").size(34).into());
+    let logo: Element<'_, Message> = image::<image::Handle>(butterfly_bot_logo_handle())
+    .width(40)
+    .height(40)
+    .into();
 
     let content = column![
         row![
@@ -1942,27 +1948,6 @@ fn derive_doctor_overall(checks: &[DoctorCheckResponse]) -> &'static str {
     }
 }
 
-fn logo_asset_path() -> Option<PathBuf> {
-    let relative = Path::new("assets/icons/hicolor/64x64/apps/butterfly-bot.png");
-    let mut candidates = Vec::new();
-
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join(relative));
-    }
-    candidates.push(PathBuf::from(relative));
-
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            candidates.push(dir.join(relative));
-            if let Some(parent) = dir.parent() {
-                candidates.push(parent.join(relative));
-            }
-        }
-    }
-
-    candidates.into_iter().find(|path| path.exists())
-}
-
 fn parse_markdown_items(input: &str) -> Vec<markdown::Item> {
     markdown::parse(input).collect()
 }
@@ -2158,7 +2143,7 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
     match stop_local_daemon().await {
         Ok(status) if status == "Daemon stopped" => Ok(status),
         Ok(_) | Err(_) => {
-            let (_host, _port) = parse_daemon_address(&daemon_url);
+            let (_host, port) = parse_daemon_address(&daemon_url);
 
             #[cfg(target_os = "linux")]
             {
