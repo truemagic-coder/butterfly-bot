@@ -32,15 +32,18 @@ pub fn launch_ui_with_config(config: UiLaunchConfig) {
         tracing::error!(error = %err, "failed to launch iced UI");
     }
 }
+
+#[cfg(any())]
+mod legacy_ui {
 #![allow(
     clippy::clone_on_copy,
     clippy::collapsible_match,
     clippy::collapsible_else_if
 )]
 
-use dioxus::document::eval;
-use dioxus::launch;
-use dioxus::prelude::*;
+use legacy_framework::document::eval;
+use legacy_framework::launch;
+use legacy_framework::prelude::*;
 use futures::StreamExt;
 #[cfg(target_os = "linux")]
 use notify_rust::Notification;
@@ -68,9 +71,9 @@ use tokio::time::{sleep, timeout, Duration, Instant};
 const APP_LOGO: Asset = asset!("/assets/icons/hicolor/32x32/apps/butterfly-bot.png");
 const OPENAI_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const OPENAI_DEFAULT_CHAT_MODEL: &str = "gpt-4.1-mini";
-const OPENAI_DEFAULT_SUMMARY_MODEL: &str = "gpt-5-mini";
+const OPENAI_DEFAULT_SUMMARY_MODEL: &str = "gpt-4.1-mini";
 const OPENAI_DEFAULT_EMBED_MODEL: &str = "text-embedding-3-small";
-const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-5-mini";
+const OPENAI_DEFAULT_RERANK_MODEL: &str = "gpt-4.1-mini";
 
 #[cfg(target_os = "linux")]
 fn send_desktop_notification(title: &str) {
@@ -317,7 +320,7 @@ struct ChatTimelineProps {
 }
 
 fn chat_timeline(props: ChatTimelineProps) -> Element {
-    rsx! {
+    legacy_markup! {
         div { class: "chat", id: "chat-scroll",
             onwheel: move |_| {
                 suspend_chat_autoscroll_for(1500);
@@ -359,7 +362,7 @@ struct ChatComposerProps {
 
 fn chat_composer(props: ChatComposerProps) -> Element {
     let draft = use_signal(String::new);
-    rsx! {
+    legacy_markup! {
         div { class: "composer",
             div { class: "composer-row",
                 label { "Message" }
@@ -3985,7 +3988,7 @@ fn app_view() -> Element {
     let active_tab_context = active_tab.clone();
     let active_tab_heartbeat = active_tab.clone();
 
-    rsx! {
+    legacy_markup! {
         style { r#"
             body {{
                 font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", sans-serif;
@@ -5025,4 +5028,6 @@ fn app_view() -> Element {
             }
         }
     }
+}
+
 }

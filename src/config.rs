@@ -326,9 +326,9 @@ impl Config {
             memory: Some(MemoryConfig {
                 enabled: Some(true),
                 sqlite_path: Some(db_path.to_string()),
-                summary_model: Some("gpt-5-mini".to_string()),
+                summary_model: Some("gpt-4.1-mini".to_string()),
                 embedding_model: Some("text-embedding-3-small".to_string()),
-                rerank_model: Some("gpt-5-mini".to_string()),
+                rerank_model: Some("gpt-4.1-mini".to_string()),
                 openai: None,
                 context_embed_enabled: Some(false),
                 summary_threshold: None,
@@ -417,14 +417,14 @@ mod tests {
                 .memory
                 .as_ref()
                 .and_then(|memory| memory.summary_model.as_deref()),
-            Some("gpt-5-mini")
+            Some("gpt-4.1-mini")
         );
         assert_eq!(
             config
                 .memory
                 .as_ref()
                 .and_then(|memory| memory.rerank_model.as_deref()),
-            Some("gpt-5-mini")
+            Some("gpt-4.1-mini")
         );
         assert_eq!(
             config

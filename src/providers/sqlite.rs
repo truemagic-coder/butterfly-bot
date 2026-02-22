@@ -554,64 +554,60 @@ impl MemoryProvider for SqliteMemoryProvider {
             inserted_id
         };
 
-        if self
-            .vector_store_enabled
-            .as_ref()
-            .load(Ordering::Relaxed)
-        {
+        if self.vector_store_enabled.as_ref().load(Ordering::Relaxed) {
             if let Some(embedder) = &self.embedder {
-            let provider = self.clone();
-            let embedder = embedder.clone();
-            let embedding_model = self.embedding_model.clone();
-            let vector_store_enabled = Arc::clone(&self.vector_store_enabled);
-            let content = content.to_string();
-            let role = role.to_string();
-            let user_id = user_id.to_string();
-            let row_id = row_id.id;
-            tokio::spawn(async move {
-                let start = Instant::now();
-                let vectors = match embedder
-                    .embed(vec![content.clone()], embedding_model.as_deref())
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(err) => {
-                        info!("Embedding failed: {}", err);
-                        return;
-                    }
-                };
-                let elapsed = start.elapsed();
-                info!(
-                    "Embedding computed in {:?} (role={}, chars={}, model={:?})",
-                    elapsed,
-                    role,
-                    content.len(),
-                    embedding_model
-                );
-                if let Some(vector) = vectors.into_iter().next() {
-                    let dim = vector.len();
-                    if let Err(err) = provider
-                        .store_vector_row(row_id, &user_id, &role, &content, ts, vector)
+                let provider = self.clone();
+                let embedder = embedder.clone();
+                let embedding_model = self.embedding_model.clone();
+                let vector_store_enabled = Arc::clone(&self.vector_store_enabled);
+                let content = content.to_string();
+                let role = role.to_string();
+                let user_id = user_id.to_string();
+                let row_id = row_id.id;
+                tokio::spawn(async move {
+                    let start = Instant::now();
+                    let vectors = match embedder
+                        .embed(vec![content.clone()], embedding_model.as_deref())
                         .await
                     {
-                        if err
-                            .to_string()
-                            .contains("store_vector step=dimension_mismatch")
+                        Ok(v) => v,
+                        Err(err) => {
+                            info!("Embedding failed: {}", err);
+                            return;
+                        }
+                    };
+                    let elapsed = start.elapsed();
+                    info!(
+                        "Embedding computed in {:?} (role={}, chars={}, model={:?})",
+                        elapsed,
+                        role,
+                        content.len(),
+                        embedding_model
+                    );
+                    if let Some(vector) = vectors.into_iter().next() {
+                        let dim = vector.len();
+                        if let Err(err) = provider
+                            .store_vector_row(row_id, &user_id, &role, &content, ts, vector)
+                            .await
                         {
-                            let was_enabled =
-                                vector_store_enabled.as_ref().swap(false, Ordering::SeqCst);
-                            if was_enabled {
-                                warn!(
+                            if err
+                                .to_string()
+                                .contains("store_vector step=dimension_mismatch")
+                            {
+                                let was_enabled =
+                                    vector_store_enabled.as_ref().swap(false, Ordering::SeqCst);
+                                if was_enabled {
+                                    warn!(
                                     "Disabling sqlite-vec writes due to embedding dimension mismatch; restart after running memory migration"
                                 );
+                                }
                             }
+                            info!("sqlite-vec add error: {}", err);
+                            return;
                         }
-                        info!("sqlite-vec add error: {}", err);
-                        return;
+                        info!("Vector stored in sqlite-vec (dim={}, role={})", dim, role);
                     }
-                    info!("Vector stored in sqlite-vec (dim={}, role={})", dim, role);
-                }
-            });
+                });
             }
         }
 

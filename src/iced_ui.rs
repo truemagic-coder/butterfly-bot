@@ -1,8 +1,14 @@
-use iced::widget::{button, checkbox, column, container, row, scrollable, text, text_input};
-use iced::{application, time, Element, Length, Subscription, Task, Theme};
+use iced::widget::{
+    button, column, container, image, markdown, row, scrollable, text, text_editor, text_input,
+    Space,
+};
+use iced::{
+    application, time, Background, Border, Color, Element, Length, Shadow, Size, Subscription,
+    Task, Theme,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -51,10 +57,16 @@ struct SecurityAuditResponse {
     findings: Vec<SecurityAuditFindingResponse>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct SolanaWalletUiResponse {
+    address: String,
+}
+
 #[derive(Clone)]
 struct ChatMessage {
     role: MessageRole,
     text: String,
+    markdown_items: Vec<markdown::Item>,
     timestamp: i64,
 }
 
@@ -71,15 +83,19 @@ enum UiTab {
     Activity,
     Settings,
     Diagnostics,
+    Context,
+    Heartbeat,
 }
 
 impl UiTab {
-    fn all() -> [UiTab; 4] {
+    fn all() -> [UiTab; 6] {
         [
             UiTab::Chat,
             UiTab::Activity,
             UiTab::Settings,
             UiTab::Diagnostics,
+            UiTab::Context,
+            UiTab::Heartbeat,
         ]
     }
 
@@ -87,10 +103,20 @@ impl UiTab {
         match self {
             UiTab::Chat => "Chat",
             UiTab::Activity => "Activity",
-            UiTab::Settings => "Settings",
+            UiTab::Settings => "Config",
             UiTab::Diagnostics => "Diagnostics",
+            UiTab::Context => "Context",
+            UiTab::Heartbeat => "Heartbeat",
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+struct UiServerRow {
+    name: String,
+    url: String,
+    header_key: String,
+    header_value: String,
 }
 
 #[derive(Clone, Debug)]
@@ -98,12 +124,15 @@ struct SettingsForm {
     github_pat: String,
     zapier_token: String,
     openai_api_key: String,
-    search_api_key: String,
-    openai_base_url: String,
-    openai_model: String,
+    grok_api_key: String,
+    solana_rpc_endpoint: String,
+    search_network_allow: String,
+    wakeup_poll_seconds: String,
+    tpm_mode: String,
+    mcp_servers: Vec<UiServerRow>,
+    http_call_servers: Vec<UiServerRow>,
     prompt_text: String,
     heartbeat_text: String,
-    memory_enabled: bool,
 }
 
 impl Default for SettingsForm {
@@ -112,12 +141,15 @@ impl Default for SettingsForm {
             github_pat: String::new(),
             zapier_token: String::new(),
             openai_api_key: String::new(),
-            search_api_key: String::new(),
-            openai_base_url: "https://api.openai.com/v1".to_string(),
-            openai_model: "gpt-4.1-mini".to_string(),
+            grok_api_key: String::new(),
+            solana_rpc_endpoint: String::new(),
+            search_network_allow: String::new(),
+            wakeup_poll_seconds: "60".to_string(),
+            tpm_mode: "auto".to_string(),
+            mcp_servers: vec![],
+            http_call_servers: vec![],
             prompt_text: String::new(),
             heartbeat_text: String::new(),
-            memory_enabled: true,
         }
     }
 }
@@ -125,7 +157,6 @@ impl Default for SettingsForm {
 #[derive(Clone, Debug)]
 struct LoadedSettings {
     form: SettingsForm,
-    pretty_json: String,
 }
 
 struct ButterflyIcedApp {
@@ -145,7 +176,6 @@ struct ButterflyIcedApp {
     chat_messages: Vec<ChatMessage>,
     activity_messages: Vec<ChatMessage>,
     settings: SettingsForm,
-    settings_json: String,
     settings_status: String,
     settings_error: String,
     doctor_status: String,
@@ -156,7 +186,23 @@ struct ButterflyIcedApp {
     security_error: String,
     security_overall: String,
     security_findings: Vec<SecurityAuditFindingResponse>,
+    solana_wallet_address: Option<String>,
+    solana_wallet_status: String,
+    solana_wallet_fetch_in_flight: bool,
+    solana_wallet_refresh_pending: bool,
+    context_preview_items: Vec<markdown::Item>,
+    heartbeat_preview_items: Vec<markdown::Item>,
+    context_editor: text_editor::Content,
+    heartbeat_editor: text_editor::Content,
     manage_local_daemon: bool,
+    daemon_autostart_attempted: bool,
+}
+
+#[derive(Clone, Debug)]
+struct DaemonHealth {
+    daemon_url: String,
+    healthy: bool,
+    switched: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -166,32 +212,47 @@ enum Message {
     ComposerChanged(String),
     SendPressed,
     ResponseReady(Result<String, String>),
-    HealthChecked(bool),
+    HealthChecked(DaemonHealth),
     StartDaemonPressed,
     StopDaemonPressed,
     DaemonStartFinished(Result<String, String>),
     DaemonStopFinished(Result<String, String>),
-    LoadHistoryPressed,
     HistoryLoaded(Result<Vec<String>, String>),
     ClearHistoryPressed,
     HistoryCleared(Result<(), String>),
     LoadSettingsPressed,
-    SettingsLoaded(Result<LoadedSettings, String>),
+    SettingsLoaded(Box<Result<LoadedSettings, String>>),
     SaveSettingsPressed,
     SettingsSaved(Result<String, String>),
     GithubPatChanged(String),
     ZapierTokenChanged(String),
     OpenAiKeyChanged(String),
-    SearchKeyChanged(String),
-    OpenAiBaseUrlChanged(String),
-    OpenAiModelChanged(String),
-    PromptTextChanged(String),
-    HeartbeatTextChanged(String),
-    MemoryEnabledChanged(bool),
+    GrokKeyChanged(String),
+    SolanaRpcEndpointChanged(String),
+    SearchNetworkAllowChanged(String),
+    WakeupPollSecondsChanged(String),
+    TpmModeChanged(String),
+    AddMcpServer,
+    RemoveMcpServer(usize),
+    McpServerNameChanged(usize, String),
+    McpServerUrlChanged(usize, String),
+    McpServerHeaderKeyChanged(usize, String),
+    McpServerHeaderValueChanged(usize, String),
+    AddHttpServer,
+    RemoveHttpServer(usize),
+    HttpServerNameChanged(usize, String),
+    HttpServerUrlChanged(usize, String),
+    HttpServerHeaderKeyChanged(usize, String),
+    HttpServerHeaderValueChanged(usize, String),
+    MarkdownLinkClicked(String),
+    ContextEdited(text_editor::Action),
+    HeartbeatEdited(text_editor::Action),
     RunDoctorPressed,
     DoctorFinished(Result<DoctorResponse, String>),
-    RunSecurityPressed,
     SecurityFinished(Result<SecurityAuditResponse, String>),
+    RefreshSolanaWallet,
+    SolanaWalletLoaded(Result<Option<String>, String>),
+    CopyToClipboard(String),
 }
 
 pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
@@ -204,7 +265,10 @@ pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
                     check_daemon_health(state.daemon_url.clone()),
                     Message::HealthChecked,
                 ),
-                Task::perform(load_settings(state.db_path.clone()), Message::SettingsLoaded),
+                Task::perform(
+                    load_settings(state.db_path.clone()),
+                    |result| Message::SettingsLoaded(Box::new(result)),
+                ),
             ]);
             (state, boot)
         },
@@ -213,6 +277,11 @@ pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
     )
     .title(app_title)
     .theme(app_theme)
+    .window(iced::window::Settings {
+        size: Size::new(1280.0, 860.0),
+        min_size: Some(Size::new(980.0, 700.0)),
+        ..Default::default()
+    })
     .subscription(subscription)
     .run()
 }
@@ -231,7 +300,7 @@ fn subscription(_state: &ButterflyIcedApp) -> Subscription<Message> {
 
 impl ButterflyIcedApp {
     fn new(flags: IcedUiLaunchConfig) -> Self {
-        let manage_local_daemon = env_flag_enabled("BUTTERFLY_UI_MANAGE_DAEMON", false);
+        let manage_local_daemon = env_flag_enabled("BUTTERFLY_UI_MANAGE_DAEMON", true);
         Self {
             daemon_url: normalize_daemon_url(&flags.daemon_url),
             user_id: flags.user_id,
@@ -253,7 +322,6 @@ impl ButterflyIcedApp {
             chat_messages: vec![],
             activity_messages: vec![],
             settings: SettingsForm::default(),
-            settings_json: String::new(),
             settings_status: String::new(),
             settings_error: String::new(),
             doctor_status: String::new(),
@@ -264,14 +332,25 @@ impl ButterflyIcedApp {
             security_error: String::new(),
             security_overall: String::new(),
             security_findings: vec![],
+            solana_wallet_address: None,
+            solana_wallet_status: String::new(),
+            solana_wallet_fetch_in_flight: false,
+            solana_wallet_refresh_pending: true,
+            context_preview_items: vec![],
+            heartbeat_preview_items: vec![],
+            context_editor: text_editor::Content::new(),
+            heartbeat_editor: text_editor::Content::new(),
             manage_local_daemon,
+            daemon_autostart_attempted: false,
         }
     }
 
     fn push_chat(&mut self, role: MessageRole, text: String) {
+        let markdown_items = parse_markdown_items(&text);
         self.chat_messages.push(ChatMessage {
             role,
             text,
+            markdown_items,
             timestamp: now_unix_ts(),
         });
         if self.chat_messages.len() > 300 {
@@ -281,14 +360,24 @@ impl ButterflyIcedApp {
     }
 
     fn push_activity(&mut self, text: String) {
+        let markdown_items = parse_markdown_items(&text);
         self.activity_messages.push(ChatMessage {
             role: MessageRole::System,
             text,
+            markdown_items,
             timestamp: now_unix_ts(),
         });
         if self.activity_messages.len() > 300 {
             let drop_count = self.activity_messages.len() - 300;
             self.activity_messages.drain(0..drop_count);
+        }
+    }
+}
+
+impl Drop for ButterflyIcedApp {
+    fn drop(&mut self) {
+        if self.manage_local_daemon {
+            let _ = stop_local_daemon_blocking();
         }
     }
 }
@@ -332,7 +421,10 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             let user_id = state.user_id.clone();
             let token = state.token.clone();
 
-            Task::perform(send_prompt(daemon_url, user_id, token, prompt), Message::ResponseReady)
+            Task::perform(
+                send_prompt(daemon_url, user_id, token, prompt),
+                Message::ResponseReady,
+            )
         }
         Message::ResponseReady(result) => {
             state.busy = false;
@@ -345,11 +437,27 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::HealthChecked(ok) => {
-            state.daemon_running = ok;
-            if ok {
+        Message::HealthChecked(health) => {
+            if health.switched && state.daemon_url != health.daemon_url {
+                state.daemon_url = health.daemon_url.clone();
+                state.push_activity(format!("daemon auto-detected on {}", state.daemon_url));
+            }
+
+            state.daemon_running = health.healthy;
+            if health.healthy {
                 if state.daemon_status.is_empty() || state.daemon_status.contains("not reachable") {
                     state.daemon_status = "Daemon healthy".to_string();
+                }
+                if state.solana_wallet_refresh_pending && !state.solana_wallet_fetch_in_flight {
+                    state.solana_wallet_fetch_in_flight = true;
+                    return Task::perform(
+                        fetch_solana_wallet_address(
+                            state.daemon_url.clone(),
+                            state.token.clone(),
+                            state.user_id.clone(),
+                        ),
+                        Message::SolanaWalletLoaded,
+                    );
                 }
                 if !state.history_loaded {
                     state.history_loaded = true;
@@ -363,6 +471,22 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
                         Message::HistoryLoaded,
                     );
                 }
+            } else if state.manage_local_daemon
+                && !state.daemon_autostart_attempted
+                && !state.daemon_starting
+            {
+                state.daemon_autostart_attempted = true;
+                state.daemon_starting = true;
+                state.daemon_status = "Starting daemon...".to_string();
+                state.push_activity("daemon auto-start requested".to_string());
+                return Task::perform(
+                    start_local_daemon(
+                        state.daemon_url.clone(),
+                        state.db_path.clone(),
+                        state.token.clone(),
+                    ),
+                    Message::DaemonStartFinished,
+                );
             } else if !state.daemon_starting {
                 state.daemon_status = "Daemon not reachable".to_string();
             }
@@ -390,10 +514,14 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
         Message::StopDaemonPressed => {
             state.daemon_starting = true;
             if state.manage_local_daemon {
-                return Task::perform(stop_local_daemon(), Message::DaemonStopFinished);
+                return Task::perform(
+                    stop_daemon_by_url(state.daemon_url.clone()),
+                    Message::DaemonStopFinished,
+                );
             }
             state.daemon_starting = false;
-            state.daemon_status = "External mode: stop daemon from service/process manager".to_string();
+            state.daemon_status =
+                "External mode: stop daemon from service/process manager".to_string();
             Task::none()
         }
         Message::DaemonStartFinished(result) => {
@@ -430,24 +558,17 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::LoadHistoryPressed => Task::perform(
-            run_chat_history_request(
-                state.daemon_url.clone(),
-                state.token.clone(),
-                state.user_id.clone(),
-                60,
-            ),
-            Message::HistoryLoaded,
-        ),
         Message::HistoryLoaded(result) => {
             match result {
                 Ok(lines) => {
                     state.chat_messages.clear();
                     for line in lines {
                         if let Some((role, text, ts)) = parse_history_entry(&line) {
+                            let markdown_items = parse_markdown_items(&text);
                             state.chat_messages.push(ChatMessage {
                                 role,
                                 text,
+                                markdown_items,
                                 timestamp: ts.unwrap_or_else(now_unix_ts),
                             });
                             state.next_id = state.next_id.saturating_add(1);
@@ -479,16 +600,35 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::LoadSettingsPressed => {
-            Task::perform(load_settings(state.db_path.clone()), Message::SettingsLoaded)
-        }
+        Message::LoadSettingsPressed => Task::perform(
+            load_settings(state.db_path.clone()),
+            |result| Message::SettingsLoaded(Box::new(result)),
+        ),
         Message::SettingsLoaded(result) => {
-            match result {
+            match *result {
                 Ok(loaded) => {
                     state.settings = loaded.form;
-                    state.settings_json = loaded.pretty_json;
+                    state.context_editor =
+                        text_editor::Content::with_text(&state.settings.prompt_text);
+                    state.heartbeat_editor =
+                        text_editor::Content::with_text(&state.settings.heartbeat_text);
+                    state.context_preview_items = parse_markdown_items(&state.settings.prompt_text);
+                    state.heartbeat_preview_items =
+                        parse_markdown_items(&state.settings.heartbeat_text);
                     state.settings_status = "Settings loaded".to_string();
                     state.settings_error.clear();
+                    state.solana_wallet_refresh_pending = true;
+                    if state.daemon_running && !state.solana_wallet_fetch_in_flight {
+                        state.solana_wallet_fetch_in_flight = true;
+                        return Task::perform(
+                            fetch_solana_wallet_address(
+                                state.daemon_url.clone(),
+                                state.token.clone(),
+                                state.user_id.clone(),
+                            ),
+                            Message::SolanaWalletLoaded,
+                        );
+                    }
                 }
                 Err(err) => {
                     state.settings_error = err;
@@ -512,6 +652,18 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
                     state.settings_status = status.clone();
                     state.settings_error.clear();
                     state.push_activity(status);
+                    state.solana_wallet_refresh_pending = true;
+                    if state.daemon_running && !state.solana_wallet_fetch_in_flight {
+                        state.solana_wallet_fetch_in_flight = true;
+                        return Task::perform(
+                            fetch_solana_wallet_address(
+                                state.daemon_url.clone(),
+                                state.token.clone(),
+                                state.user_id.clone(),
+                            ),
+                            Message::SolanaWalletLoaded,
+                        );
+                    }
                 }
                 Err(err) => {
                     state.settings_error = err.clone();
@@ -533,48 +685,156 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             state.settings.openai_api_key = value;
             Task::none()
         }
-        Message::SearchKeyChanged(value) => {
-            state.settings.search_api_key = value;
+        Message::GrokKeyChanged(value) => {
+            state.settings.grok_api_key = value;
             Task::none()
         }
-        Message::OpenAiBaseUrlChanged(value) => {
-            state.settings.openai_base_url = value;
+        Message::SolanaRpcEndpointChanged(value) => {
+            state.settings.solana_rpc_endpoint = value;
             Task::none()
         }
-        Message::OpenAiModelChanged(value) => {
-            state.settings.openai_model = value;
+        Message::SearchNetworkAllowChanged(value) => {
+            state.settings.search_network_allow = value;
             Task::none()
         }
-        Message::PromptTextChanged(value) => {
-            state.settings.prompt_text = value;
+        Message::WakeupPollSecondsChanged(value) => {
+            state.settings.wakeup_poll_seconds = value;
             Task::none()
         }
-        Message::HeartbeatTextChanged(value) => {
-            state.settings.heartbeat_text = value;
+        Message::TpmModeChanged(value) => {
+            state.settings.tpm_mode = value;
             Task::none()
         }
-        Message::MemoryEnabledChanged(value) => {
-            state.settings.memory_enabled = value;
+        Message::AddMcpServer => {
+            state.settings.mcp_servers.push(UiServerRow::default());
+            Task::none()
+        }
+        Message::RemoveMcpServer(index) => {
+            if index < state.settings.mcp_servers.len() {
+                state.settings.mcp_servers.remove(index);
+            }
+            Task::none()
+        }
+        Message::McpServerNameChanged(index, value) => {
+            if let Some(row) = state.settings.mcp_servers.get_mut(index) {
+                row.name = value;
+            }
+            Task::none()
+        }
+        Message::McpServerUrlChanged(index, value) => {
+            if let Some(row) = state.settings.mcp_servers.get_mut(index) {
+                row.url = value;
+            }
+            Task::none()
+        }
+        Message::McpServerHeaderKeyChanged(index, value) => {
+            if let Some(row) = state.settings.mcp_servers.get_mut(index) {
+                row.header_key = value;
+            }
+            Task::none()
+        }
+        Message::McpServerHeaderValueChanged(index, value) => {
+            if let Some(row) = state.settings.mcp_servers.get_mut(index) {
+                row.header_value = value;
+            }
+            Task::none()
+        }
+        Message::AddHttpServer => {
+            state
+                .settings
+                .http_call_servers
+                .push(UiServerRow::default());
+            Task::none()
+        }
+        Message::RemoveHttpServer(index) => {
+            if index < state.settings.http_call_servers.len() {
+                state.settings.http_call_servers.remove(index);
+            }
+            Task::none()
+        }
+        Message::HttpServerNameChanged(index, value) => {
+            if let Some(row) = state.settings.http_call_servers.get_mut(index) {
+                row.name = value;
+            }
+            Task::none()
+        }
+        Message::HttpServerUrlChanged(index, value) => {
+            if let Some(row) = state.settings.http_call_servers.get_mut(index) {
+                row.url = value;
+            }
+            Task::none()
+        }
+        Message::HttpServerHeaderKeyChanged(index, value) => {
+            if let Some(row) = state.settings.http_call_servers.get_mut(index) {
+                row.header_key = value;
+            }
+            Task::none()
+        }
+        Message::HttpServerHeaderValueChanged(index, value) => {
+            if let Some(row) = state.settings.http_call_servers.get_mut(index) {
+                row.header_value = value;
+            }
+            Task::none()
+        }
+        Message::MarkdownLinkClicked(uri) => {
+            state.push_activity(format!("link clicked: {uri}"));
+            let _ = open_uri_best_effort(&uri);
+            Task::none()
+        }
+        Message::ContextEdited(action) => {
+            state.context_editor.perform(action);
+            state.settings.prompt_text = state.context_editor.text();
+            state.context_preview_items = parse_markdown_items(&state.settings.prompt_text);
+            Task::none()
+        }
+        Message::HeartbeatEdited(action) => {
+            state.heartbeat_editor.perform(action);
+            state.settings.heartbeat_text = state.heartbeat_editor.text();
+            state.heartbeat_preview_items = parse_markdown_items(&state.settings.heartbeat_text);
             Task::none()
         }
         Message::RunDoctorPressed => {
             if !state.daemon_running {
                 state.doctor_error = "Daemon is not running".to_string();
+                state.security_error = "Daemon is not running".to_string();
                 return Task::none();
             }
-            state.doctor_status = "Running diagnostics...".to_string();
+            state.doctor_status = "Running security doctor...".to_string();
+            state.security_status = "Running security audit...".to_string();
             state.doctor_error.clear();
-            Task::perform(
-                run_doctor_request(state.daemon_url.clone(), state.token.clone()),
-                Message::DoctorFinished,
-            )
+            state.security_error.clear();
+            Task::batch(vec![
+                Task::perform(
+                    run_doctor_request(state.daemon_url.clone(), state.token.clone()),
+                    Message::DoctorFinished,
+                ),
+                Task::perform(
+                    run_security_audit_request(state.daemon_url.clone(), state.token.clone()),
+                    Message::SecurityFinished,
+                ),
+            ])
         }
         Message::DoctorFinished(result) => {
             match result {
                 Ok(report) => {
-                    state.doctor_overall = report.overall.clone();
-                    state.doctor_checks = report.checks;
-                    state.doctor_status = format!("Doctor complete ({})", state.doctor_overall);
+                    let reported_overall = report.overall;
+                    state.doctor_checks = report
+                        .checks
+                        .into_iter()
+                        .filter(|check| {
+                            let name = check.name.trim().to_ascii_lowercase();
+                            name != "provider_health" && name != "provider_check"
+                        })
+                        .collect();
+                    state.doctor_overall = if state.doctor_checks.is_empty() {
+                        reported_overall
+                    } else {
+                        derive_doctor_overall(&state.doctor_checks).to_string()
+                    };
+                    state.doctor_status = format!(
+                        "Doctor complete ({})",
+                        display_posture_level(&state.doctor_overall)
+                    );
                     state.push_activity(state.doctor_status.clone());
                 }
                 Err(err) => {
@@ -585,25 +845,22 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::RunSecurityPressed => {
-            if !state.daemon_running {
-                state.security_error = "Daemon is not running".to_string();
-                return Task::none();
-            }
-            state.security_status = "Running security audit...".to_string();
-            state.security_error.clear();
-            Task::perform(
-                run_security_audit_request(state.daemon_url.clone(), state.token.clone()),
-                Message::SecurityFinished,
-            )
-        }
         Message::SecurityFinished(result) => {
             match result {
                 Ok(report) => {
                     state.security_overall = report.overall.clone();
-                    state.security_findings = report.findings;
-                    state.security_status =
-                        format!("Security audit complete ({})", state.security_overall);
+                    state.security_findings = report
+                        .findings
+                        .into_iter()
+                        .filter(|finding| {
+                            let id = finding.id.trim().to_ascii_lowercase();
+                            id != "provider_health" && id != "provider_check"
+                        })
+                        .collect();
+                    state.security_status = format!(
+                        "Security audit complete ({})",
+                        display_posture_level(&state.security_overall)
+                    );
                     state.push_activity(state.security_status.clone());
                 }
                 Err(err) => {
@@ -614,99 +871,268 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::RefreshSolanaWallet => {
+            state.solana_wallet_refresh_pending = true;
+            if state.daemon_running && !state.solana_wallet_fetch_in_flight {
+                state.solana_wallet_fetch_in_flight = true;
+                Task::perform(
+                    fetch_solana_wallet_address(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                    ),
+                    Message::SolanaWalletLoaded,
+                )
+            } else {
+                Task::none()
+            }
+        }
+        Message::SolanaWalletLoaded(result) => {
+            state.solana_wallet_fetch_in_flight = false;
+            state.solana_wallet_refresh_pending = false;
+            match result {
+                Ok(Some(address)) => {
+                    state.solana_wallet_address = Some(address);
+                    state.solana_wallet_status = "Butterfly Bot Wallet detected".to_string();
+                }
+                Ok(None) => {
+                    state.solana_wallet_address = None;
+                    state.solana_wallet_status = "No Butterfly Bot Wallet available".to_string();
+                }
+                Err(err) => {
+                    state.solana_wallet_address = None;
+                    state.solana_wallet_status = format!("Solana wallet unavailable: {err}");
+                }
+            }
+            Task::none()
+        }
+        Message::CopyToClipboard(value) => {
+            state.push_activity("copied to clipboard".to_string());
+            iced::clipboard::write(value)
+        }
     }
 }
 
 fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
-    let tabs = UiTab::all().into_iter().fold(row!().spacing(8), |row, tab| {
-        row.push(button(tab.label()).on_press(Message::TabSelected(tab)))
-    });
+    let tabs_row = UiTab::all()
+        .into_iter()
+        .fold(row!().spacing(8), |row, tab| {
+            let active = tab == state.active_tab;
+            row.push(
+                button(text(tab.label()).size(14))
+                    .padding([8, 14])
+                    .style(if active {
+                        iced::widget::button::primary
+                    } else {
+                        iced::widget::button::secondary
+                    })
+                    .on_press(Message::TabSelected(tab)),
+            )
+        });
 
     let daemon_controls = row![
-        text(format!("daemon: {}", state.daemon_url)).size(14),
-        button(if state.daemon_starting {
-            "Starting..."
-        } else {
-            "Start"
-        })
-        .on_press_maybe((!state.daemon_starting).then_some(Message::StartDaemonPressed)),
-        button("Stop").on_press(Message::StopDaemonPressed),
-        text(if state.daemon_running {
-            "healthy"
-        } else {
-            "offline"
-        })
-        .size(14),
-        text(state.daemon_status.clone()).size(14),
+        button(if state.daemon_starting { "⏳" } else { "▶" })
+            .padding([8, 12])
+            .on_press_maybe(
+                (!state.daemon_starting && !state.daemon_running)
+                    .then_some(Message::StartDaemonPressed)
+            ),
+        button("⏹").padding([8, 12]).on_press_maybe(
+            (!state.daemon_starting && state.daemon_running).then_some(Message::StopDaemonPressed)
+        ),
+        button("🗑")
+            .padding([8, 12])
+            .style(iced::widget::button::danger)
+            .on_press(Message::ClearHistoryPressed),
     ]
-    .spacing(10);
+    .spacing(8)
+    .align_y(iced::Alignment::Center);
 
-    let body = match state.active_tab {
+    let nav_bar = row![
+        container(
+            scrollable(tabs_row).direction(iced::widget::scrollable::Direction::Horizontal(
+                iced::widget::scrollable::Scrollbar::default(),
+            ))
+        )
+        .width(Length::Fill)
+        .padding([2, 0]),
+        daemon_controls,
+    ]
+    .spacing(10)
+    .align_y(iced::Alignment::Center)
+    .width(Length::Fill);
+
+    let body = container(match state.active_tab {
         UiTab::Chat => view_chat_tab(state),
         UiTab::Activity => view_activity_tab(state),
         UiTab::Settings => view_settings_tab(state),
         UiTab::Diagnostics => view_diagnostics_tab(state),
-    };
-
-    let content = column![
-        row![text("Butterfly Bot (Iced)").size(24), text(format!("user: {}", state.user_id)).size(14)]
-            .spacing(16),
-        tabs,
-        daemon_controls,
-        body
-    ]
-    .spacing(10)
-    .padding(12)
+        UiTab::Context => view_context_tab(state),
+        UiTab::Heartbeat => view_heartbeat_tab(state),
+    })
+    .width(Length::Fill)
     .height(Length::Fill);
 
-    container(content)
+    let logo: Element<'_, Message> = logo_asset_path()
+        .map(|path| {
+            image::<image::Handle>(image::Handle::from_path(path))
+                .width(40)
+                .height(40)
+                .into()
+        })
+        .unwrap_or_else(|| text("🦋").size(34).into());
+
+    let content = column![
+        row![
+            logo,
+            column![
+                text("Butterfly Bot").size(30),
+                text("Personal-ops assistant").size(14)
+            ]
+            .spacing(2),
+            Space::new().width(Length::Fill),
+            text(state.daemon_status.clone()).size(14)
+        ]
+        .spacing(16)
+        .width(Length::Fill)
+        .align_y(iced::Alignment::Center),
+        container(nav_bar).padding(8).style(glass_panel),
+        body
+    ]
+    .spacing(12)
+    .padding(16)
+    .height(Length::Fill);
+
+    container(container(content).height(Length::Fill).style(glass_shell))
         .width(Length::Fill)
         .height(Length::Fill)
+        .center_x(Length::Fill)
         .into()
+}
+
+fn glass_shell(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: None,
+        background: Some(Background::Color(Color::from_rgba(0.07, 0.10, 0.18, 0.65))),
+        border: Border {
+            radius: 18.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.10),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: None,
+        background: Some(Background::Color(Color::from_rgba(0.10, 0.14, 0.24, 0.58))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_user_bubble(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba(0.39, 0.40, 0.95, 0.62))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.14),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_bot_bubble(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba(0.49, 0.23, 0.92, 0.55))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(1.0, 1.0, 1.0, 0.14),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
 }
 
 fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
     let list = state
         .chat_messages
         .iter()
-        .fold(column!().spacing(8), |col, msg| {
+        .fold(column!().spacing(10).width(Length::Fill), |col, msg| {
             let who = match msg.role {
                 MessageRole::User => "You",
-                MessageRole::Bot => "Bot",
+                MessageRole::Bot => "Butterfly",
                 MessageRole::System => "System",
             };
-            col.push(text(format!(
-                "[{}] {}: {}",
-                format_local_time(msg.timestamp),
-                who,
-                msg.text
-            )))
-        });
-
-    let history_controls = row![
-        button("Load history").on_press(Message::LoadHistoryPressed),
-        button("Clear history").on_press(Message::ClearHistoryPressed)
-    ]
-    .spacing(10);
+            let bubble = container(
+                column![
+                    row![
+                        text(format!("{} • {}", who, format_local_time(msg.timestamp))).size(12),
+                        Space::new().width(Length::Fill),
+                        button(text("📋").size(14))
+                            .padding(6)
+                            .width(30)
+                            .height(30)
+                            .on_press(Message::CopyToClipboard(msg.text.clone()))
+                    ]
+                    .align_y(iced::Alignment::Center),
+                    markdown::view(msg.markdown_items.iter(), markdown_render_settings())
+                        .map(Message::MarkdownLinkClicked)
+                ]
+                .spacing(6),
+            )
+            .padding(12)
+            .style(match msg.role {
+                MessageRole::User => glass_user_bubble,
+                MessageRole::Bot => glass_bot_bubble,
+                MessageRole::System => glass_panel,
+            });
+            col.push(bubble)
+        })
+        .push(Space::new().height(18));
 
     let composer = row![
         text_input("Type a message", &state.composer)
             .on_input(Message::ComposerChanged)
             .on_submit(Message::SendPressed)
-            .padding(10)
+            .padding(12)
             .width(Length::Fill),
         button(if state.busy { "Sending..." } else { "Send" })
+            .padding([10, 16])
+            .style(iced::widget::button::primary)
             .on_press_maybe((!state.busy).then_some(Message::SendPressed)),
     ]
-    .spacing(10);
+    .spacing(10)
+    .align_y(iced::Alignment::Center);
 
     column![
-        history_controls,
-        scrollable(list).height(Length::Fill),
+        container(
+            scrollable(container(list).padding([0, 14]).width(Length::Fill))
+                .height(Length::Fill)
+                .width(Length::Fill)
+                .anchor_bottom()
+                .auto_scroll(true)
+        )
+        .padding(8)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill),
         if state.error.is_empty() {
             text("")
         } else {
-            text(state.error.clone())
+            text(state.error.clone()).color([0.95, 0.45, 0.45])
         },
         composer
     ]
@@ -720,61 +1146,257 @@ fn view_activity_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
         .activity_messages
         .iter()
         .fold(column!().spacing(8), |col, msg| {
-            col.push(text(format!(
-                "[{}] {}",
-                format_local_time(msg.timestamp),
-                msg.text
-            )))
+            col.push(
+                container(
+                    row![
+                        text(format!(
+                            "[{}] {}",
+                            format_local_time(msg.timestamp),
+                            msg.text
+                        )),
+                        Space::new().width(Length::Fill),
+                        button(text("📋").size(14))
+                            .padding(6)
+                            .width(30)
+                            .height(30)
+                            .on_press(Message::CopyToClipboard(msg.text.clone()))
+                    ]
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding(10)
+                .style(glass_panel),
+            )
         });
 
-    scrollable(list).height(Length::Fill).into()
+    container(scrollable(list).height(Length::Fill).width(Length::Fill))
+        .padding(8)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let mcp_rows = state.settings.mcp_servers.iter().enumerate().fold(
+        column!().spacing(8),
+        |col, (index, server)| {
+            col.push(
+                column![
+                    row![
+                        text_input("Server name", &server.name)
+                            .on_input(move |value| Message::McpServerNameChanged(index, value))
+                            .padding(8)
+                            .width(Length::FillPortion(2)),
+                        text_input("https://server.example/mcp", &server.url)
+                            .on_input(move |value| Message::McpServerUrlChanged(index, value))
+                            .padding(8)
+                            .width(Length::FillPortion(3)),
+                        button("Remove")
+                            .padding([8, 10])
+                            .style(iced::widget::button::danger)
+                            .on_press(Message::RemoveMcpServer(index)),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                    row![
+                        text_input("Header key (optional)", &server.header_key)
+                            .on_input(move |value| Message::McpServerHeaderKeyChanged(index, value))
+                            .padding(8)
+                            .width(Length::FillPortion(1)),
+                        text_input("Header value (optional)", &server.header_value)
+                            .on_input(move |value| Message::McpServerHeaderValueChanged(
+                                index, value
+                            ))
+                            .padding(8)
+                            .width(Length::FillPortion(1)),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                ]
+                .spacing(8),
+            )
+        },
+    );
+
+    let http_rows = state.settings.http_call_servers.iter().enumerate().fold(
+        column!().spacing(8),
+        |col, (index, server)| {
+            col.push(
+                column![
+                    row![
+                        text_input("Server name", &server.name)
+                            .on_input(move |value| Message::HttpServerNameChanged(index, value))
+                            .padding(8)
+                            .width(Length::FillPortion(2)),
+                        text_input("https://api.example.com/v1", &server.url)
+                            .on_input(move |value| Message::HttpServerUrlChanged(index, value))
+                            .padding(8)
+                            .width(Length::FillPortion(3)),
+                        button("Remove")
+                            .padding([8, 10])
+                            .style(iced::widget::button::danger)
+                            .on_press(Message::RemoveHttpServer(index)),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                    row![
+                        text_input("Header key (optional)", &server.header_key)
+                            .on_input(move |value| Message::HttpServerHeaderKeyChanged(
+                                index, value
+                            ))
+                            .padding(8)
+                            .width(Length::FillPortion(1)),
+                        text_input("Header value (optional)", &server.header_value)
+                            .on_input(move |value| Message::HttpServerHeaderValueChanged(
+                                index, value
+                            ))
+                            .padding(8)
+                            .width(Length::FillPortion(1)),
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                ]
+                .spacing(8),
+            )
+        },
+    );
+
     let form = column![
-        row![
-            button("Reload").on_press(Message::LoadSettingsPressed),
-            button("Save").on_press(Message::SaveSettingsPressed)
+            row![
+                text("Provider: OpenAI (fixed)").size(14),
+                Space::new().width(Length::Fill),
+                button("Save")
+                    .padding([8, 12])
+                    .style(iced::widget::button::success)
+                    .on_press(Message::SaveSettingsPressed)
+            ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
+        container(column![
+            text("API keys").size(16),
+            text_input("OpenAI API key", &state.settings.openai_api_key)
+                .on_input(Message::OpenAiKeyChanged)
+                .secure(true)
+                .padding(8),
+            text_input("Grok API key", &state.settings.grok_api_key)
+                .on_input(Message::GrokKeyChanged)
+                .secure(true)
+                .padding(8),
+            text_input("GitHub PAT (MCP)", &state.settings.github_pat)
+                .on_input(Message::GithubPatChanged)
+                .secure(true)
+                .padding(8),
+            text_input("Zapier token (MCP)", &state.settings.zapier_token)
+                .on_input(Message::ZapierTokenChanged)
+                .secure(true)
+                .padding(8),
         ]
-        .spacing(10),
-        text_input("GitHub PAT", &state.settings.github_pat)
-            .on_input(Message::GithubPatChanged)
-            .padding(8),
-        text_input("Zapier token", &state.settings.zapier_token)
-            .on_input(Message::ZapierTokenChanged)
-            .padding(8),
-        text_input("OpenAI API key", &state.settings.openai_api_key)
-            .on_input(Message::OpenAiKeyChanged)
-            .padding(8),
-        text_input("Search API key (Grok)", &state.settings.search_api_key)
-            .on_input(Message::SearchKeyChanged)
-            .padding(8),
-        text_input("OpenAI base URL", &state.settings.openai_base_url)
-            .on_input(Message::OpenAiBaseUrlChanged)
-            .padding(8),
-        text_input("OpenAI model", &state.settings.openai_model)
-            .on_input(Message::OpenAiModelChanged)
-            .padding(8),
-        checkbox(state.settings.memory_enabled)
-            .label("Memory enabled")
-            .on_toggle(Message::MemoryEnabledChanged),
-        text_input("Prompt markdown or URL", &state.settings.prompt_text)
-            .on_input(Message::PromptTextChanged)
-            .padding(8),
-        text_input("Heartbeat markdown or URL", &state.settings.heartbeat_text)
-            .on_input(Message::HeartbeatTextChanged)
-            .padding(8),
-        text("Config preview:").size(14),
-        scrollable(text(state.settings_json.clone())).height(180),
+        .spacing(8))
+        .padding(10)
+        .style(glass_panel),
+        container(column![
+            text("Runtime policy").size(16),
+            text("Memory: enabled (fixed)").size(14),
+            text("OpenAI chat model: gpt-4.1-mini (fixed)").size(14),
+            text("OpenAI memory models: gpt-4.1-mini / text-embedding-3-small / gpt-4.1-mini (fixed)").size(14),
+            text("OpenAI coding model: gpt-5.2-codex (fixed)").size(14),
+        ]
+        .spacing(6))
+        .padding(10)
+        .style(glass_panel),
+        container(column![
+            text("MCP Servers").size(16),
+            mcp_rows,
+            button("+ Add MCP Server")
+                .padding([8, 12])
+                .on_press(Message::AddMcpServer),
+        ]
+        .spacing(8))
+        .padding(10)
+        .style(glass_panel),
+        container(column![
+            text("HTTP Call Servers").size(16),
+            http_rows,
+            button("+ Add HTTP Server")
+                .padding([8, 12])
+                .on_press(Message::AddHttpServer),
+        ]
+        .spacing(8))
+        .padding(10)
+        .style(glass_panel),
+        container(column![
+            text("Network + system").size(16),
+            text("Search default deny: enabled (fixed)").size(14),
+            text_input("Search network allow (comma-separated)", &state.settings.search_network_allow)
+                .on_input(Message::SearchNetworkAllowChanged)
+                .padding(8),
+            text_input("Wakeup poll seconds", &state.settings.wakeup_poll_seconds)
+                .on_input(Message::WakeupPollSecondsChanged)
+                .padding(8),
+            text_input("TPM mode (strict|auto|compatible)", &state.settings.tpm_mode)
+                .on_input(Message::TpmModeChanged)
+                .padding(8),
+        ]
+        .spacing(8))
+        .padding(10)
+        .style(glass_panel),
+        container(column![
+            text("Solana").size(16),
+            text("RPC endpoint").size(14),
+            text_input("https://...", &state.settings.solana_rpc_endpoint)
+                .on_input(Message::SolanaRpcEndpointChanged)
+                .padding(8),
+            if let Some(address) = &state.solana_wallet_address {
+                row![
+                    text("Butterfly Bot Wallet address:").size(14),
+                    text(address.clone()).size(14),
+                    Space::new().width(Length::Fill),
+                    button(text("📋").size(14))
+                        .padding(6)
+                        .width(30)
+                        .height(30)
+                        .on_press(Message::CopyToClipboard(address.clone())),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
+            } else {
+                row![
+                    text("Butterfly Bot Wallet address: unavailable").size(14),
+                    Space::new().width(Length::Fill),
+                    button("Refresh")
+                        .padding([6, 10])
+                        .on_press(Message::RefreshSolanaWallet),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center)
+            },
+            if state.solana_wallet_status.is_empty() {
+                text("")
+            } else {
+                text(state.solana_wallet_status.clone()).size(13)
+            }
+        ]
+        .spacing(8))
+        .padding(10)
+        .style(glass_panel),
         if state.settings_error.is_empty() {
-            text(state.settings_status.clone())
+            text(state.settings_status.clone()).color([0.55, 0.9, 0.65])
         } else {
-            text(state.settings_error.clone())
+            text(state.settings_error.clone()).color([0.95, 0.45, 0.45])
         }
     ]
-    .spacing(8);
+    .spacing(12);
 
-    scrollable(form).height(Length::Fill).into()
+    container(
+        scrollable(container(form).width(Length::Fill).padding([0, 16]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
 }
 
 fn view_diagnostics_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
@@ -789,51 +1411,170 @@ fn view_diagnostics_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             col.push(text(line))
         });
 
-    let security_lines = state
-        .security_findings
-        .iter()
-        .fold(column!().spacing(6), |col, finding| {
-            let mut line = format!(
-                "{} [{} / {}] — {}{}",
-                finding.id,
-                finding.severity,
-                finding.status,
-                finding.message,
-                if finding.auto_fixable { " (auto-fixable)" } else { "" }
-            );
-            if let Some(hint) = &finding.fix_hint {
-                line.push_str(&format!(" ({hint})"));
-            }
-            col.push(text(line))
-        });
+    let security_lines =
+        state
+            .security_findings
+            .iter()
+            .fold(column!().spacing(6), |col, finding| {
+                let mut line = format!(
+                    "{} [{} / {}] — {}{}",
+                    finding.id,
+                    finding.severity,
+                    finding.status,
+                    finding.message,
+                    if finding.auto_fixable {
+                        " (auto-fixable)"
+                    } else {
+                        ""
+                    }
+                );
+                if let Some(hint) = &finding.fix_hint {
+                    line.push_str(&format!(" ({hint})"));
+                }
+                col.push(text(line))
+            });
 
     let content = column![
-        row![
-            button("Run doctor").on_press(Message::RunDoctorPressed),
-            button("Run security audit").on_press(Message::RunSecurityPressed)
-        ]
-        .spacing(10),
+        button("Run security doctor")
+            .padding([8, 12])
+            .style(iced::widget::button::primary)
+            .on_press(Message::RunDoctorPressed),
         text(state.doctor_status.clone()),
         if state.doctor_error.is_empty() {
             text("")
         } else {
-            text(state.doctor_error.clone())
+            text(state.doctor_error.clone()).color([0.95, 0.45, 0.45])
         },
-        text(format!("Doctor overall: {}", state.doctor_overall)),
-        doctor_lines,
+        text(format!(
+            "Doctor overall: {}",
+            display_posture_level(&state.doctor_overall)
+        )),
+        container(doctor_lines).padding(8).style(glass_panel),
         text(""),
         text(state.security_status.clone()),
         if state.security_error.is_empty() {
             text("")
         } else {
-            text(state.security_error.clone())
+            text(state.security_error.clone()).color([0.95, 0.45, 0.45])
         },
-        text(format!("Security overall: {}", state.security_overall)),
-        security_lines,
+        text(format!(
+            "Security overall: {}",
+            display_posture_level(&state.security_overall)
+        )),
+        container(security_lines).padding(8).style(glass_panel),
     ]
-    .spacing(8);
+    .spacing(10);
 
-    scrollable(content).height(Length::Fill).into()
+    container(scrollable(content).height(Length::Fill).width(Length::Fill))
+        .padding(10)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn view_context_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let content = column![
+        text("Context prompt").size(22),
+        text("Paste markdown text or a URL.").size(14),
+        text_editor(&state.context_editor)
+            .height(160)
+            .padding(10)
+            .on_action(Message::ContextEdited),
+        row![
+            button("Save Context")
+                .padding([8, 12])
+                .style(iced::widget::button::success)
+                .on_press(Message::SaveSettingsPressed),
+            button("Reload")
+                .padding([8, 12])
+                .on_press(Message::LoadSettingsPressed),
+        ]
+        .spacing(10),
+        text("Preview").size(14),
+        container(
+            scrollable(
+                markdown::view(
+                    state.context_preview_items.iter(),
+                    markdown_render_settings()
+                )
+                .map(Message::MarkdownLinkClicked)
+            )
+            .height(Length::Fill)
+            .width(Length::Fill)
+        )
+        .padding(10)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill),
+        if state.settings_error.is_empty() {
+            text(state.settings_status.clone()).color([0.55, 0.9, 0.65])
+        } else {
+            text(state.settings_error.clone()).color([0.95, 0.45, 0.45])
+        }
+    ]
+    .spacing(10)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    container(content)
+        .padding(10)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+fn view_heartbeat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let content = column![
+        text("Heartbeat").size(22),
+        text("Paste markdown text or a URL.").size(14),
+        text_editor(&state.heartbeat_editor)
+            .height(160)
+            .padding(10)
+            .on_action(Message::HeartbeatEdited),
+        row![
+            button("Save Heartbeat")
+                .padding([8, 12])
+                .style(iced::widget::button::success)
+                .on_press(Message::SaveSettingsPressed),
+            button("Reload")
+                .padding([8, 12])
+                .on_press(Message::LoadSettingsPressed),
+        ]
+        .spacing(10),
+        text("Preview").size(14),
+        container(
+            scrollable(
+                markdown::view(
+                    state.heartbeat_preview_items.iter(),
+                    markdown_render_settings()
+                )
+                .map(Message::MarkdownLinkClicked)
+            )
+            .height(Length::Fill)
+            .width(Length::Fill)
+        )
+        .padding(10)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill),
+        if state.settings_error.is_empty() {
+            text(state.settings_status.clone()).color([0.55, 0.9, 0.65])
+        } else {
+            text(state.settings_error.clone()).color([0.95, 0.45, 0.45])
+        }
+    ]
+    .spacing(10)
+    .width(Length::Fill)
+    .height(Length::Fill);
+
+    container(content)
+        .padding(10)
+        .style(glass_panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 async fn send_prompt(
@@ -860,23 +1601,53 @@ async fn send_prompt(
         return Err(format!("HTTP {status}: {body}"));
     }
 
-    let json = serde_json::from_str::<serde_json::Value>(&body).ok();
-    if let Some(text) = json
-        .as_ref()
-        .and_then(|v| v.get("response"))
-        .and_then(|v| v.as_str())
-    {
-        return Ok(text.to_string());
-    }
-    if let Some(text) = json
-        .as_ref()
-        .and_then(|v| v.get("output"))
-        .and_then(|v| v.as_str())
-    {
-        return Ok(text.to_string());
+    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+        if let Some(text) = extract_assistant_text(&json) {
+            return Ok(text);
+        }
     }
 
     Ok(body)
+}
+
+fn extract_assistant_text(value: &serde_json::Value) -> Option<String> {
+    if let Some(text) = value.as_str() {
+        return Some(text.to_string());
+    }
+
+    for key in ["response", "output", "text", "message", "content", "answer"] {
+        if let Some(text) = value.get(key).and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+
+    if let Some(message) = value.get("message") {
+        if let Some(text) = message.get("content").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+        if let Some(text) = message.get("text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+
+    if let Some(choice) = value
+        .get("choices")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        if let Some(text) = choice
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|v| v.as_str())
+        {
+            return Some(text.to_string());
+        }
+        if let Some(text) = choice.get("text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+    }
+
+    None
 }
 
 fn daemon_request_client() -> reqwest::Client {
@@ -887,7 +1658,41 @@ fn daemon_request_client() -> reqwest::Client {
         .expect("request client")
 }
 
-async fn check_daemon_health(daemon_url: String) -> bool {
+async fn check_daemon_health(daemon_url: String) -> DaemonHealth {
+    let normalized = normalize_daemon_url(&daemon_url);
+    if check_daemon_health_once(&normalized).await {
+        return DaemonHealth {
+            daemon_url: normalized,
+            healthy: true,
+            switched: false,
+        };
+    }
+
+    let (host, port) = parse_daemon_address(&normalized);
+    if port == 7878 && (host == "127.0.0.1" || host == "localhost") {
+        let scheme = if normalized.starts_with("https://") {
+            "https"
+        } else {
+            "http"
+        };
+        let fallback = format!("{scheme}://{host}:7979");
+        if check_daemon_health_once(&fallback).await {
+            return DaemonHealth {
+                daemon_url: fallback,
+                healthy: true,
+                switched: true,
+            };
+        }
+    }
+
+    DaemonHealth {
+        daemon_url: normalized,
+        healthy: false,
+        switched: false,
+    }
+}
+
+async fn check_daemon_health_once(daemon_url: &str) -> bool {
     let client = daemon_request_client();
     let url = format!("{}/health", daemon_url.trim_end_matches('/'));
     match client.get(url).send().await {
@@ -941,6 +1746,40 @@ async fn run_security_audit_request(
         .json::<SecurityAuditResponse>()
         .await
         .map_err(|err| err.to_string())
+}
+
+async fn fetch_solana_wallet_address(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+) -> Result<Option<String>, String> {
+    if user_id.trim().is_empty() {
+        return Ok(None);
+    }
+
+    let client = daemon_request_client();
+    let url = format!("{}/solana/wallet", daemon_url.trim_end_matches('/'));
+    let mut request = client
+        .get(url)
+        .query(&[("user_id", user_id.as_str()), ("actor", "agent")]);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if response.status().is_success() {
+        let parsed = response
+            .json::<SolanaWalletUiResponse>()
+            .await
+            .map_err(|err| err.to_string())?;
+        if parsed.address.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(parsed.address))
+        }
+    } else {
+        Ok(None)
+    }
 }
 
 async fn run_chat_history_request(
@@ -1019,6 +1858,32 @@ fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)>
         return None;
     }
 
+    let normalized = if let Some(idx) = trimmed.find("] ") {
+        let (left, right) = trimmed.split_at(idx + 2);
+        if left.starts_with('[') {
+            right.trim()
+        } else {
+            trimmed
+        }
+    } else {
+        trimmed
+    };
+
+    for (marker, role) in [
+        ("user:", MessageRole::User),
+        ("assistant:", MessageRole::Bot),
+        ("system:", MessageRole::System),
+    ] {
+        if let Some(value) = normalized.strip_prefix(marker) {
+            return Some((role, value.trim().to_string(), None));
+        }
+        let with_space = format!(" {marker}");
+        if let Some(pos) = normalized.find(&with_space) {
+            let body = normalized[(pos + with_space.len())..].trim();
+            return Some((role, body.to_string(), None));
+        }
+    }
+
     let (role, rest) = if let Some(value) = trimmed.strip_prefix("user:") {
         (MessageRole::User, value.trim())
     } else if let Some(value) = trimmed.strip_prefix("assistant:") {
@@ -1052,17 +1917,110 @@ fn format_local_time(ts: i64) -> String {
     let hour = secs / 3600;
     let minute = (secs % 3600) / 60;
     let second = secs % 60;
-    format!(
-        "{:02}:{:02}:{:02}",
-        hour,
-        minute,
-        second
-    )
+    format!("{:02}:{:02}:{:02}", hour, minute, second)
+}
+
+fn display_posture_level(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "low" | "pass" => "high",
+        "warn" | "medium" => "medium",
+        "high" | "critical" | "fail" => "low",
+        _ => "unknown",
+    }
+}
+
+fn derive_doctor_overall(checks: &[DoctorCheckResponse]) -> &'static str {
+    let has_fail = checks.iter().any(|check| check.status == "fail");
+    let has_warn = checks.iter().any(|check| check.status == "warn");
+
+    if has_fail {
+        "fail"
+    } else if has_warn {
+        "warn"
+    } else {
+        "pass"
+    }
+}
+
+fn logo_asset_path() -> Option<PathBuf> {
+    let relative = Path::new("assets/icons/hicolor/64x64/apps/butterfly-bot.png");
+    let mut candidates = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join(relative));
+    }
+    candidates.push(PathBuf::from(relative));
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join(relative));
+            if let Some(parent) = dir.parent() {
+                candidates.push(parent.join(relative));
+            }
+        }
+    }
+
+    candidates.into_iter().find(|path| path.exists())
+}
+
+fn parse_markdown_items(input: &str) -> Vec<markdown::Item> {
+    markdown::parse(input).collect()
+}
+
+fn markdown_render_settings() -> markdown::Settings {
+    let mut settings = markdown::Settings::with_text_size(15, Theme::Dark);
+    settings.h1_size = 30.0.into();
+    settings.h2_size = 25.0.into();
+    settings.h3_size = 21.0.into();
+    settings.h4_size = 18.0.into();
+    settings.h5_size = 16.0.into();
+    settings.h6_size = 15.0.into();
+    settings.code_size = 13.0.into();
+    settings.spacing = 10.0.into();
+    settings
+}
+
+fn open_uri_best_effort(uri: &str) -> std::io::Result<()> {
+    if uri.trim().is_empty() {
+        return Ok(());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(uri)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", uri])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+    }
 }
 
 async fn check_external_start_status(daemon_url: String) -> Result<String, String> {
-    if check_daemon_health(daemon_url).await {
-        Ok("External daemon healthy".to_string())
+    let health = check_daemon_health(daemon_url).await;
+    if health.healthy {
+        if health.switched {
+            Ok(format!("External daemon healthy ({})", health.daemon_url))
+        } else {
+            Ok("External daemon healthy".to_string())
+        }
     } else {
         Err("External daemon not reachable".to_string())
     }
@@ -1130,11 +2088,15 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-async fn start_local_daemon(daemon_url: String, db_path: String, token: String) -> Result<String, String> {
+async fn start_local_daemon(
+    daemon_url: String,
+    db_path: String,
+    token: String,
+) -> Result<String, String> {
     let (host, port) = parse_daemon_address(&daemon_url);
     let mut selected = None;
     for candidate in daemon_binary_candidates() {
-        if candidate.exists() || candidate == PathBuf::from("butterfly-botd") {
+        if candidate.exists() || candidate == Path::new("butterfly-botd") {
             selected = Some(candidate);
             break;
         }
@@ -1192,6 +2154,56 @@ async fn stop_local_daemon() -> Result<String, String> {
     }
 }
 
+async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
+    match stop_local_daemon().await {
+        Ok(status) if status == "Daemon stopped" => Ok(status),
+        Ok(_) | Err(_) => {
+            let (_host, port) = parse_daemon_address(&daemon_url);
+
+            #[cfg(target_os = "linux")]
+            {
+                let pattern = format!("butterfly-botd.*--port {port}");
+                let status = Command::new("pkill")
+                    .arg("-f")
+                    .arg(&pattern)
+                    .status()
+                    .map_err(|err| format!("Failed to stop daemon process: {err}"))?;
+                if !status.success() {
+                    return Err("No matching daemon process found to stop".to_string());
+                }
+
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                if !check_daemon_health_once(&daemon_url).await {
+                    return Ok("Daemon stopped".to_string());
+                }
+
+                Err("Daemon still reachable after stop attempt".to_string())
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                Err("No local daemon process to stop".to_string())
+            }
+        }
+    }
+}
+
+fn stop_local_daemon_blocking() -> Result<String, String> {
+    let mut control = daemon_control()
+        .lock()
+        .map_err(|_| "Failed to lock daemon control".to_string())?;
+    if let Some(mut daemon) = control.take() {
+        daemon
+            .child
+            .kill()
+            .map_err(|err| format!("Failed to stop daemon: {err}"))?;
+        let _ = daemon.child.wait();
+        Ok("Daemon stopped".to_string())
+    } else {
+        Ok("No local daemon process to stop".to_string())
+    }
+}
+
 fn markdown_source_from_input(value: &str) -> crate::config::MarkdownSource {
     let trimmed = value.trim();
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
@@ -1207,8 +2219,67 @@ fn markdown_source_from_input(value: &str) -> crate::config::MarkdownSource {
 
 async fn load_settings(db_path: String) -> Result<LoadedSettings, String> {
     tokio::task::spawn_blocking(move || {
-        let config = crate::config::Config::from_store(&db_path)
+        fn get_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+            let mut cursor = value;
+            for key in path {
+                cursor = cursor.get(*key)?;
+            }
+            Some(cursor)
+        }
+
+        fn parse_server_rows(value: Option<&Value>) -> Vec<UiServerRow> {
+            value
+                .and_then(|v| v.as_array())
+                .map(|servers| {
+                    servers
+                        .iter()
+                        .filter_map(|entry| {
+                            let name = entry
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                            let url = entry
+                                .get("url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string();
+                            if name.is_empty() && url.is_empty() {
+                                return None;
+                            }
+                            let (header_key, header_value) = entry
+                                .get("headers")
+                                .and_then(|v| v.as_object())
+                                .and_then(|map| {
+                                    map.iter().find_map(|(k, v)| {
+                                        v.as_str().map(|value| {
+                                            (k.trim().to_string(), value.trim().to_string())
+                                        })
+                                    })
+                                })
+                                .unwrap_or_else(|| (String::new(), String::new()));
+                            Some(UiServerRow {
+                                name,
+                                url,
+                                header_key,
+                                header_value,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        }
+
+        let mut config = crate::config::Config::from_store(&db_path)
             .map_err(|err| format!("Failed to load config: {err}"))?;
+
+        if config.provider.is_none() {
+            config.provider = Some(crate::config::ProviderConfig {
+                runtime: crate::config::RuntimeProvider::Openai,
+            });
+        }
 
         let github_pat = crate::vault::get_secret_required("github_pat")
             .map_err(|err| err.to_string())?
@@ -1219,25 +2290,65 @@ async fn load_settings(db_path: String) -> Result<LoadedSettings, String> {
         let openai_api_key = crate::vault::get_secret_required("openai_api_key")
             .map_err(|err| err.to_string())?
             .unwrap_or_default();
-        let search_api_key = crate::vault::get_secret_required("search_internet_grok_api_key")
+        let grok_api_key = crate::vault::get_secret_required("search_internet_grok_api_key")
             .map_err(|err| err.to_string())?
             .unwrap_or_default();
 
-        let openai_base_url = config
-            .openai
-            .as_ref()
-            .and_then(|v| v.base_url.clone())
-            .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-        let openai_model = config
-            .openai
-            .as_ref()
-            .and_then(|v| v.model.clone())
-            .unwrap_or_else(|| "gpt-4.1-mini".to_string());
-        let memory_enabled = config
-            .memory
-            .as_ref()
-            .and_then(|v| v.enabled)
-            .unwrap_or(true);
+        let tools = config.tools.as_ref().unwrap_or(&Value::Null);
+        let solana_rpc_endpoint = get_path(tools, &["settings", "solana", "rpc", "endpoint"])
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let search_network_allow = get_path(tools, &["settings", "permissions", "network_allow"])
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        let wakeup_poll_seconds = get_path(tools, &["wakeup", "poll_seconds"])
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60)
+            .to_string();
+        let tpm_mode = get_path(tools, &["settings", "security", "tpm_mode"])
+            .and_then(|v| v.as_str())
+            .unwrap_or("auto")
+            .to_string();
+        let mut mcp_servers = parse_server_rows(get_path(tools, &["mcp", "servers"]));
+        let mut http_call_servers = parse_server_rows(get_path(tools, &["http_call", "servers"]));
+
+        if http_call_servers.is_empty() {
+            let shared_header = get_path(tools, &["http_call", "custom_headers"])
+                .and_then(|v| v.as_object())
+                .and_then(|map| {
+                    map.iter().find_map(|(k, v)| {
+                        v.as_str()
+                            .map(|value| (k.trim().to_string(), value.trim().to_string()))
+                    })
+                })
+                .unwrap_or_else(|| (String::new(), String::new()));
+
+            if let Some(base_urls) =
+                get_path(tools, &["http_call", "base_urls"]).and_then(|v| v.as_array())
+            {
+                for (index, value) in base_urls.iter().enumerate() {
+                    if let Some(url) = value.as_str() {
+                        let trimmed = url.trim();
+                        if !trimmed.is_empty() {
+                            http_call_servers.push(UiServerRow {
+                                name: format!("server_{}", index + 1),
+                                url: trimmed.to_string(),
+                                header_key: shared_header.0.clone(),
+                                header_value: shared_header.1.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         let prompt_text = match &config.prompt_source {
             crate::config::MarkdownSource::Url { url } => url.clone(),
@@ -1248,22 +2359,21 @@ async fn load_settings(db_path: String) -> Result<LoadedSettings, String> {
             crate::config::MarkdownSource::Database { markdown } => markdown.clone(),
         };
 
-        let pretty_json = serde_json::to_string_pretty(&config)
-            .map_err(|err| format!("Failed to serialize config: {err}"))?;
-
         Ok(LoadedSettings {
             form: SettingsForm {
                 github_pat,
                 zapier_token,
                 openai_api_key,
-                search_api_key,
-                openai_base_url,
-                openai_model,
+                grok_api_key,
+                solana_rpc_endpoint,
+                search_network_allow,
+                wakeup_poll_seconds,
+                tpm_mode,
+                mcp_servers: std::mem::take(&mut mcp_servers),
+                http_call_servers: std::mem::take(&mut http_call_servers),
                 prompt_text,
                 heartbeat_text,
-                memory_enabled,
             },
-            pretty_json,
         })
     })
     .await
@@ -1283,45 +2393,221 @@ async fn save_settings(
             let mut config = crate::config::Config::from_store(&db_path)
                 .map_err(|err| format!("Failed to load config: {err}"))?;
 
-            let openai = config
-                .openai
-                .get_or_insert(crate::config::OpenAiConfig {
-                    api_key: None,
-                    model: None,
-                    base_url: None,
-                });
-            openai.base_url = Some(form.openai_base_url.clone());
-            openai.model = Some(form.openai_model.clone());
+            config.provider = Some(crate::config::ProviderConfig {
+                runtime: crate::config::RuntimeProvider::Openai,
+            });
+
+            let openai = config.openai.get_or_insert(crate::config::OpenAiConfig {
+                api_key: None,
+                model: None,
+                base_url: None,
+            });
+            openai.base_url = Some("https://api.openai.com/v1".to_string());
+            openai.model = Some("gpt-4.1-mini".to_string());
             openai.api_key = None;
 
-            let memory = config
-                .memory
-                .get_or_insert(crate::config::MemoryConfig {
-                    enabled: Some(form.memory_enabled),
-                    sqlite_path: Some(db_path.clone()),
-                    summary_model: None,
-                    embedding_model: None,
-                    rerank_model: None,
-                    openai: None,
-                    context_embed_enabled: Some(false),
-                    summary_threshold: None,
-                    retention_days: None,
-                });
-            memory.enabled = Some(form.memory_enabled);
+            let memory = config.memory.get_or_insert(crate::config::MemoryConfig {
+                enabled: Some(true),
+                sqlite_path: Some(db_path.clone()),
+                summary_model: None,
+                embedding_model: None,
+                rerank_model: None,
+                openai: None,
+                context_embed_enabled: Some(false),
+                summary_threshold: None,
+                retention_days: None,
+            });
+            memory.enabled = Some(true);
+            memory.summary_model = Some("gpt-4.1-mini".to_string());
+            memory.embedding_model = Some("text-embedding-3-small".to_string());
+            memory.rerank_model = Some("gpt-4.1-mini".to_string());
+            memory.openai = None;
 
             config.prompt_source = markdown_source_from_input(&form.prompt_text);
             config.heartbeat_source = markdown_source_from_input(&form.heartbeat_text);
 
             crate::vault::set_secret_required("github_pat", &form.github_pat)
-                .map_err(|err| format!("Failed to store GitHub token: {err}"))?;
+                .map_err(|err| format!("Failed to store GitHub PAT: {err}"))?;
             crate::vault::set_secret_required("zapier_token", &form.zapier_token)
                 .map_err(|err| format!("Failed to store Zapier token: {err}"))?;
             crate::vault::set_secret_required("openai_api_key", &form.openai_api_key)
                 .map_err(|err| format!("Failed to store OpenAI API key: {err}"))?;
-            crate::vault::set_secret_required("coding_openai_api_key", &form.openai_api_key)
-                .map_err(|err| format!("Failed to store coding API key: {err}"))?;
-            crate::vault::set_secret_required("search_internet_grok_api_key", &form.search_api_key)
+            crate::vault::set_secret_required("search_internet_grok_api_key", &form.grok_api_key)
                 .map_err(|err| format!("Failed to store search API key: {err}"))?;
+
+            let tools = config
+                .tools
+                .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let tools_obj = tools
+                .as_object_mut()
+                .ok_or_else(|| "tools must be an object".to_string())?;
+            {
+                let settings = tools_obj
+                    .entry("settings")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let settings_obj = settings
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings must be an object".to_string())?;
+                let permissions = settings_obj
+                    .entry("permissions")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let permissions_obj = permissions
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings.permissions must be an object".to_string())?;
+                permissions_obj.insert("default_deny".to_string(), Value::Bool(true));
+                let allow_items = form
+                    .search_network_allow
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| Value::String(s.to_string()))
+                    .collect::<Vec<_>>();
+                permissions_obj.insert("network_allow".to_string(), Value::Array(allow_items));
+
+                let security = settings_obj
+                    .entry("security")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let security_obj = security
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings.security must be an object".to_string())?;
+                security_obj.insert("tpm_mode".to_string(), Value::String(form.tpm_mode.clone()));
+
+                let solana = settings_obj
+                    .entry("solana")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let solana_obj = solana
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings.solana must be an object".to_string())?;
+                let rpc = solana_obj
+                    .entry("rpc")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let rpc_obj = rpc
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings.solana.rpc must be an object".to_string())?;
+                rpc_obj.insert(
+                    "endpoint".to_string(),
+                    Value::String(form.solana_rpc_endpoint.clone()),
+                );
+            }
+            std::env::set_var("BUTTERFLY_TPM_MODE", &form.tpm_mode);
+
+            let wakeup = tools_obj
+                .entry("wakeup")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let wakeup_obj = wakeup
+                .as_object_mut()
+                .ok_or_else(|| "tools.wakeup must be an object".to_string())?;
+            let poll_seconds = form.wakeup_poll_seconds.trim().parse::<u64>().unwrap_or(60);
+            wakeup_obj.insert(
+                "poll_seconds".to_string(),
+                Value::Number(serde_json::Number::from(poll_seconds)),
+            );
+
+            let search_internet = tools_obj
+                .entry("search_internet")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let search_internet_obj = search_internet
+                .as_object_mut()
+                .ok_or_else(|| "tools.search_internet must be an object".to_string())?;
+            let search_settings = search_internet_obj
+                .entry("settings")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let search_settings_obj = search_settings
+                .as_object_mut()
+                .ok_or_else(|| "tools.search_internet.settings must be an object".to_string())?;
+            search_settings_obj.insert("provider".to_string(), Value::String("grok".to_string()));
+
+            let mcp = tools_obj
+                .entry("mcp")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let mcp_obj = mcp
+                .as_object_mut()
+                .ok_or_else(|| "tools.mcp must be an object".to_string())?;
+            let mcp_servers = form
+                .mcp_servers
+                .iter()
+                .filter_map(|entry| {
+                    let name = entry.name.trim();
+                    let url = entry.url.trim();
+                    if name.is_empty() || url.is_empty() {
+                        return None;
+                    }
+                    let mut server = serde_json::Map::new();
+                    server.insert("name".to_string(), Value::String(name.to_string()));
+                    server.insert("url".to_string(), Value::String(url.to_string()));
+                    let header_key = entry.header_key.trim();
+                    let header_value = entry.header_value.trim();
+                    if !header_key.is_empty() && !header_value.is_empty() {
+                        let mut headers = serde_json::Map::new();
+                        headers.insert(
+                            header_key.to_string(),
+                            Value::String(header_value.to_string()),
+                        );
+                        server.insert("headers".to_string(), Value::Object(headers));
+                    }
+                    Some(Value::Object(server))
+                })
+                .collect::<Vec<_>>();
+            mcp_obj.insert("servers".to_string(), Value::Array(mcp_servers));
+
+            let coding = tools_obj
+                .entry("coding")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let coding_obj = coding
+                .as_object_mut()
+                .ok_or_else(|| "tools.coding must be an object".to_string())?;
+            coding_obj.insert(
+                "model".to_string(),
+                Value::String("gpt-5.2-codex".to_string()),
+            );
+            coding_obj.insert(
+                "base_url".to_string(),
+                Value::String("https://api.openai.com/v1".to_string()),
+            );
+
+            let http_call = tools_obj
+                .entry("http_call")
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            let http_call_obj = http_call
+                .as_object_mut()
+                .ok_or_else(|| "tools.http_call must be an object".to_string())?;
+            let http_servers = form
+                .http_call_servers
+                .iter()
+                .filter_map(|entry| {
+                    let name = entry.name.trim();
+                    let url = entry.url.trim();
+                    if name.is_empty() || url.is_empty() {
+                        return None;
+                    }
+                    let mut server = serde_json::Map::new();
+                    server.insert("name".to_string(), Value::String(name.to_string()));
+                    server.insert("url".to_string(), Value::String(url.to_string()));
+                    let header_key = entry.header_key.trim();
+                    let header_value = entry.header_value.trim();
+                    if !header_key.is_empty() && !header_value.is_empty() {
+                        let mut headers = serde_json::Map::new();
+                        headers.insert(
+                            header_key.to_string(),
+                            Value::String(header_value.to_string()),
+                        );
+                        server.insert("headers".to_string(), Value::Object(headers));
+                    }
+                    Some(Value::Object(server))
+                })
+                .collect::<Vec<_>>();
+            http_call_obj.insert("servers".to_string(), Value::Array(http_servers.clone()));
+
+            let base_urls = http_servers
+                .iter()
+                .filter_map(|value| {
+                    value
+                        .get("url")
+                        .and_then(|url| url.as_str())
+                        .map(|url| Value::String(url.to_string()))
+                })
+                .collect::<Vec<_>>();
+            http_call_obj.insert("base_urls".to_string(), Value::Array(base_urls));
 
             crate::config_store::save_config(&db_path, &config)
                 .map_err(|err| format!("Failed to save config: {err}"))?;
@@ -1333,7 +2619,10 @@ async fn save_settings(
     .map_err(|err| err.to_string())??;
 
     let pretty = serde_json::to_string_pretty(&config).map_err(|err| err.to_string())?;
-    let _ = tokio::task::spawn_blocking(move || crate::vault::set_secret_required("app_config_json", &pretty)).await;
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::vault::set_secret_required("app_config_json", &pretty)
+    })
+    .await;
 
     let client = daemon_request_client();
     let url = format!("{}/reload_config", daemon_url.trim_end_matches('/'));

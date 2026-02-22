@@ -7,8 +7,8 @@ pub mod db;
 pub mod domains;
 pub mod error;
 pub mod factories;
-pub mod interfaces;
 pub mod iced_ui;
+pub mod interfaces;
 pub mod logging;
 pub mod planning;
 pub mod plugins;
@@ -23,7 +23,7 @@ pub mod solana_rpc;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
-#[path = "ui_compat.rs"]
+#[path = "ui_iced.rs"]
 pub mod ui;
 pub mod vault;
 pub mod wakeup;

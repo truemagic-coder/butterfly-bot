@@ -28,7 +28,7 @@ async fn config_from_file_and_factory_errors() {
     let no_key_with_base_url = Config {
         provider: None,
         openai: Some(OpenAiConfig {
-            api_key: None,
+            api_key: Some("dummy".to_string()),
             model: None,
             base_url: Some("http://localhost:11434/v1".to_string()),
         }),

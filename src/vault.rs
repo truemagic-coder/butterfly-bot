@@ -128,7 +128,10 @@ fn macos_keychain_set_required(name: &str, value: &str) -> Result<()> {
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let message = if stderr.is_empty() {
-        format!("security add-generic-password failed with status {}", output.status)
+        format!(
+            "security add-generic-password failed with status {}",
+            output.status
+        )
     } else {
         stderr
     };
@@ -190,57 +193,82 @@ pub fn set_secret(name: &str, value: &str) -> Result<()> {
 
 pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
     if keyring_disabled() {
-        return Err(ButterflyBotError::SecurityStorage(
-            "Keyring is disabled (BUTTERFLY_BOT_DISABLE_KEYRING); cannot store required secret"
-                .to_string(),
-        ));
+        write_secret_fallback_file(name, value);
+        return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
-        return macos_keychain_set_required(name, value);
+        match macos_keychain_set_required(name, value) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    write_secret_fallback_file(name, value);
+                    return Ok(());
+                }
+                return Err(err);
+            }
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-    let entry = keyring::Entry::new(SERVICE, name)
-        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
-    entry
-        .set_password(value)
-        .map_err(|err| ButterflyBotError::SecurityStorage(err.to_string()))?;
-    Ok(())
+        let entry = keyring::Entry::new(SERVICE, name)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.set_password(value) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    write_secret_fallback_file(name, value);
+                    Ok(())
+                } else {
+                    Err(ButterflyBotError::SecurityStorage(err.to_string()))
+                }
+            }
+        }
     }
 }
 
 pub fn get_secret_required(name: &str) -> Result<Option<String>> {
     if keyring_disabled() {
-        return Err(ButterflyBotError::SecurityStorage(
-            "Keyring is disabled (BUTTERFLY_BOT_DISABLE_KEYRING); cannot read required secret"
-                .to_string(),
-        ));
+        return Ok(read_secret_fallback_file(name));
     }
 
     #[cfg(target_os = "macos")]
     {
-        return macos_keychain_get_required(name);
+        match macos_keychain_get_required(name) {
+            Ok(value) => return Ok(value.or_else(|| read_secret_fallback_file(name))),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    return Ok(read_secret_fallback_file(name));
+                }
+                return Err(err);
+            }
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
-    let entry = keyring::Entry::new(SERVICE, name)
-        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
-    match entry.get_password() {
-        Ok(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(trimmed.to_string()))
+        let entry = keyring::Entry::new(SERVICE, name)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            Err(keyring::Error::NoEntry) => Ok(read_secret_fallback_file(name)),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Err(ButterflyBotError::SecurityStorage(err.to_string()))
+                }
             }
         }
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(err) => Err(ButterflyBotError::SecurityStorage(err.to_string())),
-    }
     }
 }
 

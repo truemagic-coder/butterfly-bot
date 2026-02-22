@@ -458,7 +458,7 @@ async fn daemon_factory_reset_requires_auth_and_returns_default_config() {
         .and_then(|cfg| cfg.get("openai"))
         .and_then(|openai| openai.get("base_url"))
         .and_then(|base_url| base_url.as_str());
-    assert_eq!(openai_base_url, Some("http://localhost:11434/v1"));
+    assert_eq!(openai_base_url, Some("https://api.openai.com/v1"));
 
     let prompt_source_type = value
         .get("config")

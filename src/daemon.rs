@@ -1320,41 +1320,6 @@ async fn run_security_audit_checks(state: &AppState) -> Vec<SecurityAuditFinding
                 false,
             ));
 
-            let has_inline_api_key = config
-                .openai
-                .as_ref()
-                .and_then(|openai| openai.api_key.as_ref())
-                .map(|key| !key.trim().is_empty())
-                .unwrap_or(false)
-                || config
-                    .memory
-                    .as_ref()
-                    .and_then(|memory| memory.openai.as_ref())
-                    .and_then(|openai| openai.api_key.as_ref())
-                    .map(|key| !key.trim().is_empty())
-                    .unwrap_or(false);
-
-            if has_inline_api_key {
-                findings.push(security_finding(
-                    "inline_api_keys",
-                    "high",
-                    "warn",
-                    "API keys appear inline in config JSON; prefer keyring-backed secrets."
-                        .to_string(),
-                    Some("Remove inline keys and set secrets via `butterfly-bot secrets-set`."),
-                    false,
-                ));
-            } else {
-                findings.push(security_finding(
-                    "inline_api_keys",
-                    "low",
-                    "pass",
-                    "No inline API keys detected in loaded config.".to_string(),
-                    None,
-                    false,
-                ));
-            }
-
             let root = json!({ "tools": config.tools.clone().unwrap_or(Value::Null) });
             let sandbox = SandboxSettings::from_root_config(&root);
 
@@ -1497,16 +1462,6 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
                 }
             }
 
-            match check_provider_health(&config).await {
-                Ok(check) => checks.push(check),
-                Err(err) => checks.push(doctor_check(
-                    "provider_health",
-                    "fail",
-                    format!("Provider health check failed: {err}"),
-                    Some("Verify provider base_url/model and network access."),
-                )),
-            }
-
             let mode = crate::security::tpm_provider::tpm_mode();
             let tpm_available = crate::security::tpm_provider::tpm_available();
             if tpm_available {
@@ -1563,12 +1518,6 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
             ));
             checks.push(doctor_check(
                 "vault_resolution",
-                "warn",
-                "Skipped because config could not be loaded.".to_string(),
-                Some("Fix config_store check first."),
-            ));
-            checks.push(doctor_check(
-                "provider_health",
                 "warn",
                 "Skipped because config could not be loaded.".to_string(),
                 Some("Fix config_store check first."),
@@ -1653,65 +1602,6 @@ async fn run_doctor_checks(state: &AppState) -> Vec<DoctorCheck> {
     }
 
     checks
-}
-
-async fn check_provider_health(config: &Config) -> Result<DoctorCheck> {
-    let provider = config.openai.clone().or_else(|| {
-        config
-            .memory
-            .as_ref()
-            .and_then(|memory| memory.openai.clone())
-    });
-
-    let Some(provider) = provider else {
-        return Ok(doctor_check(
-            "provider_health",
-            "warn",
-            "No provider config found in openai or memory.openai.".to_string(),
-            Some("Set provider base_url/model in Config tab."),
-        ));
-    };
-
-    let base_url = provider.base_url.unwrap_or_default();
-    if base_url.trim().is_empty() {
-        return Ok(doctor_check(
-            "provider_health",
-            "fail",
-            "Provider base_url is empty.".to_string(),
-            Some("Set openai.base_url (or memory.openai.base_url)."),
-        ));
-    }
-
-    let models_url = format!("{}/models", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let result = tokio::time::timeout(Duration::from_secs(3), client.get(&models_url).send()).await;
-
-    match result {
-        Ok(Ok(response)) if response.status().is_success() => Ok(doctor_check(
-            "provider_health",
-            "pass",
-            format!("Provider responded successfully at {models_url}"),
-            None,
-        )),
-        Ok(Ok(response)) => Ok(doctor_check(
-            "provider_health",
-            "warn",
-            format!("Provider reachable but returned HTTP {}", response.status()),
-            Some("Check provider auth/token and model availability."),
-        )),
-        Ok(Err(err)) => Ok(doctor_check(
-            "provider_health",
-            "fail",
-            format!("Provider request failed: {err}"),
-            Some("Check base_url/network and that provider service is running."),
-        )),
-        Err(_) => Ok(doctor_check(
-            "provider_health",
-            "fail",
-            "Provider request timed out after 3s.".to_string(),
-            Some("Check provider responsiveness and network routing."),
-        )),
-    }
 }
 
 async fn process_text(

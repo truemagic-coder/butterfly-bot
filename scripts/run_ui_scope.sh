@@ -10,7 +10,7 @@ if ! command -v systemd-run >/dev/null 2>&1; then
 fi
 
 DAEMON_UNIT="butterfly-bot-daemon"
-UI_UNIT="butterfly-bot-ui"
+UI_UNIT="butterfly-bot"
 SLICE_UNIT="butterfly-bot.slice"
 
 if command -v systemctl >/dev/null 2>&1; then

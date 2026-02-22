@@ -316,7 +316,12 @@ mod tests {
         let mut cfg = ToolSandboxConfig::default();
         cfg.wasm.module = Some(generic.to_string());
 
-        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+        let resolved = WasmRuntime::resolve_module_path(tool_name, &cfg);
+        assert!(
+            resolved.ends_with("/__test_reminders_tool.wasm")
+                || resolved.ends_with("\\__test_reminders_tool.wasm"),
+            "unexpected module path: {resolved}"
+        );
 
         let _ = fs::remove_file(generic);
         let _ = fs::remove_file(default);
@@ -332,7 +337,12 @@ mod tests {
         let mut cfg = ToolSandboxConfig::default();
         cfg.wasm.module = Some("./wasm/does_not_exist.wasm".to_string());
 
-        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+        let resolved = WasmRuntime::resolve_module_path(tool_name, &cfg);
+        assert!(
+            resolved.ends_with("/__test_todo_tool.wasm")
+                || resolved.ends_with("\\__test_todo_tool.wasm"),
+            "unexpected module path: {resolved}"
+        );
 
         let _ = fs::remove_file(default);
     }

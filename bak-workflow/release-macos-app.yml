@@ -37,9 +37,6 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-macos-app-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --locked
-
       - name: Import Apple signing certificate
         if: env.APPLE_CERTIFICATE_BASE64 != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_KEYCHAIN_PASSWORD != ''
         run: |

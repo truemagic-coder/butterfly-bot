@@ -31,12 +31,8 @@ jobs:
             libclang-dev \
             protobuf-compiler \
             libprotobuf-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
             libsecret-1-dev \
             libnotify-dev \
-            libxdo-dev \
             patchelf \
             fakeroot \
             dpkg-dev
@@ -50,15 +46,8 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-deb-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install Dioxus CLI
-        run: cargo install dioxus-cli --locked
-
       - name: Bundle preflight
-        run: |
-          set -euo pipefail
-          test -f Dioxus.toml
-          test -f assets/icon.png
-          echo "Dioxus config and icon found"
+        run: test -f assets/icon.png
 
       - name: Build Debian package
         run: |
@@ -66,8 +55,8 @@ jobs:
           if ! ./scripts/build-deb.sh; then
             echo "==== Debug: dist tree ===="
             find dist -maxdepth 6 -print 2>/dev/null || true
-            echo "==== Debug: target/dx tree ===="
-            find target/dx -maxdepth 6 -print 2>/dev/null || true
+            echo "==== Debug: target/release tree ===="
+            find target/release -maxdepth 4 -print 2>/dev/null || true
             exit 1
           fi
 
@@ -76,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           DEB_FILE="$(find "$GITHUB_WORKSPACE" -type f -name '*.deb' \
-            \( -path '*/dist/*' -o -path '*/target/dx/*' -o -path '*/target/release/bundle/*' -o -path '*/target/*' \) \
+            \( -path '*/dist/*' -o -path '*/target/*' \) \
             -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
           if [[ -z "$DEB_FILE" ]]; then
             echo "No .deb file found" >&2

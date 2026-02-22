@@ -9,11 +9,10 @@ class ButterflyBot < Formula
   depends_on "protobuf" => :build
 
   def install
-    system "cargo", "build", "--release", "--locked", "--bin", "butterfly-bot", "--bin", "butterfly-botd", "--bin", "butterfly-bot-ui"
+    system "cargo", "build", "--release", "--locked", "--bin", "butterfly-bot", "--bin", "butterfly-botd"
 
     libexec.install "target/release/butterfly-bot"
     libexec.install "target/release/butterfly-botd"
-    libexec.install "target/release/butterfly-bot-ui"
 
     wasm_modules = Dir["wasm/*_tool.wasm"]
     odie "No wasm tool modules found under wasm/" if wasm_modules.empty?
@@ -59,37 +58,15 @@ class ButterflyBot < Formula
       exec "#{libexec}/butterfly-botd" --db "${BUTTERFLY_BOT_DB}" "$@"
     EOS
 
-    (bin/"butterfly-bot-ui").write <<~EOS
-      #!/bin/bash
-      set -euo pipefail
-
-      APP_ROOT="${HOME}/.butterfly-bot"
-      mkdir -p "${APP_ROOT}" "${APP_ROOT}/data"
-
-      if [[ -e "${APP_ROOT}/wasm" && ! -L "${APP_ROOT}/wasm" ]]; then
-        rm -rf "${APP_ROOT}/wasm"
-      fi
-      if [[ ! -L "${APP_ROOT}/wasm" ]]; then
-        ln -sfn "#{pkgshare}" "${APP_ROOT}/wasm"
-      fi
-
-      cd "${APP_ROOT}"
-      export BUTTERFLY_BOT_DB="${BUTTERFLY_BOT_DB:-${APP_ROOT}/data/butterfly-bot.db}"
-
-      exec "#{libexec}/butterfly-bot-ui" --db "${BUTTERFLY_BOT_DB}" "$@"
-    EOS
-
     chmod 0755, bin/"butterfly-bot"
     chmod 0755, bin/"butterfly-botd"
-    chmod 0755, bin/"butterfly-bot-ui"
   end
 
   def caveats
     <<~EOS
       Installed commands:
-        butterfly-bot    (primary CLI)
+        butterfly-bot    (primary desktop app)
         butterfly-botd   (daemon launcher)
-        butterfly-bot-ui
 
       Runtime data directory:
         ~/.butterfly-bot
