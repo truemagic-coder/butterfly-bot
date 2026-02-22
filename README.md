@@ -26,18 +26,15 @@ Get your Zapier key here: [https://zapier.com/mcp](https://zapier.com/mcp) and s
 
 Download the `deb` file for Ubuntu from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
 
-#### Other
+#### Mac
 
-`cargo install butterfly-bot`
-
-`butterfly-botd` now auto-provisions bundled WASM tool modules and smart-refreshes them on upgrades (to `$XDG_DATA_HOME/butterfly-bot/wasm` or `~/.local/share/butterfly-bot/wasm` on Linux, `~/Library/Application Support/butterfly-bot/wasm` on macOS, and `%APPDATA%/butterfly-bot/wasm` on Windows).
-
+Download the `app` file for Mac from the latest [GitHub Release](https://github.com/truemagic-coder/butterfly-bot/releases)
 
 ### Why users pick it:
 
 - **Fast value:** works out-of-the-box with default settings.
 - **OpenAI-first:** optimized for OpenAI routing and coding with simple key-based setup.
-- **UI-first:** polished desktop app with chat, AI activity, and settings.
+- **UI-first:** polished desktop app with collaboration-first workflow tabs for execution, planning, and chat.
 - **Automation:** full toolset provided for your always-on agent.
 - **Integrations:** Zapier-first MCP integration model for connecting your existing SaaS stack in minutes.
 - **Security:** WASM-only execution for tools plus OS keychain-backed secrets - no plaintext secrets or insecure tools.
@@ -65,6 +62,21 @@ If you only configure one thing, configure Zapier:
 That single token unlocks most production workflows because Butterfly Bot can route actions through Zapier's connected apps (email, calendar, tasks, CRM, docs, alerts, and more).
 
 Want a fast start? Use the ready-made templates in [examples/](examples/) and paste a `context.md` + `heartbeat.md` pair into the app.
+
+## Human ↔ Agent collaboration tabs
+
+Butterfly Bot now separates conversation from execution so humans and agents can coordinate in one shared workflow surface:
+
+- **Inbox** - actionable items and ownership handoffs.
+- **Kanban** - stage-based workflow overview.
+- **Dependencies** - blocker and prerequisite visibility.
+- **Gantt** - estimate-based timeline visualization.
+- **Audit** - authoritative lifecycle and state-transition ledger.
+- **Chat** - human ↔ agent conversation only.
+- **Activity** - operational/system timeline updates.
+- **Config / Diagnostics / Context / Heartbeat** - setup, runtime health, and agent behavior controls.
+
+This keeps work artifacts, operational evidence, and chat clearly separated while still connected through shared item references and lifecycle state.
 
 ## Built for the money layer: Agentic Wallet + x402 Payments
 
