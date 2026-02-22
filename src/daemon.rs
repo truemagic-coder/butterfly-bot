@@ -2822,29 +2822,45 @@ fn send_desktop_notification(summary: &str, body: &str) {
     #[cfg(target_os = "macos")]
     {
         let icon_path = resolve_notification_icon_path();
-
-        // Prefer terminal-notifier when available because it supports explicit app icons.
         let mut cmd = std::process::Command::new("terminal-notifier");
-        cmd.arg("-title").arg(summary).arg("-message").arg(body);
+        cmd.arg("-title")
+            .arg(summary)
+            .arg("-message")
+            .arg(body);
         if let Some(icon) = &icon_path {
             cmd.arg("-appIcon").arg(icon);
         }
 
-        let used_terminal_notifier = cmd.status().map(|status| status.success()).unwrap_or(false);
-
-        if !used_terminal_notifier {
-            let escaped_summary = summary.replace('\\', "\\\\").replace('"', "\\\"");
-            let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
-            let script = format!(
-                "display notification \"{}\" with title \"{}\"",
-                escaped_body, escaped_summary
-            );
-            if let Err(err) = std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(script)
-                .status()
-            {
-                tracing::warn!(error = %err, "Desktop notification failed");
+        match cmd.output() {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                tracing::warn!(
+                    code = output.status.code(),
+                    stderr = %String::from_utf8_lossy(&output.stderr),
+                    "Desktop notification failed via terminal-notifier; trying notify-rust fallback"
+                );
+                let mut notification = notify_rust::Notification::new();
+                notification.summary(summary).body(body);
+                if let Some(icon) = &icon_path {
+                    notification.icon(icon);
+                }
+                if let Err(err) = notification.show() {
+                    tracing::warn!(error = %err, "Desktop notification fallback failed");
+                }
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "Desktop notification failed (terminal-notifier not available); trying notify-rust fallback"
+                );
+                let mut notification = notify_rust::Notification::new();
+                notification.summary(summary).body(body);
+                if let Some(icon) = &icon_path {
+                    notification.icon(icon);
+                }
+                if let Err(fallback_err) = notification.show() {
+                    tracing::warn!(error = %fallback_err, "Desktop notification fallback failed");
+                }
             }
         }
     }

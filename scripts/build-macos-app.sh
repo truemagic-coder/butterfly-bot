@@ -9,6 +9,11 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if ! command -v terminal-notifier >/dev/null 2>&1; then
+  echo "warning: terminal-notifier is not installed; notifications will use fallback backend." >&2
+  echo "recommended: brew install terminal-notifier" >&2
+fi
+
 ICON_MASTER="$ROOT_DIR/assets/icons/hicolor/512x512/apps/butterfly-bot.png"
 if [[ ! -f "$ICON_MASTER" ]]; then
   ICON_MASTER="$ROOT_DIR/assets/icon.png"
@@ -34,7 +39,7 @@ echo "==> Building WASM tool modules"
 ./scripts/build_wasm_tools.sh
 
 echo "==> Building release UI binary"
-cargo build --release --bin butterfly-bot "$@"
+cargo build --release --bin butterfly-bot --bin butterfly-botd "$@"
 
 APP_NAME="Butterfly Bot"
 APP_BUNDLE="$ROOT_DIR/dist/${APP_NAME}.app"
@@ -44,9 +49,12 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$ROOT_DIR/target/release/butterfly-bot" "$APP_BUNDLE/Contents/MacOS/butterfly-bot"
 chmod 0755 "$APP_BUNDLE/Contents/MacOS/butterfly-bot"
+cp "$ROOT_DIR/target/release/butterfly-botd" "$APP_BUNDLE/Contents/MacOS/butterfly-botd"
+chmod 0755 "$APP_BUNDLE/Contents/MacOS/butterfly-botd"
 
 ICONSET_DIR="$ROOT_DIR/dist/butterfly-bot.iconset"
 ICNS_PATH="$APP_BUNDLE/Contents/Resources/butterfly-bot.icns"
+PNG_NOTIFICATION_ICON="$APP_BUNDLE/Contents/Resources/butterfly-bot.png"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
 
@@ -69,6 +77,9 @@ generate_icon 512 icon_512x512.png
 generate_icon 1024 icon_512x512@2x.png
 iconutil -c icns "$ICONSET_DIR" -o "$ICNS_PATH"
 rm -rf "$ICONSET_DIR"
+
+echo "==> Embedding notification PNG icon"
+sips -s format png -z 256 256 "$ICON_MASTER" --out "$PNG_NOTIFICATION_ICON" >/dev/null
 
 PLIST_PATH="$APP_BUNDLE/Contents/Info.plist"
 cat > "$PLIST_PATH" <<EOF
@@ -127,4 +138,4 @@ ditto -c -k --sequesterRsrc --keepParent "$EXPECTED_APP" "$EXPECTED_ZIP"
 
 echo "Built app: $EXPECTED_APP"
 echo "Built zip: $EXPECTED_ZIP"
-echo "Open app with: open \"$EXPECTED_APP\""
+echo "Open app with: open -n \"$EXPECTED_APP\""

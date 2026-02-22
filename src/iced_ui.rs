@@ -304,6 +304,14 @@ fn app_title(_state: &ButterflyIcedApp) -> String {
     "Butterfly Bot".to_string()
 }
 
+fn build_stamp() -> String {
+    format!(
+        "v{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("BUTTERFLY_GIT_SHA").unwrap_or("dev")
+    )
+}
+
 fn app_theme(_state: &ButterflyIcedApp) -> Theme {
     Theme::Dark
 }
@@ -937,9 +945,9 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
                 button(text(tab.label()).size(14))
                     .padding([8, 14])
                     .style(if active {
-                        iced::widget::button::primary
+                        rounded_primary_button
                     } else {
-                        iced::widget::button::secondary
+                        rounded_secondary_button
                     })
                     .on_press(Message::TabSelected(tab)),
             )
@@ -948,16 +956,21 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
     let daemon_controls = row![
         button(if state.daemon_starting { "⏳" } else { "▶" })
             .padding([8, 12])
+            .style(rounded_primary_button)
             .on_press_maybe(
                 (!state.daemon_starting && !state.daemon_running)
                     .then_some(Message::StartDaemonPressed)
             ),
-        button("⏹").padding([8, 12]).on_press_maybe(
-            (!state.daemon_starting && state.daemon_running).then_some(Message::StopDaemonPressed)
-        ),
+        button("⏹")
+            .padding([8, 12])
+            .style(rounded_primary_button)
+            .on_press_maybe(
+                (!state.daemon_starting && state.daemon_running)
+                    .then_some(Message::StopDaemonPressed)
+            ),
         button("🗑")
             .padding([8, 12])
-            .style(iced::widget::button::danger)
+            .style(rounded_danger_button)
             .on_press(Message::ClearHistoryPressed),
     ]
     .spacing(8)
@@ -998,7 +1011,8 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
             logo,
             column![
                 text("Butterfly Bot").size(30),
-                text("Personal-ops assistant").size(14)
+                text("Personal-ops assistant").size(14),
+                text(build_stamp()).size(12)
             ]
             .spacing(2),
             Space::new().width(Length::Fill),
@@ -1077,6 +1091,40 @@ fn glass_bot_bubble(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
+fn rounded_button_style(base: iced::widget::button::Style) -> iced::widget::button::Style {
+    let mut style = base;
+    style.border.radius = 999.0.into();
+    style
+}
+
+fn rounded_secondary_button(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    rounded_button_style(iced::widget::button::secondary(theme, status))
+}
+
+fn rounded_primary_button(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    rounded_button_style(iced::widget::button::primary(theme, status))
+}
+
+fn rounded_success_button(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    rounded_button_style(iced::widget::button::success(theme, status))
+}
+
+fn rounded_danger_button(
+    theme: &Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    rounded_button_style(iced::widget::button::danger(theme, status))
+}
+
 fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
     let list = state
         .chat_messages
@@ -1096,6 +1144,7 @@ fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                             .padding(6)
                             .width(30)
                             .height(30)
+                            .style(rounded_primary_button)
                             .on_press(Message::CopyToClipboard(msg.text.clone()))
                     ]
                     .align_y(iced::Alignment::Center),
@@ -1122,7 +1171,7 @@ fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             .width(Length::Fill),
         button(if state.busy { "Sending..." } else { "Send" })
             .padding([10, 16])
-            .style(iced::widget::button::primary)
+            .style(rounded_primary_button)
             .on_press_maybe((!state.busy).then_some(Message::SendPressed)),
     ]
     .spacing(10)
@@ -1170,6 +1219,7 @@ fn view_activity_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                             .padding(6)
                             .width(30)
                             .height(30)
+                            .style(rounded_primary_button)
                             .on_press(Message::CopyToClipboard(msg.text.clone()))
                     ]
                     .align_y(iced::Alignment::Center),
@@ -1204,7 +1254,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                             .width(Length::FillPortion(3)),
                         button("Remove")
                             .padding([8, 10])
-                            .style(iced::widget::button::danger)
+                            .style(rounded_danger_button)
                             .on_press(Message::RemoveMcpServer(index)),
                     ]
                     .spacing(8)
@@ -1245,7 +1295,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                             .width(Length::FillPortion(3)),
                         button("Remove")
                             .padding([8, 10])
-                            .style(iced::widget::button::danger)
+                            .style(rounded_danger_button)
                             .on_press(Message::RemoveHttpServer(index)),
                     ]
                     .spacing(8)
@@ -1278,7 +1328,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                 Space::new().width(Length::Fill),
                 button("Save")
                     .padding([8, 12])
-                    .style(iced::widget::button::success)
+                    .style(rounded_success_button)
                     .on_press(Message::SaveSettingsPressed)
             ]
         .spacing(10)
@@ -1320,6 +1370,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             mcp_rows,
             button("+ Add MCP Server")
                 .padding([8, 12])
+                .style(rounded_primary_button)
                 .on_press(Message::AddMcpServer),
         ]
         .spacing(8))
@@ -1330,6 +1381,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             http_rows,
             button("+ Add HTTP Server")
                 .padding([8, 12])
+                .style(rounded_primary_button)
                 .on_press(Message::AddHttpServer),
         ]
         .spacing(8))
@@ -1366,6 +1418,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                         .padding(6)
                         .width(30)
                         .height(30)
+                        .style(rounded_primary_button)
                         .on_press(Message::CopyToClipboard(address.clone())),
                 ]
                 .spacing(8)
@@ -1376,6 +1429,7 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                     Space::new().width(Length::Fill),
                     button("Refresh")
                         .padding([6, 10])
+                        .style(rounded_primary_button)
                         .on_press(Message::RefreshSolanaWallet),
                 ]
                 .spacing(8)
@@ -1448,7 +1502,7 @@ fn view_diagnostics_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
     let content = column![
         button("Run security doctor")
             .padding([8, 12])
-            .style(iced::widget::button::primary)
+            .style(rounded_primary_button)
             .on_press(Message::RunDoctorPressed),
         text(state.doctor_status.clone()),
         if state.doctor_error.is_empty() {
@@ -1495,10 +1549,11 @@ fn view_context_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
         row![
             button("Save Context")
                 .padding([8, 12])
-                .style(iced::widget::button::success)
+                .style(rounded_success_button)
                 .on_press(Message::SaveSettingsPressed),
             button("Reload")
                 .padding([8, 12])
+                .style(rounded_primary_button)
                 .on_press(Message::LoadSettingsPressed),
         ]
         .spacing(10),
@@ -1547,10 +1602,11 @@ fn view_heartbeat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
         row![
             button("Save Heartbeat")
                 .padding([8, 12])
-                .style(iced::widget::button::success)
+                .style(rounded_success_button)
                 .on_press(Message::SaveSettingsPressed),
             button("Reload")
                 .padding([8, 12])
+                .style(rounded_primary_button)
                 .on_press(Message::LoadSettingsPressed),
         ]
         .spacing(10),
@@ -1675,6 +1731,14 @@ async fn check_daemon_health(daemon_url: String) -> DaemonHealth {
         return DaemonHealth {
             daemon_url: normalized,
             healthy: true,
+            switched: false,
+        };
+    }
+
+    if running_from_macos_app_bundle() {
+        return DaemonHealth {
+            daemon_url: normalized,
+            healthy: false,
             switched: false,
         };
     }
@@ -2108,11 +2172,23 @@ fn daemon_binary_candidates() -> Vec<PathBuf> {
             candidates.push(dir.join("butterfly-botd"));
             if let Some(parent) = dir.parent() {
                 candidates.push(parent.join("butterfly-botd"));
+                candidates.push(parent.join("Resources").join("butterfly-botd"));
             }
         }
     }
     candidates.push(PathBuf::from("butterfly-botd"));
     candidates
+}
+
+fn running_from_macos_app_bundle() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(current) = std::env::current_exe() {
+            let path = current.to_string_lossy();
+            return path.contains(".app/Contents/MacOS/");
+        }
+    }
+    false
 }
 
 async fn start_local_daemon(
@@ -2121,14 +2197,24 @@ async fn start_local_daemon(
     token: String,
 ) -> Result<String, String> {
     let (host, port) = parse_daemon_address(&daemon_url);
+    let strict_bundle_mode = running_from_macos_app_bundle();
     let mut selected = None;
     for candidate in daemon_binary_candidates() {
+        if strict_bundle_mode && candidate == Path::new("butterfly-botd") {
+            continue;
+        }
         if candidate.exists() || candidate == Path::new("butterfly-botd") {
             selected = Some(candidate);
             break;
         }
     }
     let Some(binary) = selected else {
+        if strict_bundle_mode {
+            return Err(
+                "Could not find bundled butterfly-botd in app bundle. Rebuild the mac app with ./scripts/build-macos-app.sh."
+                    .to_string(),
+            );
+        }
         return Err("Could not find butterfly-botd binary".to_string());
     };
 

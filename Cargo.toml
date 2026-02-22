@@ -8,6 +8,7 @@ edition = "2021"
 license = "MIT"
 autobins = false
 default-run = "butterfly-bot"
+build = "build.rs"
 
 [lib]
 name = "butterfly_bot"
@@ -72,6 +73,9 @@ wincode = "0.4.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3.6", features = ["sync-secret-service"] }
 notify-rust = { version = "4.12.0", features = ["d"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+notify-rust = "4.12.0"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 keyring = "3.6"
