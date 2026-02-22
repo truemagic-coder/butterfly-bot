@@ -1,3 +1,4 @@
+use ::time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 use iced::widget::{
     button, column, container, image, markdown, row, scrollable, text, text_editor, text_input,
     Space,
@@ -12,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
-use ::time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 
 const BUTTERFLY_BOT_LOGO_BYTES: &[u8] =
     include_bytes!("../assets/icons/hicolor/512x512/apps/butterfly-bot.png");
@@ -280,10 +280,9 @@ pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
                     check_daemon_health(state.daemon_url.clone()),
                     Message::HealthChecked,
                 ),
-                Task::perform(
-                    load_settings(state.db_path.clone()),
-                    |result| Message::SettingsLoaded(Box::new(result)),
-                ),
+                Task::perform(load_settings(state.db_path.clone()), |result| {
+                    Message::SettingsLoaded(Box::new(result))
+                }),
             ]);
             (state, boot)
         },
@@ -615,10 +614,11 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::LoadSettingsPressed => Task::perform(
-            load_settings(state.db_path.clone()),
-            |result| Message::SettingsLoaded(Box::new(result)),
-        ),
+        Message::LoadSettingsPressed => {
+            Task::perform(load_settings(state.db_path.clone()), |result| {
+                Message::SettingsLoaded(Box::new(result))
+            })
+        }
         Message::SettingsLoaded(result) => {
             match *result {
                 Ok(loaded) => {
@@ -989,9 +989,9 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
     .height(Length::Fill);
 
     let logo: Element<'_, Message> = image::<image::Handle>(butterfly_bot_logo_handle())
-    .width(40)
-    .height(40)
-    .into();
+        .width(40)
+        .height(40)
+        .into();
 
     let content = column![
         row![
@@ -2197,7 +2197,10 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
                     .map_err(|err| format!("Failed to stop daemon process: {err}"))?;
 
                 if !status.success() {
-                    let _ = Command::new("pkill").arg("-f").arg("butterfly-botd").status();
+                    let _ = Command::new("pkill")
+                        .arg("-f")
+                        .arg("butterfly-botd")
+                        .status();
                 }
 
                 tokio::time::sleep(Duration::from_millis(150)).await;

@@ -1742,8 +1742,7 @@ async fn process_text_stream(
     } = payload;
 
     if asks_for_wallet_address_only(&text) {
-        let wallet_line = match crate::security::solana_signer::wallet_address(&user_id, "agent")
-        {
+        let wallet_line = match crate::security::solana_signer::wallet_address(&user_id, "agent") {
             Ok(address) => format!("Your Solana wallet address is {address}."),
             Err(err) => format!("[error] {}", err),
         };

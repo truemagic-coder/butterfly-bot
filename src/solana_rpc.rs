@@ -231,12 +231,12 @@ pub fn build_spl_transfer_transaction_base64_with_unit_limit(
     if args.create_destination_ata {
         let owner = args.destination_owner.ok_or_else(|| {
             ButterflyBotError::Runtime(
-                "destination_owner is required when create_destination_ata is enabled"
-                    .to_string(),
+                "destination_owner is required when create_destination_ata is enabled".to_string(),
             )
         })?;
-        let owner_pubkey = Pubkey::from_str(owner)
-            .map_err(|e| ButterflyBotError::Runtime(format!("invalid destination owner pubkey: {e}")))?;
+        let owner_pubkey = Pubkey::from_str(owner).map_err(|e| {
+            ButterflyBotError::Runtime(format!("invalid destination owner pubkey: {e}"))
+        })?;
         let ata_program = pubkey!("ATokenGPvbdGVxr1hDo4d5xQmPG2vVnSABtZ1fYx4hQ");
         let system_program = pubkey!("11111111111111111111111111111111");
 
