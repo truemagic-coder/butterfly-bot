@@ -73,6 +73,7 @@ mkdir -p "$STAGE_DIR/DEBIAN"
 mkdir -p "$STAGE_DIR/usr/bin"
 mkdir -p "$STAGE_DIR/usr/lib/butterfly-bot/wasm"
 mkdir -p "$STAGE_DIR/usr/share/icons/hicolor"
+mkdir -p "$STAGE_DIR/usr/share/applications"
 
 cat > "$STAGE_DIR/DEBIAN/control" <<EOF
 Package: butterfly-bot
@@ -80,8 +81,24 @@ Version: $CARGO_VERSION
 Section: utils
 Priority: optional
 Architecture: $DEB_ARCH
-Maintainer: True Magic Coder
-Description: Butterfly Bot desktop UI + daemon
+Maintainer: Bevan Hunt
+Description: Butterfly Bot personal-ops assistant for Ubuntu and Debian
+ Butterfly Bot is a desktop personal-ops assistant that is an autonomous agent with local tools, planning, and secure workflows. It helps you manage tasks, automate workflows, and integrate with your local environment while keeping your data private and secure.
+EOF
+
+cat > "$STAGE_DIR/usr/share/applications/butterfly-bot.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Butterfly Bot
+Comment=Personal-ops assistant with local tools, planning, and secure workflows
+Exec=butterfly-bot
+Icon=butterfly-bot
+Terminal=false
+Categories=Utility;Office;Productivity;
+Keywords=assistant;ai;productivity;planning;tasks;
+StartupNotify=true
+StartupWMClass=butterfly-bot
 EOF
 
 install -m 0755 "$ROOT_DIR/target/release/butterfly-bot" "$STAGE_DIR/usr/bin/butterfly-bot"

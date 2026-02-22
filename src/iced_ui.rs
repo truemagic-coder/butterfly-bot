@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use ::time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 
 const BUTTERFLY_BOT_LOGO_BYTES: &[u8] =
     include_bytes!("../assets/icons/hicolor/512x512/apps/butterfly-bot.png");
@@ -1864,6 +1865,14 @@ fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)>
         return None;
     }
 
+    let mut parsed_ts: Option<i64> = None;
+    if let Some(close_idx) = trimmed.find(']') {
+        if trimmed.starts_with('[') && close_idx > 1 {
+            let bracket_ts = &trimmed[1..close_idx];
+            parsed_ts = parse_history_bracket_timestamp(bracket_ts);
+        }
+    }
+
     let normalized = if let Some(idx) = trimmed.find("] ") {
         let (left, right) = trimmed.split_at(idx + 2);
         if left.starts_with('[') {
@@ -1881,12 +1890,12 @@ fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)>
         ("system:", MessageRole::System),
     ] {
         if let Some(value) = normalized.strip_prefix(marker) {
-            return Some((role, value.trim().to_string(), None));
+            return Some((role, value.trim().to_string(), parsed_ts));
         }
         let with_space = format!(" {marker}");
         if let Some(pos) = normalized.find(&with_space) {
             let body = normalized[(pos + with_space.len())..].trim();
-            return Some((role, body.to_string(), None));
+            return Some((role, body.to_string(), parsed_ts));
         }
     }
 
@@ -1904,7 +1913,29 @@ fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)>
         }
     }
 
-    Some((role, rest.to_string(), None))
+    Some((role, rest.to_string(), parsed_ts))
+}
+
+fn parse_history_bracket_timestamp(raw: &str) -> Option<i64> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(epoch) = trimmed.parse::<i64>() {
+        return Some(epoch);
+    }
+
+    const TS_MINUTE: &[::time::format_description::FormatItem<'static>] =
+        ::time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]");
+    const TS_SECOND: &[::time::format_description::FormatItem<'static>] =
+        ::time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+
+    let parsed = PrimitiveDateTime::parse(trimmed, TS_SECOND)
+        .ok()
+        .or_else(|| PrimitiveDateTime::parse(trimmed, TS_MINUTE).ok())?;
+
+    Some(parsed.assume_utc().unix_timestamp())
 }
 
 fn now_unix_ts() -> i64 {
@@ -1915,15 +1946,22 @@ fn now_unix_ts() -> i64 {
 }
 
 fn format_local_time(ts: i64) -> String {
-    let seconds_in_day = 24 * 60 * 60;
-    let mut secs = (ts % seconds_in_day) as i32;
-    if secs < 0 {
-        secs += seconds_in_day as i32;
-    }
-    let hour = secs / 3600;
-    let minute = (secs % 3600) / 60;
-    let second = secs % 60;
-    format!("{:02}:{:02}:{:02}", hour, minute, second)
+    let Ok(utc_dt) = OffsetDateTime::from_unix_timestamp(ts) else {
+        return "1970-01-01 00:00:00".to_string();
+    };
+
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        local_dt.year(),
+        u8::from(local_dt.month()),
+        local_dt.day(),
+        local_dt.hour(),
+        local_dt.minute(),
+        local_dt.second()
+    )
 }
 
 fn display_posture_level(value: &str) -> &'static str {
