@@ -270,23 +270,11 @@ impl ReminderStore {
     }
 
     pub async fn due_reminders_all(&self, now: i64, limit: usize) -> Result<Vec<DueReminder>> {
-        let mut conn = self.conn().await?;
-        let mut query = reminders::table
-            .filter(reminders::completed_at.is_null())
-            .filter(reminders::due_at.le(now))
-            .filter(reminders::fired_at.is_null())
-            .into_boxed();
-        if limit > 0 {
-            query = query.limit(limit as i64);
-        }
-        let rows: Vec<ReminderRow> = query
-            .order(reminders::due_at.asc())
-            .load(&mut conn)
-            .await
-            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        let rows = self.peek_due_reminders_all_rows(now, limit).await?;
 
         if !rows.is_empty() {
             let ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
+            let mut conn = self.conn().await?;
             diesel::update(reminders::table.filter(reminders::id.eq_any(&ids)))
                 .set((
                     reminders::fired_at.eq(Some(now)),
@@ -298,6 +286,30 @@ impl ReminderStore {
         }
 
         Ok(rows.into_iter().map(map_due_row).collect())
+    }
+
+    pub async fn peek_due_reminders_all(&self, now: i64, limit: usize) -> Result<Vec<DueReminder>> {
+        let rows = self.peek_due_reminders_all_rows(now, limit).await?;
+        Ok(rows.into_iter().map(map_due_row).collect())
+    }
+
+    pub async fn mark_fired_reminder(&self, user_id: &str, id: i32, now: i64) -> Result<bool> {
+        let mut conn = self.conn().await?;
+        let updated = diesel::update(
+            reminders::table
+                .filter(reminders::user_id.eq(user_id))
+                .filter(reminders::id.eq(id))
+                .filter(reminders::completed_at.is_null())
+                .filter(reminders::fired_at.is_null()),
+        )
+        .set((
+            reminders::fired_at.eq(Some(now)),
+            reminders::completed_at.eq(Some(now)),
+        ))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(updated > 0)
     }
 
     pub async fn peek_due_reminders(
@@ -332,6 +344,27 @@ impl ReminderStore {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         crate::db::apply_sqlcipher_key_async(&mut conn).await?;
         Ok(conn)
+    }
+
+    async fn peek_due_reminders_all_rows(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderRow>> {
+        let mut conn = self.conn().await?;
+        let mut query = reminders::table
+            .filter(reminders::completed_at.is_null())
+            .filter(reminders::due_at.le(now))
+            .filter(reminders::fired_at.is_null())
+            .into_boxed();
+        if limit > 0 {
+            query = query.limit(limit as i64);
+        }
+        query
+            .order(reminders::due_at.asc())
+            .load(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
     }
 }
 

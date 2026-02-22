@@ -210,7 +210,7 @@ impl ScheduledJob for ReminderDispatchJob {
 
     async fn run(&self) -> Result<()> {
         let now = now_ts();
-        let due = self.store.due_reminders_all(now, 32).await?;
+        let due = self.store.peek_due_reminders_all(now, 32).await?;
         for reminder in due {
             let title = reminder.item.title.clone();
             let payload = json!({
@@ -220,13 +220,19 @@ impl ScheduledJob for ReminderDispatchJob {
             });
             let _ = self.ui_event_tx.send(UiEvent {
                 event_type: "reminder".to_string(),
-                user_id: reminder.user_id,
+                user_id: reminder.user_id.clone(),
                 tool: "reminders".to_string(),
                 status: "due".to_string(),
                 payload,
                 timestamp: now,
             });
-            send_desktop_notification("Butterfly Bot reminder", &title);
+            let delivered = send_desktop_notification("Butterfly Bot reminder", &title);
+            if delivered {
+                let _ = self
+                    .store
+                    .mark_fired_reminder(&reminder.user_id, reminder.item.id, now)
+                    .await;
+            }
         }
         Ok(())
     }
@@ -2800,12 +2806,21 @@ fn resolve_notification_icon_path() -> Option<String> {
 
     candidates.push("/usr/share/icons/hicolor/256x256/apps/butterfly-bot.png".to_string());
 
-    candidates
-        .into_iter()
-        .find(|path| std::path::Path::new(path).exists())
+    candidates.into_iter().find_map(|path| {
+        let icon_path = std::path::Path::new(&path);
+        if !icon_path.exists() {
+            return None;
+        }
+        Some(
+            std::fs::canonicalize(icon_path)
+                .unwrap_or_else(|_| icon_path.to_path_buf())
+                .to_string_lossy()
+                .to_string(),
+        )
+    })
 }
 
-fn send_desktop_notification(summary: &str, body: &str) {
+fn send_desktop_notification(summary: &str, body: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
         let icon_path = resolve_notification_icon_path();
@@ -2814,25 +2829,24 @@ fn send_desktop_notification(summary: &str, body: &str) {
         if let Some(icon) = &icon_path {
             notification.icon(icon);
         }
-        if let Err(err) = notification.show() {
+        return notification.show().map(|_| true).unwrap_or_else(|err| {
             tracing::warn!(error = %err, "Desktop notification failed");
-        }
+            false
+        });
     }
 
     #[cfg(target_os = "macos")]
     {
         let icon_path = resolve_notification_icon_path();
         let mut cmd = std::process::Command::new("terminal-notifier");
-        cmd.arg("-title")
-            .arg(summary)
-            .arg("-message")
-            .arg(body);
+        cmd.arg("-title").arg(summary).arg("-message").arg(body);
         if let Some(icon) = &icon_path {
-            cmd.arg("-appIcon").arg(icon);
+            let icon_url = format!("file://{icon}");
+            cmd.arg("-contentImage").arg(icon_url);
         }
 
         match cmd.output() {
-            Ok(output) if output.status.success() => {}
+            Ok(output) if output.status.success() => true,
             Ok(output) => {
                 tracing::warn!(
                     code = output.status.code(),
@@ -2844,9 +2858,10 @@ fn send_desktop_notification(summary: &str, body: &str) {
                 if let Some(icon) = &icon_path {
                     notification.icon(icon);
                 }
-                if let Err(err) = notification.show() {
+                notification.show().map(|_| true).unwrap_or_else(|err| {
                     tracing::warn!(error = %err, "Desktop notification fallback failed");
-                }
+                    false
+                })
             }
             Err(err) => {
                 tracing::warn!(
@@ -2858,9 +2873,13 @@ fn send_desktop_notification(summary: &str, body: &str) {
                 if let Some(icon) = &icon_path {
                     notification.icon(icon);
                 }
-                if let Err(fallback_err) = notification.show() {
-                    tracing::warn!(error = %fallback_err, "Desktop notification fallback failed");
-                }
+                notification
+                    .show()
+                    .map(|_| true)
+                    .unwrap_or_else(|fallback_err| {
+                        tracing::warn!(error = %fallback_err, "Desktop notification fallback failed");
+                        false
+                    })
             }
         }
     }
@@ -2868,6 +2887,7 @@ fn send_desktop_notification(summary: &str, body: &str) {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (summary, body);
+        return false;
     }
 }
 
