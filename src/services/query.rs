@@ -4,7 +4,7 @@ use async_stream::try_stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use std::hash::Hasher;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 
@@ -639,8 +639,21 @@ fn should_skip_memory_line(line: &str) -> bool {
         || lower.contains("need your api key")
 }
 
-async fn build_reminder_context(_store: &ReminderStore, _user_id: &str) -> Option<String> {
-    None
+async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let due = store.due_reminders(user_id, now, 10).await.ok()?;
+    if due.is_empty() {
+        return None;
+    }
+
+    let mut context = String::from("DUE REMINDERS (notify the user naturally in this reply):\n");
+    for reminder in due {
+        context.push_str(&format!(
+            "- {} (id: {}, due_at_unix: {})\n",
+            reminder.title, reminder.id, reminder.due_at
+        ));
+    }
+    Some(context)
 }
 
 fn should_include_semantic_memory(query: &str) -> bool {
@@ -760,6 +773,126 @@ impl QueryService {
     async fn try_handle_tasks_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
         let lower = text.to_lowercase();
         let trimmed = lower.trim();
+
+        let is_bulk_clear_verb = lower.contains("clear")
+            || lower.contains("delete")
+            || lower.contains("remove")
+            || lower.contains("wipe")
+            || lower.contains("clean");
+        let references_tasks_collection = lower.contains("tasks")
+            || lower.contains("task list")
+            || lower.contains("my task")
+            || lower.contains("all task");
+        if is_bulk_clear_verb && references_tasks_collection {
+            let tool = self.agent_service.tool_registry.get_tool("tasks").await;
+            let Some(_tool) = tool else {
+                return Ok(Some(
+                    "I can’t clear tasks right now because the tasks tool is not available."
+                        .to_string(),
+                ));
+            };
+
+            let clear_status = if lower.contains("disabled") {
+                "disabled"
+            } else if lower.contains("enabled") {
+                "enabled"
+            } else {
+                "all"
+            };
+
+            if let Ok(result) = self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "tasks",
+                    serde_json::json!({
+                        "action": "clear",
+                        "user_id": user_id,
+                        "status": clear_status
+                    }),
+                )
+                .await
+            {
+                let payload = Self::tool_payload(&result);
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let deleted = payload
+                    .get("deleted")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| result.get("deleted").and_then(|value| value.as_u64()));
+                if !is_error {
+                    if let Some(deleted) = deleted {
+                        return Ok(Some(format!("Cleared {} task(s).", deleted)));
+                    }
+                }
+            }
+
+            let list_result = match self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "tasks",
+                    serde_json::json!({
+                        "action": "list",
+                        "user_id": user_id,
+                        "status": clear_status,
+                        "limit": 200
+                    }),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(Some(format!("I couldn’t clear tasks right now: {}", err)));
+                }
+            };
+
+            let payload = Self::tool_payload(&list_result);
+            let task_ids: Vec<i64> = payload
+                .get("tasks")
+                .and_then(|value| value.as_array())
+                .map(|tasks| {
+                    tasks
+                        .iter()
+                        .filter_map(|task| task.get("id").and_then(|value| value.as_i64()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut deleted_count: u64 = 0;
+            for id in task_ids {
+                if let Ok(delete_result) = self
+                    .agent_service
+                    .tool_registry
+                    .execute_tool(
+                        "tasks",
+                        serde_json::json!({
+                            "action": "delete",
+                            "user_id": user_id,
+                            "id": id
+                        }),
+                    )
+                    .await
+                {
+                    let delete_payload = Self::tool_payload(&delete_result);
+                    if delete_payload
+                        .get("deleted")
+                        .and_then(|value| value.as_bool())
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
+                        == Some(true)
+                    {
+                        deleted_count += 1;
+                    }
+                }
+            }
+
+            return Ok(Some(format!("Cleared {} task(s).", deleted_count)));
+        }
+
         let looks_like_task_list_request = trimmed == "tasks"
             || trimmed == "task"
             || lower.contains("what are the tasks")
@@ -850,6 +983,127 @@ impl QueryService {
     ) -> Result<Option<String>> {
         let lower = text.to_lowercase();
         let trimmed = lower.trim();
+
+        let is_bulk_clear_verb = lower.contains("clear")
+            || lower.contains("delete")
+            || lower.contains("remove")
+            || lower.contains("wipe")
+            || lower.contains("clean");
+        let references_reminders_collection = lower.contains("reminders")
+            || lower.contains("reminder list")
+            || lower.contains("my reminder")
+            || lower.contains("all reminder");
+        if is_bulk_clear_verb && references_reminders_collection {
+            let tool = self.agent_service.tool_registry.get_tool("reminders").await;
+            let Some(_tool) = tool else {
+                return Ok(Some(
+                    "I can’t clear reminders right now because the reminders tool is not available."
+                        .to_string(),
+                ));
+            };
+
+            let clear_status = if lower.contains("open") {
+                "open"
+            } else {
+                "all"
+            };
+
+            if let Ok(result) = self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "reminders",
+                    serde_json::json!({
+                        "action": "clear",
+                        "user_id": user_id,
+                        "status": clear_status
+                    }),
+                )
+                .await
+            {
+                let payload = Self::tool_payload(&result);
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let deleted = payload
+                    .get("deleted")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| result.get("deleted").and_then(|value| value.as_u64()));
+                if !is_error {
+                    if let Some(deleted) = deleted {
+                        return Ok(Some(format!("Cleared {} reminder(s).", deleted)));
+                    }
+                }
+            }
+
+            let list_result = match self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "reminders",
+                    serde_json::json!({
+                        "action": "list",
+                        "user_id": user_id,
+                        "status": clear_status,
+                        "limit": 200
+                    }),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(Some(format!(
+                        "I couldn’t clear reminders right now: {}",
+                        err
+                    )));
+                }
+            };
+
+            let payload = Self::tool_payload(&list_result);
+            let reminder_ids: Vec<i64> = payload
+                .get("reminders")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("id").and_then(|value| value.as_i64()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut deleted_count: u64 = 0;
+            for id in reminder_ids {
+                if let Ok(delete_result) = self
+                    .agent_service
+                    .tool_registry
+                    .execute_tool(
+                        "reminders",
+                        serde_json::json!({
+                            "action": "delete",
+                            "user_id": user_id,
+                            "id": id
+                        }),
+                    )
+                    .await
+                {
+                    let delete_payload = Self::tool_payload(&delete_result);
+                    if delete_payload
+                        .get("deleted")
+                        .and_then(|value| value.as_bool())
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
+                        == Some(true)
+                    {
+                        deleted_count += 1;
+                    }
+                }
+            }
+
+            return Ok(Some(format!("Cleared {} reminder(s).", deleted_count)));
+        }
+
         let looks_like_reminder_list_request = trimmed == "reminders"
             || trimmed == "reminder"
             || lower.contains("what reminders are due")
@@ -927,6 +1181,71 @@ impl QueryService {
     async fn try_handle_todo_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
         let lower = text.to_lowercase();
         let trimmed = lower.trim();
+
+        let is_bulk_clear_verb = lower.contains("clear")
+            || lower.contains("delete")
+            || lower.contains("remove")
+            || lower.contains("wipe")
+            || lower.contains("clean");
+        let references_todo_collection = lower.contains("todos")
+            || lower.contains("todo list")
+            || lower.contains("my todo")
+            || lower.contains("all todo");
+        let looks_like_bulk_todo_clear_request = is_bulk_clear_verb && references_todo_collection;
+
+        if looks_like_bulk_todo_clear_request {
+            let tool = self.agent_service.tool_registry.get_tool("todo").await;
+            let Some(_tool) = tool else {
+                return Ok(Some(
+                    "I can’t clear todos right now because the todo tool is not available."
+                        .to_string(),
+                ));
+            };
+
+            let clear_status = if lower.contains("completed") {
+                "completed"
+            } else {
+                "all"
+            };
+
+            let result = match self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "todo",
+                    serde_json::json!({
+                        "action": "clear",
+                        "user_id": user_id,
+                        "status": clear_status
+                    }),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(Some(format!("I couldn’t clear todos right now: {}", err)));
+                }
+            };
+
+            let payload = Self::tool_payload(&result);
+            let error_message = payload
+                .get("message")
+                .and_then(|value| value.as_str())
+                .or_else(|| result.get("message").and_then(|value| value.as_str()));
+            if payload.get("status").and_then(|value| value.as_str()) == Some("error") {
+                if let Some(message) = error_message {
+                    return Ok(Some(format!("I couldn’t clear todos right now: {message}")));
+                }
+            }
+
+            let deleted = payload
+                .get("deleted")
+                .and_then(|value| value.as_u64())
+                .or_else(|| result.get("deleted").and_then(|value| value.as_u64()))
+                .unwrap_or(0);
+            return Ok(Some(format!("Cleared {} todo(s).", deleted)));
+        }
+
         let looks_like_todo_list_request = trimmed == "todos"
             || trimmed == "todo"
             || lower.contains("what are the todos")
@@ -998,6 +1317,116 @@ impl QueryService {
     async fn try_handle_plans_command(&self, user_id: &str, text: &str) -> Result<Option<String>> {
         let lower = text.to_lowercase();
         let trimmed = lower.trim();
+
+        let is_bulk_clear_verb = lower.contains("clear")
+            || lower.contains("delete")
+            || lower.contains("remove")
+            || lower.contains("wipe")
+            || lower.contains("clean");
+        let references_plans_collection = lower.contains("plans")
+            || lower.contains("plan list")
+            || lower.contains("my plan")
+            || lower.contains("all plan");
+        if is_bulk_clear_verb && references_plans_collection {
+            let tool = self.agent_service.tool_registry.get_tool("planning").await;
+            let Some(_tool) = tool else {
+                return Ok(Some(
+                    "I can’t clear plans right now because the planning tool is not available."
+                        .to_string(),
+                ));
+            };
+
+            if let Ok(result) = self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "planning",
+                    serde_json::json!({
+                        "action": "clear",
+                        "user_id": user_id
+                    }),
+                )
+                .await
+            {
+                let payload = Self::tool_payload(&result);
+                let is_error =
+                    payload.get("status").and_then(|value| value.as_str()) == Some("error");
+                let deleted = payload
+                    .get("deleted")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| result.get("deleted").and_then(|value| value.as_u64()));
+                if !is_error {
+                    if let Some(deleted) = deleted {
+                        return Ok(Some(format!("Cleared {} plan(s).", deleted)));
+                    }
+                }
+            }
+
+            let list_result = match self
+                .agent_service
+                .tool_registry
+                .execute_tool(
+                    "planning",
+                    serde_json::json!({
+                        "action": "list",
+                        "user_id": user_id,
+                        "limit": 200
+                    }),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return Ok(Some(format!("I couldn’t clear plans right now: {}", err)));
+                }
+            };
+
+            let payload = Self::tool_payload(&list_result);
+            let plan_ids: Vec<i64> = payload
+                .get("plans")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.get("id").and_then(|value| value.as_i64()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut deleted_count: u64 = 0;
+            for id in plan_ids {
+                if let Ok(delete_result) = self
+                    .agent_service
+                    .tool_registry
+                    .execute_tool(
+                        "planning",
+                        serde_json::json!({
+                            "action": "delete",
+                            "user_id": user_id,
+                            "id": id
+                        }),
+                    )
+                    .await
+                {
+                    let delete_payload = Self::tool_payload(&delete_result);
+                    if delete_payload
+                        .get("deleted")
+                        .and_then(|value| value.as_bool())
+                        .or_else(|| {
+                            delete_result
+                                .get("deleted")
+                                .and_then(|value| value.as_bool())
+                        })
+                        == Some(true)
+                    {
+                        deleted_count += 1;
+                    }
+                }
+            }
+
+            return Ok(Some(format!("Cleared {} plan(s).", deleted_count)));
+        }
+
         let looks_like_plans_list_request = trimmed == "plans"
             || lower.contains("what are the plans")
             || lower.contains("what are my plans")

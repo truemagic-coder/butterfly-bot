@@ -79,6 +79,7 @@ use crate::tools::mcp::McpTool;
 use crate::tools::planning::PlanningTool;
 use crate::tools::reminders::RemindersTool;
 use crate::tools::search_internet::SearchInternetTool;
+use crate::tools::solana::SolanaTool;
 use crate::tools::tasks::TasksTool;
 use crate::tools::todo::TodoTool;
 use crate::tools::wakeup::WakeupTool;
@@ -103,13 +104,6 @@ impl ButterflyBotFactory {
             let api_key = openai
                 .api_key
                 .filter(|key| !key.trim().is_empty())
-                .or_else(|| {
-                    if openai.base_url.is_some() {
-                        Some("ollama".to_string())
-                    } else {
-                        None
-                    }
-                })
                 .ok_or_else(|| ButterflyBotError::Config("Missing OpenAI API key".to_string()))?;
             (api_key, openai.model, openai.base_url)
         } else {
@@ -125,16 +119,7 @@ impl ButterflyBotFactory {
                 let api_key = openai
                     .api_key
                     .filter(|key| !key.trim().is_empty())
-                    .or_else(|| {
-                        if openai.base_url.is_some() {
-                            Some("ollama".to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .ok_or_else(|| {
-                        ButterflyBotError::Config("Missing memory OpenAI API key".to_string())
-                    })?;
+                    .unwrap_or_else(|| api_key.clone());
                 Ok::<_, ButterflyBotError>((api_key, openai.model, openai.base_url))
             })
             .transpose()?
@@ -400,6 +385,12 @@ impl ButterflyBotFactory {
         tool.configure(&config_value)?;
         if tool_registry.register_tool(tool).await {
             registered_tools.push("http_call".to_string());
+        }
+
+        let tool: Arc<dyn Tool> = Arc::new(SolanaTool::new());
+        tool.configure(&config_value)?;
+        if tool_registry.register_tool(tool).await {
+            registered_tools.push("solana".to_string());
         }
 
         let tool: Arc<dyn Tool> = Arc::new(TodoTool::new());

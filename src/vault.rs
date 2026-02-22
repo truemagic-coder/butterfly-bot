@@ -3,6 +3,8 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use rand::rngs::SysRng;
 use rand::TryRng;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::process::Command;
 
 const SERVICE: &str = "butterfly-bot";
 const DAEMON_TOKEN_FILE: &str = "daemon_auth_token";
@@ -106,6 +108,72 @@ fn keyring_disabled() -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(target_os = "macos")]
+fn macos_keychain_set_required(name: &str, value: &str) -> Result<()> {
+    let output = Command::new("security")
+        .arg("add-generic-password")
+        .arg("-U")
+        .arg("-s")
+        .arg(SERVICE)
+        .arg("-a")
+        .arg(name)
+        .arg("-w")
+        .arg(value)
+        .output()
+        .map_err(|err| ButterflyBotError::SecurityStorage(err.to_string()))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let message = if stderr.is_empty() {
+        format!(
+            "security add-generic-password failed with status {}",
+            output.status
+        )
+    } else {
+        stderr
+    };
+    Err(ButterflyBotError::SecurityStorage(message))
+}
+
+#[cfg(target_os = "macos")]
+fn macos_keychain_get_required(name: &str) -> Result<Option<String>> {
+    let output = Command::new("security")
+        .arg("find-generic-password")
+        .arg("-s")
+        .arg(SERVICE)
+        .arg("-a")
+        .arg(name)
+        .arg("-w")
+        .output()
+        .map_err(|err| ButterflyBotError::SecurityStorage(err.to_string()))?;
+
+    if output.status.success() {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if value.is_empty() {
+            return Ok(None);
+        }
+        return Ok(Some(value));
+    }
+
+    if output.status.code() == Some(44) {
+        return Ok(None);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let message = if stderr.is_empty() {
+        format!(
+            "security find-generic-password failed with status {}",
+            output.status
+        )
+    } else {
+        stderr
+    };
+    Err(ButterflyBotError::SecurityStorage(message))
+}
+
 pub fn set_secret(name: &str, value: &str) -> Result<()> {
     if keyring_disabled() {
         write_secret_fallback_file(name, value);
@@ -128,16 +196,82 @@ pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
         write_secret_fallback_file(name, value);
         return Ok(());
     }
-    let entry = keyring::Entry::new(SERVICE, name)
-        .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
-    if let Err(err) = entry.set_password(value) {
-        if keyring_backend_unavailable(&err.to_string()) {
-            write_secret_fallback_file(name, value);
-            return Ok(());
+
+    #[cfg(target_os = "macos")]
+    {
+        match macos_keychain_set_required(name, value) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    write_secret_fallback_file(name, value);
+                    Ok(())
+                } else {
+                    Err(err)
+                }
+            }
         }
-        return Err(ButterflyBotError::SecurityStorage(err.to_string()));
     }
-    Ok(())
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let entry = keyring::Entry::new(SERVICE, name)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.set_password(value) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    write_secret_fallback_file(name, value);
+                    Ok(())
+                } else {
+                    Err(ButterflyBotError::SecurityStorage(err.to_string()))
+                }
+            }
+        }
+    }
+}
+
+pub fn get_secret_required(name: &str) -> Result<Option<String>> {
+    if keyring_disabled() {
+        return Ok(read_secret_fallback_file(name));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        match macos_keychain_get_required(name) {
+            Ok(value) => Ok(value.or_else(|| read_secret_fallback_file(name))),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Err(err)
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let entry = keyring::Entry::new(SERVICE, name)
+            .map_err(|e| ButterflyBotError::SecurityStorage(e.to_string()))?;
+        match entry.get_password() {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Ok(Some(trimmed.to_string()))
+                }
+            }
+            Err(keyring::Error::NoEntry) => Ok(read_secret_fallback_file(name)),
+            Err(err) => {
+                if keyring_backend_unavailable(&err.to_string()) {
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Err(ButterflyBotError::SecurityStorage(err.to_string()))
+                }
+            }
+        }
+    }
 }
 
 pub fn get_secret(name: &str) -> Result<Option<String>> {

@@ -7,6 +7,9 @@ pub mod db;
 pub mod domains;
 pub mod error;
 pub mod factories;
+pub mod iced_ui;
+pub mod inbox_fsm;
+pub mod inbox_state;
 pub mod interfaces;
 pub mod logging;
 pub mod planning;
@@ -22,6 +25,7 @@ pub mod solana_rpc;
 pub mod tasks;
 pub mod todo;
 pub mod tools;
+#[path = "ui_iced.rs"]
 pub mod ui;
 pub mod vault;
 pub mod wakeup;

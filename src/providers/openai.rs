@@ -4,6 +4,8 @@ use base64::{engine::general_purpose, Engine as _};
 use futures::stream::BoxStream;
 use reqwest::StatusCode;
 use serde_json::Value;
+use std::time::Duration;
+use tracing::warn;
 
 use async_openai::{
     config::OpenAIConfig,
@@ -46,8 +48,16 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
+    fn is_openai_function_name(name: &str) -> bool {
+        let trimmed = name.trim();
+        !trimmed.is_empty()
+            && trimmed
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    }
+
     pub fn new(api_key: String, model: Option<String>, base_url: Option<String>) -> Self {
-        let model = model.unwrap_or_else(|| "gpt-5.2".to_string());
+        let model = model.unwrap_or_else(|| "gpt-4.1-mini".to_string());
         let base_url = base_url.unwrap_or_else(|| "https://api.openai.com/v1".to_string());
         let api_key_for_config = api_key.clone();
         let base_url_for_config = base_url.clone();
@@ -68,28 +78,47 @@ impl OpenAiProvider {
     ) -> Result<Value> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let client = reqwest::Client::new();
-        let response = client
-            .post(url)
-            .bearer_auth(&self.api_key)
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| {
-                ButterflyBotError::Http(format!("Chat completion transport failed: {e}"))
+        for attempt in 0..3 {
+            let response = client
+                .post(url.clone())
+                .bearer_auth(&self.api_key)
+                .json(request)
+                .send()
+                .await
+                .map_err(|e| {
+                    ButterflyBotError::Http(format!("Chat completion transport failed: {e}"))
+                })?;
+            let status = response.status();
+            let body = response.text().await.map_err(|e| {
+                ButterflyBotError::Http(format!("Chat completion read failed: {e}"))
             })?;
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| ButterflyBotError::Http(format!("Chat completion read failed: {e}")))?;
-        if status != StatusCode::OK {
+
+            if status == StatusCode::OK {
+                return serde_json::from_str(&body).map_err(|e| {
+                    ButterflyBotError::Serialization(format!("Chat completion decode failed: {e}"))
+                });
+            }
+
+            let lower = body.to_ascii_lowercase();
+            let retryable_json_truncation = status.is_server_error()
+                && (lower.contains("unexpected end of json input")
+                    || lower.contains("unexpected end of json")
+                    || lower.contains("unexpected end of input")
+                    || lower.contains("unexpected eof"));
+
+            if retryable_json_truncation && attempt < 2 {
+                tokio::time::sleep(Duration::from_millis(150 * (attempt + 1) as u64)).await;
+                continue;
+            }
+
             return Err(ButterflyBotError::Http(format!(
                 "Chat completion failed ({status}): {body}"
             )));
         }
-        serde_json::from_str(&body).map_err(|e| {
-            ButterflyBotError::Serialization(format!("Chat completion decode failed: {e}"))
-        })
+
+        Err(ButterflyBotError::Http(
+            "Chat completion failed after retries".to_string(),
+        ))
     }
 
     async fn chat_create_with_fallback(
@@ -101,7 +130,14 @@ impl OpenAiProvider {
             Err(ButterflyBotError::Http(message))
                 if message.starts_with("Chat completion failed (") =>
             {
-                return Err(ButterflyBotError::Http(message));
+                let lower = message.to_ascii_lowercase();
+                if !lower.contains("unexpected end of json input")
+                    && !lower.contains("unexpected end of json")
+                    && !lower.contains("unexpected end of input")
+                    && !lower.contains("unexpected eof")
+                {
+                    return Err(ButterflyBotError::Http(message));
+                }
             }
             Err(_) => {}
         }
@@ -263,17 +299,31 @@ impl OpenAiProvider {
                     return None;
                 }
                 let function_obj = tool.get("function").cloned().unwrap_or(tool);
-                let name = function_obj.get("name")?.as_str()?.to_string();
+                let name = function_obj.get("name")?.as_str()?.trim().to_string();
+                if !Self::is_openai_function_name(&name) {
+                    warn!(tool_name = %name, "Skipping invalid OpenAI function tool name");
+                    return None;
+                }
                 let description = function_obj
                     .get("description")
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string());
-                let parameters = function_obj.get("parameters").cloned();
+                let parameters = function_obj
+                    .get("parameters")
+                    .cloned()
+                    .filter(|value| value.is_object())
+                    .or_else(|| {
+                        Some(serde_json::json!({
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": true
+                        }))
+                    });
                 let function = FunctionObject {
                     name,
                     description,
                     parameters,
-                    strict: None,
+                    strict: Some(false),
                 };
                 Some(ChatCompletionTools::Function(ChatCompletionTool {
                     function,
@@ -365,6 +415,92 @@ impl OpenAiProvider {
             _ => SpeechResponseFormat::Mp3,
         }
     }
+
+    fn prefer_structured_tool_json_mode(&self) -> bool {
+        false
+    }
+
+    fn extract_tool_names(tools: &[Value]) -> Vec<String> {
+        let mut names = Vec::new();
+        for tool in tools {
+            let name = tool
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .or_else(|| tool.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| v.to_string());
+            if let Some(name) = name {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        names
+    }
+
+    fn structured_tool_loop_schema(tools: &[Value]) -> Value {
+        let names = Self::extract_tool_names(tools);
+        let name_schema = if names.is_empty() {
+            serde_json::json!({"type": "string"})
+        } else {
+            serde_json::json!({"type": "string", "enum": names})
+        };
+
+        serde_json::json!({
+            "title": "tool_loop_response",
+            "type": "object",
+            "properties": {
+                "text": { "type": "string" },
+                "tool_calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": name_schema,
+                            "arguments": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        },
+                        "required": ["name", "arguments"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["text", "tool_calls"],
+            "additionalProperties": false
+        })
+    }
+
+    fn llm_response_from_structured(value: &Value) -> Option<LlmResponse> {
+        let text = value
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+
+        let tool_calls = value
+            .get("tool_calls")
+            .and_then(|v| v.as_array())
+            .map(|calls| {
+                calls
+                    .iter()
+                    .filter_map(|call| {
+                        let name = call.get("name")?.as_str()?.to_string();
+                        let arguments = call
+                            .get("arguments")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}));
+                        Some(ToolCall { name, arguments })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        Some(LlmResponse { text, tool_calls })
+    }
 }
 
 #[async_trait]
@@ -427,6 +563,22 @@ impl LlmProvider for OpenAiProvider {
         system_prompt: &str,
         tools: Vec<Value>,
     ) -> Result<LlmResponse> {
+        if self.prefer_structured_tool_json_mode() && !tools.is_empty() {
+            let schema = Self::structured_tool_loop_schema(&tools);
+            let structured_prompt = format!(
+                "{}\n\nRespond ONLY as strict JSON matching the schema. Do not include markdown or extra text.",
+                prompt
+            );
+            if let Ok(value) = self
+                .parse_structured_output(&structured_prompt, system_prompt, schema, None)
+                .await
+            {
+                if let Some(response) = Self::llm_response_from_structured(&value) {
+                    return Ok(response);
+                }
+            }
+        }
+
         let mut messages = Vec::new();
         if let Some(system) = Self::build_system_message(system_prompt)? {
             messages.push(system);
@@ -670,6 +822,101 @@ impl LlmProvider for OpenAiProvider {
             ChatCreateResult::Parsed(parsed) => Self::extract_text_from_response(&parsed),
             ChatCreateResult::Raw(raw) => Self::extract_text_from_value(&raw)
                 .ok_or_else(|| ButterflyBotError::Runtime("Empty chat response".to_string())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OpenAiProvider;
+    use async_openai::types::chat::ChatCompletionTools;
+    use serde_json::json;
+
+    #[test]
+    fn prefers_structured_mode_is_disabled() {
+        let provider = OpenAiProvider::new(
+            "key".to_string(),
+            Some("gpt-5.2".to_string()),
+            Some("https://api.openai.com/v1".to_string()),
+        );
+        assert!(!provider.prefer_structured_tool_json_mode());
+    }
+
+    #[test]
+    fn converts_structured_tool_response() {
+        let value = json!({
+            "text": "ok",
+            "tool_calls": [
+                {"name": "solana", "arguments": {"action": "balance"}}
+            ]
+        });
+        let response = OpenAiProvider::llm_response_from_structured(&value).unwrap();
+        assert_eq!(response.text, "ok");
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].name, "solana");
+        assert_eq!(response.tool_calls[0].arguments["action"], json!("balance"));
+    }
+
+    #[test]
+    fn convert_tools_emits_boolean_strict_and_object_parameters() {
+        let tools = OpenAiProvider::convert_tools(vec![json!({
+            "type": "function",
+            "name": "todo",
+            "description": "todo",
+            "parameters": {"type": "object", "properties": {}}
+        })]);
+
+        assert_eq!(tools.len(), 1);
+        match &tools[0] {
+            ChatCompletionTools::Function(tool) => {
+                assert_eq!(tool.function.name, "todo");
+                assert_eq!(tool.function.strict, Some(false));
+                assert!(tool
+                    .function
+                    .parameters
+                    .as_ref()
+                    .is_some_and(|p| p.is_object()));
+            }
+            _ => panic!("expected function tool"),
+        }
+    }
+
+    #[test]
+    fn convert_tools_fills_missing_parameters_with_object_schema() {
+        let tools = OpenAiProvider::convert_tools(vec![json!({
+            "type": "function",
+            "name": "tasks"
+        })]);
+
+        assert_eq!(tools.len(), 1);
+        match &tools[0] {
+            ChatCompletionTools::Function(tool) => {
+                assert_eq!(tool.function.name, "tasks");
+                assert_eq!(tool.function.strict, Some(false));
+                let params = tool
+                    .function
+                    .parameters
+                    .as_ref()
+                    .expect("parameters required");
+                assert_eq!(params.get("type").and_then(|v| v.as_str()), Some("object"));
+            }
+            _ => panic!("expected function tool"),
+        }
+    }
+
+    #[test]
+    fn convert_tools_skips_invalid_openai_function_names() {
+        let tools = OpenAiProvider::convert_tools(vec![
+            json!({"type":"function","name":"solana.getBalance","parameters":{}}),
+            json!({"type":"function","name":"solana_get_balance","parameters":{}}),
+        ]);
+
+        assert_eq!(tools.len(), 1);
+        match &tools[0] {
+            ChatCompletionTools::Function(tool) => {
+                assert_eq!(tool.function.name, "solana_get_balance");
+            }
+            _ => panic!("expected function tool"),
         }
     }
 }

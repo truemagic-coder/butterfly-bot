@@ -21,7 +21,7 @@ It complements:
 
 Primary components in scope:
 
-- Desktop UI (`butterfly-bot-ui`)
+- Desktop UI (`butterfly-bot`)
 - Local daemon (`butterfly-botd`)
 - Tool execution layer (`src/tools/`)
 - Guardrails and policy logic (`src/guardrails/`)

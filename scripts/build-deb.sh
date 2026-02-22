@@ -4,19 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if ! command -v dx >/dev/null 2>&1; then
-  echo "dioxus-cli (dx) is required but not found in PATH." >&2
-  echo "Install with: cargo install dioxus-cli" >&2
-  exit 1
-fi
-
-if [[ ! -f "$ROOT_DIR/Dioxus.toml" ]]; then
-  echo "Dioxus.toml is missing. Create it before running dx bundle." >&2
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+  echo "dpkg-deb is required but not found in PATH." >&2
   exit 1
 fi
 
 if [[ ! -f "$ROOT_DIR/assets/icon.png" ]]; then
-  echo "assets/icon.png is missing. Dioxus bundler may fail without an icon." >&2
+  echo "assets/icon.png is missing." >&2
   exit 1
 fi
 
@@ -55,18 +49,68 @@ fi
 echo "==> Building WASM tool modules"
 ./scripts/build_wasm_tools.sh
 
-echo "==> Bundling .deb with Dioxus"
-dx bundle --desktop --release --package-types deb "$@"
+echo "==> Building release binaries"
+cargo build --release --bin butterfly-bot --bin butterfly-botd "$@"
 
-echo "==> Looking for generated .deb"
-DEB_FILE="$(find "$ROOT_DIR" -type f -name '*.deb' \
-  \( -path '*/dist/*' -o -path '*/target/dx/*' -o -path '*/target/release/bundle/*' -o -path '*/target/*' \) \
-  -printf '%T@ %p\n' 2>/dev/null | sort -nr | head -n1 | cut -d' ' -f2- || true)"
+CARGO_VERSION="$(awk -F'"' '
+  /^\[package\]$/ { in_pkg=1; next }
+  /^\[/ && $0 != "[package]" { in_pkg=0 }
+  in_pkg && $1 ~ /^version[[:space:]]*=[[:space:]]*$/ { print $2; exit }
+' "$ROOT_DIR/Cargo.toml")"
 
-if [[ -z "$DEB_FILE" ]]; then
-  echo "No .deb artifact found. Check dx output above for the exact path." >&2
+if [[ -z "$CARGO_VERSION" ]]; then
+  echo "Could not determine package version from Cargo.toml [package].version." >&2
   exit 1
 fi
 
+DEB_ARCH="$(dpkg --print-architecture)"
+STAGE_DIR="$ROOT_DIR/dist/deb-root"
+DEB_FILE="$ROOT_DIR/dist/butterfly-bot_${CARGO_VERSION}_${DEB_ARCH}.deb"
+
+echo "==> Staging Debian filesystem"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR/DEBIAN"
+mkdir -p "$STAGE_DIR/usr/bin"
+mkdir -p "$STAGE_DIR/usr/lib/butterfly-bot/wasm"
+mkdir -p "$STAGE_DIR/usr/share/icons/hicolor"
+mkdir -p "$STAGE_DIR/usr/share/applications"
+
+cat > "$STAGE_DIR/DEBIAN/control" <<EOF
+Package: butterfly-bot
+Version: $CARGO_VERSION
+Section: utils
+Priority: optional
+Architecture: $DEB_ARCH
+Maintainer: Bevan Hunt
+Description: Butterfly Bot personal-ops assistant for Ubuntu and Debian
+ Butterfly Bot is a desktop personal-ops assistant that is an autonomous agent with local tools, planning, and secure workflows. It helps you manage tasks, automate workflows, and integrate with your local environment while keeping your data private and secure.
+EOF
+
+cat > "$STAGE_DIR/usr/share/applications/butterfly-bot.desktop" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Butterfly Bot
+Comment=Personal-ops assistant with local tools, planning, and secure workflows
+Exec=butterfly-bot
+Icon=butterfly-bot
+Terminal=false
+Categories=Utility;Office;Productivity;
+Keywords=assistant;ai;productivity;planning;tasks;
+StartupNotify=true
+StartupWMClass=butterfly-bot
+EOF
+
+install -m 0755 "$ROOT_DIR/target/release/butterfly-bot" "$STAGE_DIR/usr/bin/butterfly-bot"
+install -m 0755 "$ROOT_DIR/target/release/butterfly-botd" "$STAGE_DIR/usr/bin/butterfly-botd"
+
+cp "$ROOT_DIR/wasm/"*_tool.wasm "$STAGE_DIR/usr/lib/butterfly-bot/wasm/"
+cp -r "$ROOT_DIR/assets/icons/hicolor"/* "$STAGE_DIR/usr/share/icons/hicolor/"
+
+echo "==> Building Debian package"
+mkdir -p "$ROOT_DIR/dist"
+rm -f "$DEB_FILE"
+dpkg-deb --build "$STAGE_DIR" "$DEB_FILE"
+
 echo "Built: $DEB_FILE"
-echo "Install with: sudo dpkg -i "$DEB_FILE""
+echo "Install with: sudo dpkg -i \"$DEB_FILE\""

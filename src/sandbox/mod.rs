@@ -119,6 +119,7 @@ impl SandboxSettings {
                 "kv.sqlite.todo.complete",
                 "kv.sqlite.todo.reopen",
                 "kv.sqlite.todo.delete",
+                "kv.sqlite.todo.clear",
                 "kv.sqlite.todo.reorder",
             ],
             "tasks" => vec![
@@ -127,6 +128,7 @@ impl SandboxSettings {
                 "kv.sqlite.tasks.enable",
                 "kv.sqlite.tasks.disable",
                 "kv.sqlite.tasks.delete",
+                "kv.sqlite.tasks.clear",
             ],
             "reminders" => vec![
                 "kv.sqlite.reminders.create",
@@ -142,6 +144,7 @@ impl SandboxSettings {
                 "kv.sqlite.planning.get",
                 "kv.sqlite.planning.update",
                 "kv.sqlite.planning.delete",
+                "kv.sqlite.planning.clear",
             ],
             "wakeup" => vec![
                 "kv.sqlite.wakeup.create",
@@ -156,6 +159,14 @@ impl SandboxSettings {
             "github" => vec!["github.list_tools", "github.call_tool"],
             "zapier" => vec!["zapier.list_tools", "zapier.call_tool"],
             "search_internet" => vec!["search.internet"],
+            "solana" => vec![
+                "solana.wallet",
+                "solana.balance",
+                "solana.transfer",
+                "solana.simulate_transfer",
+                "solana.tx_status",
+                "solana.tx_history",
+            ],
             _ => Vec::new(),
         }
         .into_iter()
@@ -187,6 +198,10 @@ mod tests {
             settings.execution_plan("planning").runtime,
             ToolRuntime::Wasm
         );
+        assert!(settings
+            .execution_plan("solana")
+            .tool_config
+            .is_capability_allowed("solana.balance"));
         assert!(settings
             .execution_plan("reminders")
             .tool_config
@@ -301,7 +316,12 @@ mod tests {
         let mut cfg = ToolSandboxConfig::default();
         cfg.wasm.module = Some(generic.to_string());
 
-        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+        let resolved = WasmRuntime::resolve_module_path(tool_name, &cfg);
+        assert!(
+            resolved.ends_with("/__test_reminders_tool.wasm")
+                || resolved.ends_with("\\__test_reminders_tool.wasm"),
+            "unexpected module path: {resolved}"
+        );
 
         let _ = fs::remove_file(generic);
         let _ = fs::remove_file(default);
@@ -317,7 +337,12 @@ mod tests {
         let mut cfg = ToolSandboxConfig::default();
         cfg.wasm.module = Some("./wasm/does_not_exist.wasm".to_string());
 
-        assert_eq!(WasmRuntime::resolve_module_path(tool_name, &cfg), default);
+        let resolved = WasmRuntime::resolve_module_path(tool_name, &cfg);
+        assert!(
+            resolved.ends_with("/__test_todo_tool.wasm")
+                || resolved.ends_with("\\__test_todo_tool.wasm"),
+            "unexpected module path: {resolved}"
+        );
 
         let _ = fs::remove_file(default);
     }
@@ -578,6 +603,13 @@ impl WasmRuntime {
     fn default_module_path(tool_name: &str) -> String {
         let file_name = Self::module_filename(tool_name);
         let fallback = PathBuf::from(".").join("wasm").join(&file_name);
+
+        if let Ok(wasm_dir) = crate::wasm_bundle::ensure_bundled_wasm_tools() {
+            let bundled = wasm_dir.join(&file_name);
+            if bundled.exists() {
+                return bundled.to_string_lossy().to_string();
+            }
+        }
 
         for root in Self::candidate_wasm_roots() {
             let candidate = root.join(&file_name);

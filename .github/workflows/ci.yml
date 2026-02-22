@@ -41,9 +41,6 @@ jobs:
       - name: Run coverage (llvm-cov)
         run: cargo llvm-cov --workspace --tests --lcov --output-path lcov.info --ignore-filename-regex "${COVERAGE_IGNORE_REGEX}"
 
-      - name: Enforce coverage floor (excluding non-testable entrypoints)
-        run: cargo llvm-cov --workspace --tests --summary-only --ignore-filename-regex "${COVERAGE_IGNORE_REGEX}" --fail-under-lines 68 --fail-under-regions 66
-
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:

@@ -33,10 +33,16 @@ pub struct ReminderItem {
     pub fired_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DueReminder {
+    pub user_id: String,
+    pub item: ReminderItem,
+}
+
 #[derive(Queryable)]
 struct ReminderRow {
     id: i32,
-    _user_id: String,
+    user_id: String,
     title: String,
     due_at: i64,
     created_at: i64,
@@ -172,6 +178,20 @@ impl ReminderStore {
         Ok(updated > 0)
     }
 
+    pub async fn reopen_reminder(&self, user_id: &str, id: i32) -> Result<bool> {
+        let mut conn = self.conn().await?;
+        let updated = diesel::update(
+            reminders::table
+                .filter(reminders::user_id.eq(user_id))
+                .filter(reminders::id.eq(id)),
+        )
+        .set(reminders::completed_at.eq::<Option<i64>>(None))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(updated > 0)
+    }
+
     pub async fn delete_reminder(&self, user_id: &str, id: i32) -> Result<bool> {
         let mut conn = self.conn().await?;
         let deleted = diesel::delete(
@@ -263,6 +283,49 @@ impl ReminderStore {
         Ok(rows.into_iter().map(map_row).collect())
     }
 
+    pub async fn due_reminders_all(&self, now: i64, limit: usize) -> Result<Vec<DueReminder>> {
+        let rows = self.peek_due_reminders_all_rows(now, limit).await?;
+
+        if !rows.is_empty() {
+            let ids: Vec<i32> = rows.iter().map(|row| row.id).collect();
+            let mut conn = self.conn().await?;
+            diesel::update(reminders::table.filter(reminders::id.eq_any(&ids)))
+                .set((
+                    reminders::fired_at.eq(Some(now)),
+                    reminders::completed_at.eq(Some(now)),
+                ))
+                .execute(&mut conn)
+                .await
+                .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        }
+
+        Ok(rows.into_iter().map(map_due_row).collect())
+    }
+
+    pub async fn peek_due_reminders_all(&self, now: i64, limit: usize) -> Result<Vec<DueReminder>> {
+        let rows = self.peek_due_reminders_all_rows(now, limit).await?;
+        Ok(rows.into_iter().map(map_due_row).collect())
+    }
+
+    pub async fn mark_fired_reminder(&self, user_id: &str, id: i32, now: i64) -> Result<bool> {
+        let mut conn = self.conn().await?;
+        let updated = diesel::update(
+            reminders::table
+                .filter(reminders::user_id.eq(user_id))
+                .filter(reminders::id.eq(id))
+                .filter(reminders::completed_at.is_null())
+                .filter(reminders::fired_at.is_null()),
+        )
+        .set((
+            reminders::fired_at.eq(Some(now)),
+            reminders::completed_at.eq(Some(now)),
+        ))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(updated > 0)
+    }
+
     pub async fn peek_due_reminders(
         &self,
         user_id: &str,
@@ -295,6 +358,27 @@ impl ReminderStore {
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
         crate::db::apply_sqlcipher_key_async(&mut conn).await?;
         Ok(conn)
+    }
+
+    async fn peek_due_reminders_all_rows(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<ReminderRow>> {
+        let mut conn = self.conn().await?;
+        let mut query = reminders::table
+            .filter(reminders::completed_at.is_null())
+            .filter(reminders::due_at.le(now))
+            .filter(reminders::fired_at.is_null())
+            .into_boxed();
+        if limit > 0 {
+            query = query.limit(limit as i64);
+        }
+        query
+            .order(reminders::due_at.asc())
+            .load(&mut conn)
+            .await
+            .map_err(|e| ButterflyBotError::Runtime(e.to_string()))
     }
 }
 
@@ -333,6 +417,14 @@ fn map_row(row: ReminderRow) -> ReminderItem {
         created_at: row.created_at,
         completed_at: row.completed_at,
         fired_at: row.fired_at,
+    }
+}
+
+fn map_due_row(row: ReminderRow) -> DueReminder {
+    let user_id = row.user_id.clone();
+    DueReminder {
+        user_id,
+        item: map_row(row),
     }
 }
 
@@ -509,5 +601,37 @@ mod tests {
         assert_eq!(completed[0].id, created.id);
         assert!(completed[0].fired_at.is_some());
         assert!(completed[0].completed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn due_reminders_all_returns_items_for_multiple_users_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("reminders.db");
+        let db_path = db_path.to_string_lossy().to_string();
+        let store = ReminderStore::new(&db_path).await.expect("store");
+
+        let now = 1_771_147_543_i64;
+        store
+            .create_reminder("u1", "Feed the dogs", now - 5)
+            .await
+            .expect("create reminder u1");
+        store
+            .create_reminder("u2", "Feed the cats", now - 7)
+            .await
+            .expect("create reminder u2");
+
+        let due = store
+            .due_reminders_all(now, 10)
+            .await
+            .expect("due reminders all");
+        assert_eq!(due.len(), 2);
+        assert!(due.iter().any(|entry| entry.user_id == "u1"));
+        assert!(due.iter().any(|entry| entry.user_id == "u2"));
+
+        let second = store
+            .due_reminders_all(now + 1, 10)
+            .await
+            .expect("due reminders all second call");
+        assert!(second.is_empty());
     }
 }

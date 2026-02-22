@@ -172,6 +172,12 @@ where
     }
 }
 
+fn is_legacy_ollama_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    normalized.starts_with("http://localhost:11434")
+        || normalized.starts_with("http://127.0.0.1:11434")
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub provider: Option<ProviderConfig>,
@@ -194,23 +200,42 @@ pub struct Config {
 }
 impl Config {
     pub fn runtime_provider(&self) -> RuntimeProvider {
-        let base_url = self
-            .openai
-            .as_ref()
-            .and_then(|openai| openai.base_url.as_deref())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-
-        if base_url.starts_with("http://localhost:11434")
-            || base_url.starts_with("http://127.0.0.1:11434")
-        {
-            RuntimeProvider::Ollama
-        } else {
-            RuntimeProvider::Openai
-        }
+        RuntimeProvider::Openai
     }
 
     fn apply_security_defaults(mut self) -> Self {
+        if let Some(openai) = self.openai.as_mut() {
+            if let Some(base_url) = openai.base_url.as_deref() {
+                if is_legacy_ollama_base_url(base_url) {
+                    openai.base_url = Some("https://api.openai.com/v1".to_string());
+                }
+            }
+            let migrate_model = openai
+                .model
+                .as_deref()
+                .map(|model| {
+                    let model = model.trim();
+                    model.eq_ignore_ascii_case("gpt-5.2")
+                        || model.eq_ignore_ascii_case("gpt-5-mini")
+                })
+                .unwrap_or(true);
+            if migrate_model {
+                openai.model = Some("gpt-4.1-mini".to_string());
+            }
+        }
+
+        if let Some(memory) = self.memory.as_mut() {
+            let drop_memory_openai = memory
+                .openai
+                .as_ref()
+                .and_then(|cfg| cfg.base_url.as_deref())
+                .map(is_legacy_ollama_base_url)
+                .unwrap_or(false);
+            if drop_memory_openai {
+                memory.openai = None;
+            }
+        }
+
         let tools = self.tools.get_or_insert_with(|| Value::Object(Map::new()));
         if let Some(tools_obj) = tools.as_object_mut() {
             let settings = tools_obj
@@ -286,24 +311,24 @@ impl Config {
     }
 
     pub fn convention_defaults(db_path: &str) -> Self {
-        let model = "ministral-3:8b".to_string();
+        let router_model = "gpt-4.1-mini".to_string();
         Self {
             provider: Some(ProviderConfig {
-                runtime: RuntimeProvider::Ollama,
+                runtime: RuntimeProvider::Openai,
             }),
             openai: Some(OpenAiConfig {
                 api_key: None,
-                model: Some(model.clone()),
-                base_url: Some("http://localhost:11434/v1".to_string()),
+                model: Some(router_model),
+                base_url: Some("https://api.openai.com/v1".to_string()),
             }),
             heartbeat_source: default_heartbeat_source(),
             prompt_source: default_prompt_source(),
             memory: Some(MemoryConfig {
                 enabled: Some(true),
                 sqlite_path: Some(db_path.to_string()),
-                summary_model: Some(model),
-                embedding_model: Some("embeddinggemma:latest".to_string()),
-                rerank_model: Some("ministral-3:8b".to_string()),
+                summary_model: Some("gpt-4.1-mini".to_string()),
+                embedding_model: Some("text-embedding-3-small".to_string()),
+                rerank_model: Some("gpt-4.1-mini".to_string()),
                 openai: None,
                 context_embed_enabled: Some(false),
                 summary_threshold: None,
@@ -337,16 +362,24 @@ impl Config {
     pub fn resolve_vault(mut self) -> Result<Self> {
         if let Some(openai) = &mut self.openai {
             if openai.api_key.is_none() {
-                if let Some(secret) = crate::vault::get_secret("openai_api_key")? {
-                    openai.api_key = Some(secret);
+                if let Some(secret) = crate::vault::get_secret_required("openai_api_key")? {
+                    let trimmed = secret.trim();
+                    if !trimmed.is_empty() {
+                        openai.api_key = Some(trimmed.to_string());
+                    }
                 }
             }
         }
         if let Some(memory) = &mut self.memory {
             if let Some(openai) = &mut memory.openai {
                 if openai.api_key.is_none() {
-                    if let Some(secret) = crate::vault::get_secret("memory_openai_api_key")? {
-                        openai.api_key = Some(secret);
+                    if let Some(secret) =
+                        crate::vault::get_secret_required("memory_openai_api_key")?
+                    {
+                        let trimmed = secret.trim();
+                        if !trimmed.is_empty() {
+                            openai.api_key = Some(trimmed.to_string());
+                        }
                     }
                 }
             }
@@ -363,7 +396,43 @@ mod tests {
     #[test]
     fn convention_defaults_include_solana_rpc_settings() {
         let config = Config::convention_defaults(":memory:");
-        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Openai);
+        assert_eq!(
+            config
+                .openai
+                .as_ref()
+                .and_then(|openai| openai.base_url.as_deref()),
+            Some("https://api.openai.com/v1")
+        );
+        assert_eq!(
+            config
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.openai.as_ref())
+                .and_then(|openai| openai.base_url.as_deref()),
+            None
+        );
+        assert_eq!(
+            config
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.summary_model.as_deref()),
+            Some("gpt-4.1-mini")
+        );
+        assert_eq!(
+            config
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.rerank_model.as_deref()),
+            Some("gpt-4.1-mini")
+        );
+        assert_eq!(
+            config
+                .memory
+                .as_ref()
+                .and_then(|memory| memory.embedding_model.as_deref()),
+            Some("text-embedding-3-small")
+        );
         let tools = config.tools.expect("tools should be initialized");
 
         let rpc = tools
@@ -408,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_provider_is_inferred_from_base_url_even_with_provider_field() {
+    fn runtime_provider_stays_openai_even_with_local_like_base_url() {
         let mut config = Config::convention_defaults(":memory:");
         config.provider = Some(ProviderConfig {
             runtime: RuntimeProvider::Openai,
@@ -418,11 +487,11 @@ mod tests {
             model: Some("local-model".to_string()),
             base_url: Some("http://127.0.0.1:11434/v1".to_string()),
         });
-        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Openai);
     }
 
     #[test]
-    fn runtime_provider_infers_ollama_from_local_base_url_when_missing_provider_field() {
+    fn runtime_provider_stays_openai_when_provider_field_missing() {
         let mut config = Config::convention_defaults(":memory:");
         config.provider = None;
         config.openai = Some(OpenAiConfig {
@@ -430,7 +499,7 @@ mod tests {
             model: Some("local-model".to_string()),
             base_url: Some("http://127.0.0.1:11434/v1".to_string()),
         });
-        assert_eq!(config.runtime_provider(), RuntimeProvider::Ollama);
+        assert_eq!(config.runtime_provider(), RuntimeProvider::Openai);
     }
 
     #[test]
@@ -465,5 +534,41 @@ mod tests {
             .and_then(|security| security.get("tpm_mode").cloned())
             .and_then(|value| value.as_str().map(|v| v.to_string()));
         assert_eq!(tpm_mode.as_deref(), Some("auto"));
+    }
+
+    #[test]
+    fn apply_security_defaults_migrates_legacy_ollama_urls() {
+        let raw = json!({
+            "openai": {
+                "base_url": "http://127.0.0.1:11434/v1",
+                "model": "gpt-5-mini"
+            },
+            "memory": {
+                "enabled": true,
+                "sqlite_path": ":memory:",
+                "summary_model": "gpt-5-mini",
+                "embedding_model": "text-embedding-3-small",
+                "rerank_model": "gpt-5-mini",
+                "openai": {
+                    "base_url": "http://localhost:11434/v1"
+                }
+            }
+        });
+
+        let config: Config = serde_json::from_value(raw).unwrap();
+        let secured = config.apply_security_defaults();
+
+        assert_eq!(
+            secured
+                .openai
+                .as_ref()
+                .and_then(|cfg| cfg.base_url.as_deref()),
+            Some("https://api.openai.com/v1")
+        );
+        assert!(secured
+            .memory
+            .as_ref()
+            .and_then(|memory| memory.openai.as_ref())
+            .is_none());
     }
 }

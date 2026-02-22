@@ -14,7 +14,11 @@ use butterfly_bot::client::ButterflyBot;
 use butterfly_bot::config::{Config, MarkdownSource, OpenAiConfig};
 use butterfly_bot::config_store;
 use butterfly_bot::daemon::{build_router, AppState};
+use butterfly_bot::inbox_state::InboxStateStore;
+use butterfly_bot::planning::PlanStore;
 use butterfly_bot::reminders::ReminderStore;
+use butterfly_bot::tasks::TaskStore;
+use butterfly_bot::todo::TodoStore;
 
 fn test_app_root() -> std::path::PathBuf {
     static ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
@@ -265,6 +269,801 @@ async fn daemon_process_text_and_memory_search() {
 }
 
 #[tokio::test]
+async fn daemon_inbox_and_actionable_count() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-inbox.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let reminder = reminder_store
+        .create_reminder("u", "Pay electricity bill", now + 120)
+        .await
+        .unwrap();
+
+    let todo_store = TodoStore::new(&db_path).await.unwrap();
+    let _todo_open = todo_store
+        .create_item("u", "Call insurance", Some("Policy renewal"), None)
+        .await
+        .unwrap();
+    let todo_done = todo_store
+        .create_item("u", "Archive docs", None, None)
+        .await
+        .unwrap();
+    let _ = todo_store.set_completed(todo_done.id, true).await.unwrap();
+
+    let task_store = TaskStore::new(&db_path).await.unwrap();
+    let _task = task_store
+        .create_task("u", "Weekly check-in", "send summary", now + 300, Some(60))
+        .await
+        .unwrap();
+
+    let plan_store = PlanStore::new(&db_path).await.unwrap();
+    let _plan = plan_store
+        .create_plan(
+            "u",
+            "Hiring plan",
+            "Close backend role",
+            Some(&json!([
+                {"id": "P1", "title": "Review applicants - T-Shirt Size: M, Story Points: 5, Time Estimate: 1 week, Due Date: 2026-03-01", "owner": "human", "status": "new", "priority": "high"},
+                {"id": "P2", "title": "Generate shortlist", "owner": "agent", "status": "done", "depends_on": ["P1"]}
+            ])),
+            Some("active"),
+        )
+        .await
+        .unwrap();
+
+    let (ui_event_tx, _) = broadcast::channel(32);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox?user_id=u&limit=100&include_done=true")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(items.iter().any(|item| {
+        item.get("source_type").and_then(|v| v.as_str()) == Some("reminder")
+            && item.get("source_id").and_then(|v| v.as_i64()) == Some(reminder.id as i64)
+    }));
+    assert!(items
+        .iter()
+        .any(|item| item.get("source_type").and_then(|v| v.as_str()) == Some("todo")));
+    assert!(items
+        .iter()
+        .any(|item| item.get("source_type").and_then(|v| v.as_str()) == Some("task")));
+    assert!(items
+        .iter()
+        .any(|item| item.get("source_type").and_then(|v| v.as_str()) == Some("plan_step")));
+
+    let parsed_plan_step = items
+        .iter()
+        .find(|item| {
+            item.get("source_type").and_then(|v| v.as_str()) == Some("plan_step")
+                && item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .contains("Review applicants")
+        })
+        .expect("expected parsed plan step");
+    let parsed_due_at = parsed_plan_step
+        .get("due_at")
+        .and_then(|v| v.as_i64())
+        .unwrap_or_default();
+    let expected_utc_midnight = 1_772_323_200i64;
+    assert!(parsed_due_at > 0);
+    assert!((parsed_due_at - expected_utc_midnight).abs() <= 14 * 60 * 60);
+    assert_eq!(
+        parsed_plan_step
+            .get("story_points")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_default(),
+        5
+    );
+    assert_eq!(
+        parsed_plan_step
+            .get("t_shirt_size")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+        "M"
+    );
+    let expected_dependency_ref = parsed_plan_step
+        .get("origin_ref")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+
+    let shortlist_step = items
+        .iter()
+        .find(|item| {
+            item.get("source_type").and_then(|v| v.as_str()) == Some("plan_step")
+                && item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .contains("Generate shortlist")
+        })
+        .expect("expected shortlist step");
+    let shortlist_deps = shortlist_step
+        .get("dependency_refs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        shortlist_deps
+            .iter()
+            .any(|v| v.as_str() == Some(expected_dependency_ref.as_str())),
+        "expected shortlist step to depend on {}",
+        expected_dependency_ref
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox/actionable_count?user_id=u")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let actionable_count = value
+        .get("actionable_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert_eq!(actionable_count, 4);
+}
+
+#[tokio::test]
+async fn daemon_plan_dependency_refs_are_relational_and_visible_in_inbox() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-plan-deps.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let plan_store = PlanStore::new(&db_path).await.unwrap();
+    let plan = plan_store
+        .create_plan(
+            "u",
+            "Dependency plan",
+            "Wire dependency graph",
+            Some(&json!([
+                {"id": "A1", "title": "Prepare schema", "owner": "human"},
+                {"id": "A2", "title": "Hook UI", "owner": "agent", "dependency_refs": ["A1"]}
+            ])),
+            Some("active"),
+        )
+        .await
+        .unwrap();
+
+    let dep_map = plan_store
+        .list_step_dependencies_for_plans(&[plan.id])
+        .await
+        .unwrap();
+    let dependent_step_ref = format!("plan_step:{}:{}", plan.id, 1);
+    let required_step_ref = format!("plan_step:{}:{}", plan.id, 0);
+    let relational_deps = dep_map
+        .get(&dependent_step_ref)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        relational_deps
+            .iter()
+            .any(|dep| dep == &required_step_ref.to_ascii_lowercase()),
+        "expected relational dependency edge {} -> {}",
+        dependent_step_ref,
+        required_step_ref
+    );
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox?user_id=u&limit=100&include_done=true")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let dependent_step = items
+        .iter()
+        .find(|item| item.get("origin_ref").and_then(|v| v.as_str()) == Some(&dependent_step_ref))
+        .expect("expected dependent plan step in inbox");
+    let inbox_deps = dependent_step
+        .get("dependency_refs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        inbox_deps
+            .iter()
+            .any(|dep| dep.as_str() == Some(required_step_ref.as_str())),
+        "expected inbox dependency edge {} -> {}",
+        dependent_step_ref,
+        required_step_ref
+    );
+}
+
+#[tokio::test]
+async fn daemon_plan_dependency_title_aliases_resolve_in_inbox() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-plan-title-alias-deps.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let plan_store = PlanStore::new(&db_path).await.unwrap();
+    let plan = plan_store
+        .create_plan(
+            "u",
+            "Food delivery plan",
+            "Launch service",
+            Some(&json!([
+                {"title": "Conduct market research", "owner": "human"},
+                {"title": "Develop business plan", "owner": "human", "depends_on": "market research"}
+            ])),
+            Some("active"),
+        )
+        .await
+        .unwrap();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox?user_id=u&limit=100&include_done=true")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let dependent_ref = format!("plan_step:{}:{}", plan.id, 1);
+    let prerequisite_ref = format!("plan_step:{}:{}", plan.id, 0);
+    let dependent_item = items
+        .iter()
+        .find(|item| item.get("origin_ref").and_then(|v| v.as_str()) == Some(&dependent_ref))
+        .expect("expected dependent plan step in inbox");
+    let deps = dependent_item
+        .get("dependency_refs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        deps.iter()
+            .any(|value| value.as_str() == Some(prerequisite_ref.as_str())),
+        "expected '{}' to resolve to '{}'",
+        dependent_ref,
+        prerequisite_ref
+    );
+}
+
+#[tokio::test]
+async fn daemon_inbox_parses_todo_dependencies_from_notes_fallback() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-todo-notes-deps.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let todo_store = TodoStore::new(&db_path).await.unwrap();
+    let prereq = todo_store
+        .create_item("u", "Prerequisite todo", Some("first"), None)
+        .await
+        .unwrap();
+    let dependent_notes = format!("Depends On: todo:{}", prereq.id);
+    let _dependent = todo_store
+        .create_item("u", "Dependent todo", Some(&dependent_notes), None)
+        .await
+        .unwrap();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox?user_id=u&limit=100&include_done=true")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let dependent_item = items
+        .iter()
+        .find(|item| {
+            item.get("source_type").and_then(|v| v.as_str()) == Some("todo")
+                && item
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .contains("Dependent todo")
+        })
+        .expect("expected dependent todo item");
+    let deps = dependent_item
+        .get("dependency_refs")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        deps.iter()
+            .any(|value| value.as_str() == Some(format!("todo:{}", prereq.id).as_str())),
+        "expected notes dependency to be visible in inbox"
+    );
+}
+
+#[tokio::test]
+async fn daemon_clear_user_data_endpoint() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-clear-user-data.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let reminder = reminder_store
+        .create_reminder("u", "Call dentist", now + 300)
+        .await
+        .unwrap();
+
+    let todo_store = TodoStore::new(&db_path).await.unwrap();
+    let _todo = todo_store
+        .create_item("u", "Pack bag", Some("for trip"), None)
+        .await
+        .unwrap();
+
+    let task_store = TaskStore::new(&db_path).await.unwrap();
+    let _task = task_store
+        .create_task("u", "Daily recap", "Write recap", now + 60, None)
+        .await
+        .unwrap();
+
+    let plan_store = PlanStore::new(&db_path).await.unwrap();
+    let _plan = plan_store
+        .create_plan("u", "Launch", "ship release", None, Some("active"))
+        .await
+        .unwrap();
+
+    let inbox_state_store = InboxStateStore::new(&db_path).await.unwrap();
+    inbox_state_store
+        .set_status("u", &format!("reminder:{}", reminder.id), "acknowledged")
+        .await
+        .unwrap();
+
+    let (ui_event_tx, _) = broadcast::channel(16);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path: db_path.clone(),
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/clear_user_data")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"user_id":"u"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let cleared = value.get("cleared").cloned().unwrap_or_default();
+    assert!(
+        cleared
+            .get("reminders")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(cleared.get("todos").and_then(|v| v.as_u64()).unwrap_or(0) >= 1);
+    assert!(cleared.get("tasks").and_then(|v| v.as_u64()).unwrap_or(0) >= 1);
+    assert!(cleared.get("plans").and_then(|v| v.as_u64()).unwrap_or(0) >= 1);
+    assert!(
+        cleared
+            .get("inbox_state_overrides")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let reminders = ReminderStore::new(&db_path)
+        .await
+        .unwrap()
+        .list_reminders("u", butterfly_bot::reminders::ReminderStatus::All, 50)
+        .await
+        .unwrap();
+    assert!(reminders.is_empty());
+
+    let todos = TodoStore::new(&db_path)
+        .await
+        .unwrap()
+        .list_items("u", butterfly_bot::todo::TodoStatus::All, 50)
+        .await
+        .unwrap();
+    assert!(todos.is_empty());
+}
+
+#[tokio::test]
+async fn daemon_reminder_delivery_events_endpoint() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-reminder-events.db");
+    let db_path = db_file.to_string_lossy().to_string();
+    let audit_log_path = temp.path().join("reminders_audit.log");
+
+    let cfg = Config {
+        provider: None,
+        openai: Some(OpenAiConfig {
+            api_key: Some("key".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            base_url: Some(server.base_url()),
+        }),
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
+        memory: None,
+        tools: Some(json!({
+            "reminders": {
+                "sqlite_path": db_path,
+                "audit_log_path": audit_log_path.to_string_lossy().to_string()
+            }
+        })),
+        brains: None,
+    };
+    config_store::save_config(&db_path, &cfg).unwrap();
+
+    let line_a = json!({
+        "timestamp": 1,
+        "user_id": "u",
+        "reminder_id": 11,
+        "status": "delivery_attempted",
+        "payload": {"title": "A"}
+    })
+    .to_string();
+    let line_b = json!({
+        "timestamp": 2,
+        "user_id": "u",
+        "reminder_id": 11,
+        "status": "delivered",
+        "payload": {"title": "A"}
+    })
+    .to_string();
+    std::fs::write(&audit_log_path, format!("{line_a}\n{line_b}\n")).unwrap();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(32);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/reminders/delivery_events?user_id=u&limit=10")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let events = value
+        .get("events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[1].get("status").and_then(|v| v.as_str()),
+        Some("delivered")
+    );
+}
+
+#[tokio::test]
+async fn daemon_inbox_transition_persists_status() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-inbox-transition.db");
+    let db_path = db_file.to_string_lossy().to_string();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let reminder = reminder_store
+        .create_reminder("u", "Stateful transition reminder", now + 60)
+        .await
+        .unwrap();
+
+    let (ui_event_tx, _) = broadcast::channel(32);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/inbox/transition")
+                .header("authorization", "Bearer token")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "user_id": "u",
+                        "origin_ref": format!("reminder:{}", reminder.id),
+                        "action": "acknowledge"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/inbox?user_id=u&limit=100&include_done=true")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let items = value
+        .get("items")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let expected_origin = format!("reminder:{}", reminder.id);
+    let transitioned = items
+        .iter()
+        .find(|item| {
+            item.get("origin_ref").and_then(|v| v.as_str()) == Some(expected_origin.as_str())
+        })
+        .cloned();
+    assert!(transitioned.is_some());
+    let transitioned = transitioned.unwrap();
+    assert_eq!(
+        transitioned.get("status").and_then(|v| v.as_str()),
+        Some("acknowledged")
+    );
+}
+
+#[tokio::test]
+async fn daemon_audit_events_endpoint() {
+    let server = MockServer::start_async().await;
+    let agent = make_agent(&server).await;
+    let temp = tempdir().unwrap();
+    let db_file = temp.path().join("daemon-audit-events.db");
+    let db_path = db_file.to_string_lossy().to_string();
+    let audit_log_path = temp.path().join("ui_events.log");
+
+    let cfg = Config {
+        provider: None,
+        openai: Some(OpenAiConfig {
+            api_key: Some("key".to_string()),
+            model: Some("gpt-4o-mini".to_string()),
+            base_url: Some(server.base_url()),
+        }),
+        heartbeat_source: MarkdownSource::default_heartbeat(),
+        prompt_source: MarkdownSource::default_prompt(),
+        memory: None,
+        tools: Some(json!({
+            "settings": {
+                "ui_event_log_path": audit_log_path.to_string_lossy().to_string()
+            }
+        })),
+        brains: None,
+    };
+    config_store::save_config(&db_path, &cfg).unwrap();
+
+    let line_a = json!({
+        "timestamp": 10,
+        "event_type": "inbox_transition",
+        "user_id": "u",
+        "tool": "inbox",
+        "status": "acknowledged"
+    })
+    .to_string();
+    let line_b = json!({
+        "timestamp": 11,
+        "event_type": "tasks",
+        "user_id": "u",
+        "tool": "tasks",
+        "status": "ok"
+    })
+    .to_string();
+    std::fs::write(&audit_log_path, format!("{line_a}\n{line_b}\n")).unwrap();
+
+    let reminder_store = ReminderStore::new(&db_path).await.unwrap();
+    let (ui_event_tx, _) = broadcast::channel(32);
+    let state = AppState {
+        agent: Arc::new(RwLock::new(Arc::new(agent))),
+        reminder_store: Arc::new(reminder_store),
+        signer_service: butterfly_bot::security::signer_daemon::SignerService::default(),
+        token: "token".to_string(),
+        ui_event_tx,
+        db_path,
+    };
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/audit/events?user_id=u&limit=10")
+                .header("authorization", "Bearer token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let events = value
+        .get("events")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].get("event_type").and_then(|v| v.as_str()),
+        Some("inbox_transition")
+    );
+}
+
+#[tokio::test]
 async fn daemon_doctor_requires_auth_and_returns_checks() {
     let server = MockServer::start_async().await;
     let agent = make_agent(&server).await;
@@ -458,7 +1257,7 @@ async fn daemon_factory_reset_requires_auth_and_returns_default_config() {
         .and_then(|cfg| cfg.get("openai"))
         .and_then(|openai| openai.get("base_url"))
         .and_then(|base_url| base_url.as_str());
-    assert_eq!(openai_base_url, Some("http://localhost:11434/v1"));
+    assert_eq!(openai_base_url, Some("https://api.openai.com/v1"));
 
     let prompt_source_type = value
         .get("config")
@@ -661,7 +1460,12 @@ async fn daemon_x_api_key_auth_and_reload_config_workflow() {
     let db_file = temp.path().join("daemon-reload-config.db");
     let db_path = db_file.to_string_lossy().to_string();
 
-    let config = Config::convention_defaults(&db_path);
+    let mut config = Config::convention_defaults(&db_path);
+    config.openai = Some(OpenAiConfig {
+        api_key: Some("key".to_string()),
+        model: Some("gpt-4o-mini".to_string()),
+        base_url: Some(server.base_url()),
+    });
     config_store::save_config(&db_path, &config).expect("save config for reload");
 
     let reminder_store = ReminderStore::new(&db_path).await.unwrap();
