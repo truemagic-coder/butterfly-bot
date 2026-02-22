@@ -116,6 +116,12 @@ struct ScheduledTasksJob {
     audit_log_path: Option<String>,
 }
 
+struct ReminderDispatchJob {
+    store: Arc<ReminderStore>,
+    interval: Duration,
+    ui_event_tx: broadcast::Sender<UiEvent>,
+}
+
 #[async_trait::async_trait]
 impl ScheduledJob for ScheduledTasksJob {
     fn name(&self) -> &str {
@@ -187,6 +193,40 @@ impl ScheduledJob for ScheduledTasksJob {
                 status.as_str(),
                 payload,
             );
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl ScheduledJob for ReminderDispatchJob {
+    fn name(&self) -> &str {
+        "reminder_dispatch"
+    }
+
+    fn interval(&self) -> Duration {
+        self.interval
+    }
+
+    async fn run(&self) -> Result<()> {
+        let now = now_ts();
+        let due = self.store.due_reminders_all(now, 32).await?;
+        for reminder in due {
+            let title = reminder.item.title.clone();
+            let payload = json!({
+                "id": reminder.item.id,
+                "title": title,
+                "due_at": reminder.item.due_at,
+            });
+            let _ = self.ui_event_tx.send(UiEvent {
+                event_type: "reminder".to_string(),
+                user_id: reminder.user_id,
+                tool: "reminders".to_string(),
+                status: "due".to_string(),
+                payload,
+                timestamp: now,
+            });
+            send_desktop_notification("Butterfly Bot reminder", &title);
         }
         Ok(())
     }
@@ -2578,6 +2618,17 @@ where
         ui_event_tx: ui_event_tx.clone(),
         audit_log_path: tasks_audit_log_path(Some(&config)),
     }));
+    let reminders_poll_seconds = Some(&config)
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| tools.get("reminders"))
+        .and_then(|reminders| reminders.get("poll_seconds"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(10);
+    scheduler.register_job(Arc::new(ReminderDispatchJob {
+        store: reminder_store.clone(),
+        interval: Duration::from_secs(reminders_poll_seconds.max(1)),
+        ui_event_tx: ui_event_tx.clone(),
+    }));
     scheduler.start();
 
     let state = AppState {
@@ -2712,6 +2763,41 @@ fn now_ts() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+fn send_desktop_notification(summary: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(err) = notify_rust::Notification::new()
+            .summary(summary)
+            .body(body)
+            .show()
+        {
+            tracing::warn!(error = %err, "Desktop notification failed");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let escaped_summary = summary.replace('\\', "\\\\").replace('"', "\\\"");
+        let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            escaped_body, escaped_summary
+        );
+        if let Err(err) = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+        {
+            tracing::warn!(error = %err, "Desktop notification failed");
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (summary, body);
+    }
 }
 
 fn wakeup_audit_log_path(config: Option<&Config>) -> Option<String> {

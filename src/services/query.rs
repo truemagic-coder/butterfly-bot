@@ -4,7 +4,7 @@ use async_stream::try_stream;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use std::hash::Hasher;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use md5::{Digest, Md5};
 
@@ -639,8 +639,21 @@ fn should_skip_memory_line(line: &str) -> bool {
         || lower.contains("need your api key")
 }
 
-async fn build_reminder_context(_store: &ReminderStore, _user_id: &str) -> Option<String> {
-    None
+async fn build_reminder_context(store: &ReminderStore, user_id: &str) -> Option<String> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    let due = store.due_reminders(user_id, now, 10).await.ok()?;
+    if due.is_empty() {
+        return None;
+    }
+
+    let mut context = String::from("DUE REMINDERS (notify the user naturally in this reply):\n");
+    for reminder in due {
+        context.push_str(&format!(
+            "- {} (id: {}, due_at_unix: {})\n",
+            reminder.title, reminder.id, reminder.due_at
+        ));
+    }
+    Some(context)
 }
 
 fn should_include_semantic_memory(query: &str) -> bool {
