@@ -419,12 +419,16 @@ impl Tool for SolanaTool {
                             mint,
                             &policy.commitment,
                         )
-                        .await?)
-                        .ok_or_else(|| {
-                            ButterflyBotError::Runtime(
-                                "Destination token account for payee+mint not found".to_string(),
-                            )
-                        })?;
+                        .await?);
+
+                    let (destination_token_account, create_destination_ata) =
+                        match destination_token_account {
+                            Some(account) => (account, false),
+                            None => (
+                                crate::solana_rpc::derive_associated_token_address(to, mint)?,
+                                true,
+                            ),
+                        };
 
                     let decimals = params
                         .get("decimals")
@@ -448,6 +452,8 @@ impl Tool for SolanaTool {
                                 source_token_account: &source_token_account,
                                 mint,
                                 destination_token_account: &destination_token_account,
+                                destination_owner: Some(to),
+                                create_destination_ata,
                                 amount_atomic: amount_atomic.unwrap_or_default(),
                                 decimals,
                                 latest_blockhash: &latest_blockhash,
@@ -476,6 +482,8 @@ impl Tool for SolanaTool {
                                     source_token_account: &source_token_account,
                                     mint,
                                     destination_token_account: &destination_token_account,
+                                    destination_owner: Some(to),
+                                    create_destination_ata,
                                     amount_atomic: amount_atomic.unwrap_or_default(),
                                     decimals,
                                     latest_blockhash: &latest_blockhash,
@@ -494,6 +502,8 @@ impl Tool for SolanaTool {
                                     source_token_account: &source_token_account,
                                     mint,
                                     destination_token_account: &destination_token_account,
+                                    destination_owner: Some(to),
+                                    create_destination_ata,
                                     amount_atomic: amount_atomic.unwrap_or_default(),
                                     decimals,
                                     latest_blockhash: &latest_blockhash,

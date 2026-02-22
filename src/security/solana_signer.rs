@@ -29,7 +29,7 @@ fn encode_seed(seed: &[u8; 32]) -> String {
 fn ensure_signing_key(user_id: &str, actor: &str) -> Result<SigningKey> {
     let secret_name = wallet_secret_name(user_id, actor);
 
-    if let Some(existing) = crate::vault::get_secret(&secret_name)? {
+    if let Some(existing) = crate::vault::get_secret_required(&secret_name)? {
         let seed = decode_seed(existing.trim())?;
         return Ok(SigningKey::from_bytes(&seed));
     }

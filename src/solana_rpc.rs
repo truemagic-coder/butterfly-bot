@@ -7,6 +7,7 @@ use solana_sdk::{
     hash::Hash,
     instruction::{AccountMeta, Instruction},
     message::Message,
+    pubkey,
     pubkey::Pubkey,
     signature::{Keypair, Signer},
     transaction::Transaction,
@@ -153,11 +154,33 @@ pub struct SplTransferTransactionBuildArgs<'a> {
     pub source_token_account: &'a str,
     pub mint: &'a str,
     pub destination_token_account: &'a str,
+    pub destination_owner: Option<&'a str>,
+    pub create_destination_ata: bool,
     pub amount_atomic: u64,
     pub decimals: u8,
     pub latest_blockhash: &'a str,
     pub policy: &'a SolanaRpcExecutionPolicy,
     pub unit_limit: u32,
+}
+
+pub fn derive_associated_token_address(owner: &str, mint: &str) -> Result<String> {
+    let owner_pubkey = Pubkey::from_str(owner)
+        .map_err(|e| ButterflyBotError::Runtime(format!("invalid owner pubkey: {e}")))?;
+    let mint_pubkey = Pubkey::from_str(mint)
+        .map_err(|e| ButterflyBotError::Runtime(format!("invalid mint pubkey: {e}")))?;
+    let token_program = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+    let ata_program = pubkey!("ATokenGPvbdGVxr1hDo4d5xQmPG2vVnSABtZ1fYx4hQ");
+
+    let (ata, _) = Pubkey::find_program_address(
+        &[
+            owner_pubkey.as_ref(),
+            token_program.as_ref(),
+            mint_pubkey.as_ref(),
+        ],
+        &ata_program,
+    );
+
+    Ok(ata.to_string())
 }
 
 pub fn build_spl_transfer_transaction_base64_with_unit_limit(
@@ -198,13 +221,41 @@ pub fn build_spl_transfer_transaction_base64_with_unit_limit(
         data,
     };
 
-    let instructions = vec![
+    let mut instructions = vec![
         ComputeBudgetInstruction::set_compute_unit_limit(args.unit_limit),
         ComputeBudgetInstruction::set_compute_unit_price(
             args.policy.compute_budget.unit_price_microlamports,
         ),
-        transfer_checked_ix,
     ];
+
+    if args.create_destination_ata {
+        let owner = args.destination_owner.ok_or_else(|| {
+            ButterflyBotError::Runtime(
+                "destination_owner is required when create_destination_ata is enabled"
+                    .to_string(),
+            )
+        })?;
+        let owner_pubkey = Pubkey::from_str(owner)
+            .map_err(|e| ButterflyBotError::Runtime(format!("invalid destination owner pubkey: {e}")))?;
+        let ata_program = pubkey!("ATokenGPvbdGVxr1hDo4d5xQmPG2vVnSABtZ1fYx4hQ");
+        let system_program = pubkey!("11111111111111111111111111111111");
+
+        let create_idempotent_ata_ix = Instruction {
+            program_id: ata_program,
+            accounts: vec![
+                AccountMeta::new(signer.pubkey(), true),
+                AccountMeta::new(destination, false),
+                AccountMeta::new_readonly(owner_pubkey, false),
+                AccountMeta::new_readonly(mint, false),
+                AccountMeta::new_readonly(system_program, false),
+                AccountMeta::new_readonly(token_program, false),
+            ],
+            data: vec![1u8],
+        };
+        instructions.push(create_idempotent_ata_ix);
+    }
+
+    instructions.push(transfer_checked_ix);
 
     let message = Message::new(&instructions, Some(&signer.pubkey()));
     let tx = Transaction::new(&[&signer], message, recent_blockhash);

@@ -675,6 +675,17 @@ impl AgentService {
             || normalized_user_prompt.contains(" tx")
             || normalized_user_prompt.contains("history")
             || looks_like_x402_request;
+        let asks_for_wallet_address_only = (normalized_user_prompt.contains("wallet address")
+            || normalized_user_prompt.contains("my address")
+            || (normalized_user_prompt.contains("wallet")
+                && normalized_user_prompt.contains("address")))
+            && !normalized_user_prompt.contains("balance")
+            && !normalized_user_prompt.contains("transfer")
+            && !normalized_user_prompt.contains("send")
+            && !normalized_user_prompt.contains("transaction")
+            && !normalized_user_prompt.contains("tx")
+            && !normalized_user_prompt.contains("history")
+            && !looks_like_x402_request;
 
         let active_tools: Vec<Arc<dyn crate::interfaces::plugins::Tool>> =
             if looks_like_x402_request && (has_solana_tool || has_http_call_tool) {
@@ -712,10 +723,16 @@ impl AgentService {
         let mut x402_solana_attempted = false;
         let mut has_executed_tool_call = false;
         let mut x402_intent: Option<CanonicalX402Intent> = None;
+        let mut last_x402_solana_error: Option<String> = None;
         let x402_strict_guard = looks_like_x402_request && has_http_call_tool;
 
         if requires_workflow_tool_action && !has_workflow_tool {
             return Ok("no-op: I can't execute this workflow request because `todo`/`tasks`/`reminders`/`planning` tools are not available for this agent.".to_string());
+        }
+
+        if has_solana_tool && asks_for_wallet_address_only {
+            let address = crate::security::solana_signer::wallet_address(user_id, "agent")?;
+            return Ok(format!("Your Solana wallet address is {}.", address));
         }
 
         if looks_like_x402_request && has_http_call_tool {
@@ -949,6 +966,22 @@ impl AgentService {
                         continue;
                     }
                 }
+
+                if looks_like_x402_request {
+                    let mentions_runtime_or_manual = lowered.contains("runtime error")
+                        || lowered.contains("unable to execute")
+                        || lowered.contains("manually send")
+                        || lowered.contains("manual")
+                        || lowered.contains("try again later");
+                    if mentions_runtime_or_manual {
+                        if let Some(intent) = x402_intent.as_ref() {
+                            return Ok(grounded_x402_failure_response(
+                                intent,
+                                last_x402_solana_error.as_deref(),
+                            ));
+                        }
+                    }
+                }
                 last_text = response.text.clone();
             }
             if response.tool_calls.is_empty() {
@@ -977,6 +1010,9 @@ impl AgentService {
             if let Some(intent) = x402_intent.as_ref() {
                 if let Some(summary) = grounded_x402_submission_response(intent, &results) {
                     return Ok(summary);
+                }
+                if let Some(error) = latest_x402_solana_error(&results) {
+                    last_x402_solana_error = Some(error);
                 }
             }
             if let Some(grounded) = grounded_solana_response(user_message_only, &results) {
@@ -1484,6 +1520,64 @@ fn grounded_x402_submission_response(
     }
 
     None
+}
+
+fn latest_x402_solana_error(results: &[serde_json::Value]) -> Option<String> {
+    for item in results.iter().rev() {
+        if item.get("tool").and_then(|v| v.as_str()) != Some("solana") {
+            continue;
+        }
+        let status = item
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if status == "success" {
+            continue;
+        }
+        if let Some(error) = item
+            .get("error")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Some(error.to_string());
+        }
+        if let Some(message) = item
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Some(message.to_string());
+        }
+    }
+    None
+}
+
+fn grounded_x402_failure_response(
+    intent: &CanonicalX402Intent,
+    runtime_error: Option<&str>,
+) -> String {
+    let amount = if x402_asset_is_native_sol(&intent.asset_id) {
+        format!("{:.9}", intent.amount_atomic as f64 / 1_000_000_000f64)
+    } else {
+        let decimals = if asset_symbol(&intent.asset_id) == "USDC" {
+            6
+        } else {
+            6
+        };
+        format_atomic_with_decimals(intent.amount_atomic, decimals)
+    };
+    let symbol = asset_symbol(&intent.asset_id);
+    let err_text = runtime_error
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .unwrap_or("unknown runtime error");
+
+    format!(
+        "I couldn't complete the x402 payment because the Solana transfer failed: {}.\n\nYou can send it manually:\n- Token: {}\n- Amount: {} {} ({} atomic units)\n- Recipient address: {}",
+        err_text, symbol, amount, symbol, intent.amount_atomic, intent.payee
+    )
 }
 
 fn format_atomic_with_decimals(amount: u64, decimals: u32) -> String {

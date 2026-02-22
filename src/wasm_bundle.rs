@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{ButterflyBotError, Result};
 
-const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
+const BUNDLED_WASM_MODULES: [(&str, &[u8]); 12] = [
     (
         "coding_tool.wasm",
         include_bytes!("../wasm/coding_tool.wasm"),
@@ -31,6 +31,10 @@ const BUNDLED_WASM_MODULES: [(&str, &[u8]); 11] = [
     (
         "search_internet_tool.wasm",
         include_bytes!("../wasm/search_internet_tool.wasm"),
+    ),
+    (
+        "solana_tool.wasm",
+        include_bytes!("../wasm/solana_tool.wasm"),
     ),
     ("tasks_tool.wasm", include_bytes!("../wasm/tasks_tool.wasm")),
     ("todo_tool.wasm", include_bytes!("../wasm/todo_tool.wasm")),

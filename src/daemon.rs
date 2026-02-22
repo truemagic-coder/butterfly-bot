@@ -469,6 +469,48 @@ struct SolanaBalanceQuery {
     actor: Option<String>,
 }
 
+fn asks_for_wallet_address_only(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    let asks_for_address = normalized.contains("wallet address")
+        || normalized.contains("my address")
+        || (normalized.contains("wallet") && normalized.contains("address"));
+
+    asks_for_address
+        && !normalized.contains("balance")
+        && !normalized.contains("transfer")
+        && !normalized.contains("send")
+        && !normalized.contains("transaction")
+        && !normalized.contains("tx")
+        && !normalized.contains("history")
+}
+
+fn asks_for_wallet_balance_only(text: &str) -> bool {
+    let normalized = text.to_ascii_lowercase();
+    let asks_for_balance = normalized.contains("balance") || normalized.contains("lamports");
+    let in_solana_context = normalized.contains("solana") || normalized.contains("wallet");
+
+    asks_for_balance
+        && in_solana_context
+        && !normalized.contains("transfer")
+        && !normalized.contains("send")
+        && !normalized.contains("transaction")
+        && !normalized.contains("tx")
+        && !normalized.contains("history")
+}
+
+async fn solana_balance_line_for_user(state: &AppState, user_id: &str) -> Result<String> {
+    let policy = load_solana_rpc_policy(state)?;
+    let endpoint = require_solana_rpc_endpoint(&policy)?;
+    let address = crate::security::solana_signer::wallet_address(user_id, "agent")?;
+    let lamports = crate::solana_rpc::get_balance(&endpoint, &address, &policy.commitment).await?;
+    let sol = lamports as f64 / 1_000_000_000f64;
+
+    Ok(format!(
+        "Your Solana balance is {:.9} SOL ({} lamports).",
+        sol, lamports
+    ))
+}
+
 #[derive(Serialize)]
 struct SolanaBalanceResponse {
     address: String,
@@ -1613,6 +1655,42 @@ async fn process_text(
         return err.into_response();
     }
 
+    if asks_for_wallet_address_only(&payload.text) {
+        match crate::security::solana_signer::wallet_address(&payload.user_id, "agent") {
+            Ok(address) => {
+                return (
+                    StatusCode::OK,
+                    Json(ProcessTextResponse {
+                        text: format!("Your Solana wallet address is {address}."),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    if asks_for_wallet_balance_only(&payload.text) {
+        let balance_line = match solana_balance_line_for_user(&state, &payload.user_id).await {
+            Ok(line) => line,
+            Err(err) => format!("I couldn't fetch your Solana balance right now: {err}"),
+        };
+
+        return (
+            StatusCode::OK,
+            Json(ProcessTextResponse { text: balance_line }),
+        )
+            .into_response();
+    }
+
     let options = ProcessOptions {
         prompt: payload.prompt.clone(),
         images: Vec::new(),
@@ -1662,6 +1740,35 @@ async fn process_text_stream(
         text,
         prompt,
     } = payload;
+
+    if asks_for_wallet_address_only(&text) {
+        let wallet_line = match crate::security::solana_signer::wallet_address(&user_id, "agent")
+        {
+            Ok(address) => format!("Your Solana wallet address is {address}."),
+            Err(err) => format!("[error] {}", err),
+        };
+
+        let body = Body::from(wallet_line);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(body)
+            .unwrap();
+    }
+
+    if asks_for_wallet_balance_only(&text) {
+        let balance_line = match solana_balance_line_for_user(&state, &user_id).await {
+            Ok(line) => line,
+            Err(err) => format!("I couldn't fetch your Solana balance right now: {err}"),
+        };
+
+        let body = Body::from(balance_line);
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/plain; charset=utf-8")
+            .body(body)
+            .unwrap();
+    }
 
     let body = Body::from_stream(async_stream::stream! {
         let mut stream = agent.process_text_stream(&user_id, &text, prompt.as_deref());
@@ -2290,6 +2397,70 @@ fn bootstrap_solana_wallets(config: Option<&Config>) -> Result<()> {
     Ok(())
 }
 
+fn is_unreadable_database_error(err: &ButterflyBotError) -> bool {
+    let lowered = err.to_string().to_ascii_lowercase();
+    lowered.contains("file is not a database")
+        || lowered.contains("file is encrypted or is not a database")
+        || lowered.contains("database disk image is malformed")
+}
+
+fn archive_db_for_recovery(db_path: &str) -> Result<Option<String>> {
+    let path = std::path::Path::new(db_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let file_name = match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => return Ok(None),
+    };
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|dur| dur.as_secs())
+        .unwrap_or(0);
+    let backup_name = format!("{file_name}.recovery-{stamp}.bak");
+    let backup_path = match path.parent() {
+        Some(parent) => parent.join(backup_name),
+        None => return Ok(None),
+    };
+
+    std::fs::rename(path, &backup_path).map_err(|e| {
+        ButterflyBotError::Runtime(format!(
+            "failed to archive unreadable database {} -> {}: {e}",
+            path.to_string_lossy(),
+            backup_path.to_string_lossy()
+        ))
+    })?;
+
+    Ok(Some(backup_path.to_string_lossy().to_string()))
+}
+
+fn load_or_bootstrap_config_with_recovery(db_path: &str) -> Result<Config> {
+    if let Ok(config) = Config::from_store(db_path) {
+        return Ok(config);
+    }
+
+    tracing::warn!("No config in store; writing default config for {}", db_path);
+    let default_config = Config::convention_defaults(db_path);
+
+    match config_store::save_config(db_path, &default_config) {
+        Ok(()) => Ok(default_config),
+        Err(err) if is_unreadable_database_error(&err) => {
+            let backup = archive_db_for_recovery(db_path)?;
+            tracing::warn!(
+                db_path = %db_path,
+                backup_path = backup.as_deref().unwrap_or("(none)"),
+                error = %err,
+                "Recovered unreadable database by archiving and recreating config store"
+            );
+            config_store::save_config(db_path, &default_config)?;
+            Ok(default_config)
+        }
+        Err(err) => Err(err),
+    }
+}
+
 pub async fn run(host: &str, port: u16, db_path: &str, token: &str) -> Result<()> {
     run_with_shutdown(host, port, db_path, token, futures::future::pending::<()>()).await
 }
@@ -2312,29 +2483,17 @@ where
         "Ensured bundled WASM tool modules"
     );
 
-    if Config::from_store(db_path).is_err() {
-        tracing::warn!("No config in store; writing default config for {}", db_path);
-        let default_config = Config::convention_defaults(db_path);
-        config_store::save_config(db_path, &default_config)?;
-    }
+    let config = load_or_bootstrap_config_with_recovery(db_path)?;
 
-    let config = Config::from_store(db_path).ok();
+    tracing::info!(
+        "Daemon config: prompt_source={:?}, heartbeat_source={:?}",
+        config.prompt_source,
+        config.heartbeat_source
+    );
 
-    // ── Log which context/heartbeat source the daemon sees ──
-    if let Some(cfg) = &config {
-        tracing::info!(
-            "Daemon config: prompt_source={:?}, heartbeat_source={:?}",
-            cfg.prompt_source,
-            cfg.heartbeat_source
-        );
-    } else {
-        tracing::error!("Daemon could not load any config from store!");
-    }
+    bootstrap_solana_wallets(Some(&config))?;
 
-    bootstrap_solana_wallets(config.as_ref())?;
-
-    let tick_seconds = config
-        .as_ref()
+    let tick_seconds = Some(&config)
         .and_then(|cfg| cfg.brains.as_ref())
         .and_then(|brains| brains.get("settings"))
         .and_then(|settings| settings.get("tick_seconds"))
@@ -2342,7 +2501,7 @@ where
         .unwrap_or(60);
 
     let (ui_event_tx, _) = broadcast::channel(256);
-    if let Some(path) = ui_event_log_path(config.as_ref()) {
+    if let Some(path) = ui_event_log_path(Some(&config)) {
         let mut rx = ui_event_tx.subscribe();
         let path = path.clone();
         tokio::spawn(async move {
@@ -2362,8 +2521,7 @@ where
     let agent = Arc::new(RwLock::new(Arc::new(
         ButterflyBot::from_store_with_events(db_path, Some(ui_event_tx.clone())).await?,
     )));
-    let reminder_db_path = config
-        .as_ref()
+    let reminder_db_path = Some(&config)
         .and_then(|cfg| serde_json::to_value(cfg).ok())
         .and_then(|value| resolve_reminder_db_path(&value))
         .unwrap_or_else(|| db_path.to_string());
@@ -2375,15 +2533,13 @@ where
         agent: agent.clone(),
         interval: Duration::from_secs(tick_seconds.max(1)),
     }));
-    let wakeup_poll_seconds = config
-        .as_ref()
+    let wakeup_poll_seconds = Some(&config)
         .and_then(|cfg| cfg.tools.as_ref())
         .and_then(|tools| tools.get("wakeup"))
         .and_then(|wakeup| wakeup.get("poll_seconds"))
         .and_then(|value| value.as_u64())
         .unwrap_or(60);
-    let autonomy_cooldown_seconds = config
-        .as_ref()
+    let autonomy_cooldown_seconds = Some(&config)
         .and_then(|cfg| cfg.tools.as_ref())
         .and_then(|tools| {
             tools
@@ -2404,15 +2560,13 @@ where
         store: wakeup_store.clone(),
         interval: Duration::from_secs(wakeup_poll_seconds.max(1)),
         ui_event_tx: ui_event_tx.clone(),
-        audit_log_path: wakeup_audit_log_path(config.as_ref()),
-        heartbeat_source: config
-            .as_ref()
+        audit_log_path: wakeup_audit_log_path(Some(&config)),
+        heartbeat_source: Some(&config)
             .map(|cfg| cfg.heartbeat_source.clone())
             .unwrap_or_else(crate::config::MarkdownSource::default_heartbeat),
         db_path: db_path.to_string(),
     }));
-    let tasks_poll_seconds = config
-        .as_ref()
+    let tasks_poll_seconds = Some(&config)
         .and_then(|cfg| cfg.tools.as_ref())
         .and_then(|tools| tools.get("tasks"))
         .and_then(|tasks| tasks.get("poll_seconds"))
@@ -2423,7 +2577,7 @@ where
         store: task_store.clone(),
         interval: Duration::from_secs(tasks_poll_seconds.max(1)),
         ui_event_tx: ui_event_tx.clone(),
-        audit_log_path: tasks_audit_log_path(config.as_ref()),
+        audit_log_path: tasks_audit_log_path(Some(&config)),
     }));
     scheduler.start();
 

@@ -267,6 +267,10 @@ enum Message {
 }
 
 pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
+    if env_flag_enabled("BUTTERFLY_UI_MANAGE_DAEMON", true) {
+        kill_all_daemons_best_effort();
+    }
+
     let boot_config = config.clone();
     application(
         move || {
@@ -2183,7 +2187,7 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
         Ok(_) | Err(_) => {
             let (_host, port) = parse_daemon_address(&daemon_url);
 
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 let pattern = format!("butterfly-botd.*--port {port}");
                 let status = Command::new("pkill")
@@ -2191,9 +2195,22 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
                     .arg(&pattern)
                     .status()
                     .map_err(|err| format!("Failed to stop daemon process: {err}"))?;
+
                 if !status.success() {
-                    return Err("No matching daemon process found to stop".to_string());
+                    let _ = Command::new("pkill").arg("-f").arg("butterfly-botd").status();
                 }
+
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg(&pattern)
+                    .status();
+                let _ = Command::new("pkill")
+                    .arg("-9")
+                    .arg("-f")
+                    .arg("butterfly-botd")
+                    .status();
 
                 tokio::time::sleep(Duration::from_millis(300)).await;
                 if !check_daemon_health_once(&daemon_url).await {
@@ -2203,7 +2220,7 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
                 Err("Daemon still reachable after stop attempt".to_string())
             }
 
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 Err("No local daemon process to stop".to_string())
             }
@@ -2224,6 +2241,24 @@ fn stop_local_daemon_blocking() -> Result<String, String> {
         Ok("Daemon stopped".to_string())
     } else {
         Ok("No local daemon process to stop".to_string())
+    }
+}
+
+fn kill_all_daemons_best_effort() {
+    let _ = stop_local_daemon_blocking();
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let _ = Command::new("pkill")
+            .arg("-f")
+            .arg("butterfly-botd")
+            .status();
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        let _ = Command::new("pkill")
+            .arg("-9")
+            .arg("-f")
+            .arg("butterfly-botd")
+            .status();
     }
 }
 
