@@ -178,6 +178,20 @@ impl ReminderStore {
         Ok(updated > 0)
     }
 
+    pub async fn reopen_reminder(&self, user_id: &str, id: i32) -> Result<bool> {
+        let mut conn = self.conn().await?;
+        let updated = diesel::update(
+            reminders::table
+                .filter(reminders::user_id.eq(user_id))
+                .filter(reminders::id.eq(id)),
+        )
+        .set(reminders::completed_at.eq::<Option<i64>>(None))
+        .execute(&mut conn)
+        .await
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+        Ok(updated > 0)
+    }
+
     pub async fn delete_reminder(&self, user_id: &str, id: i32) -> Result<bool> {
         let mut conn = self.conn().await?;
         let deleted = diesel::delete(

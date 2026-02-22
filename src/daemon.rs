@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::io::Write;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -13,18 +14,25 @@ use axum::{
     Router,
 };
 use bytes::Bytes;
+use chrono::{DateTime, Local, TimeZone};
+use chrono_english::{parse_date_string, Dialect};
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use futures::StreamExt;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use time::{Date, PrimitiveDateTime, Time, UtcOffset};
 
 use crate::client::ButterflyBot;
 use crate::config::Config;
 use crate::config_store;
 use crate::error::{ButterflyBotError, Result};
 use crate::factories::agent_factory::load_markdown_content;
+use crate::inbox_fsm::{InboxAction, InboxState};
+use crate::inbox_state::InboxStateStore;
 use crate::interfaces::scheduler::ScheduledJob;
+use crate::planning::{resolve_plan_db_path, PlanStore};
 use crate::reminders::{resolve_reminder_db_path, ReminderStore};
 use crate::sandbox::{SandboxSettings, ToolRuntime};
 use crate::scheduler::Scheduler;
@@ -34,7 +42,8 @@ use crate::security::solana_rpc_policy::SolanaRpcExecutionPolicy;
 use crate::security::x402::canonicalize_payment_required;
 use crate::services::agent::UiEvent;
 use crate::services::query::{OutputFormat, ProcessOptions, ProcessResult, UserInput};
-use crate::tasks::TaskStore;
+use crate::tasks::{resolve_task_db_path, TaskStore};
+use crate::todo::{resolve_todo_db_path, TodoStore};
 use crate::vault;
 use crate::wakeup::WakeupStore;
 use tokio::sync::{broadcast, RwLock};
@@ -120,6 +129,7 @@ struct ReminderDispatchJob {
     store: Arc<ReminderStore>,
     interval: Duration,
     ui_event_tx: broadcast::Sender<UiEvent>,
+    audit_log_path: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -213,25 +223,98 @@ impl ScheduledJob for ReminderDispatchJob {
         let due = self.store.peek_due_reminders_all(now, 32).await?;
         for reminder in due {
             let title = reminder.item.title.clone();
-            let payload = json!({
+            let base_payload = json!({
                 "id": reminder.item.id,
                 "title": title,
                 "due_at": reminder.item.due_at,
             });
+
+            let _ = self.ui_event_tx.send(UiEvent {
+                event_type: "reminder_delivery".to_string(),
+                user_id: reminder.user_id.clone(),
+                tool: "reminders".to_string(),
+                status: "queued".to_string(),
+                payload: base_payload.clone(),
+                timestamp: now,
+            });
+            let _ = write_reminder_audit_log(
+                self.audit_log_path.as_deref(),
+                now,
+                &reminder.user_id,
+                reminder.item.id,
+                "queued",
+                base_payload.clone(),
+            );
+
             let _ = self.ui_event_tx.send(UiEvent {
                 event_type: "reminder".to_string(),
                 user_id: reminder.user_id.clone(),
                 tool: "reminders".to_string(),
                 status: "due".to_string(),
-                payload,
+                payload: base_payload.clone(),
                 timestamp: now,
             });
+
+            let _ = self.ui_event_tx.send(UiEvent {
+                event_type: "reminder_delivery".to_string(),
+                user_id: reminder.user_id.clone(),
+                tool: "reminders".to_string(),
+                status: "delivery_attempted".to_string(),
+                payload: base_payload.clone(),
+                timestamp: now,
+            });
+            let _ = write_reminder_audit_log(
+                self.audit_log_path.as_deref(),
+                now,
+                &reminder.user_id,
+                reminder.item.id,
+                "delivery_attempted",
+                base_payload.clone(),
+            );
+
             let delivered = send_desktop_notification("Butterfly Bot reminder", &title);
             if delivered {
                 let _ = self
                     .store
                     .mark_fired_reminder(&reminder.user_id, reminder.item.id, now)
                     .await;
+                let _ = self.ui_event_tx.send(UiEvent {
+                    event_type: "reminder_delivery".to_string(),
+                    user_id: reminder.user_id.clone(),
+                    tool: "reminders".to_string(),
+                    status: "delivered".to_string(),
+                    payload: base_payload.clone(),
+                    timestamp: now,
+                });
+                let _ = write_reminder_audit_log(
+                    self.audit_log_path.as_deref(),
+                    now,
+                    &reminder.user_id,
+                    reminder.item.id,
+                    "delivered",
+                    base_payload.clone(),
+                );
+            } else {
+                let _ = self.ui_event_tx.send(UiEvent {
+                    event_type: "reminder_delivery".to_string(),
+                    user_id: reminder.user_id.clone(),
+                    tool: "reminders".to_string(),
+                    status: "delivery_failed".to_string(),
+                    payload: base_payload,
+                    timestamp: now,
+                });
+                let _ = write_reminder_audit_log(
+                    self.audit_log_path.as_deref(),
+                    now,
+                    &reminder.user_id,
+                    reminder.item.id,
+                    "delivery_failed",
+                    json!({
+                        "id": reminder.item.id,
+                        "title": reminder.item.title,
+                        "due_at": reminder.item.due_at,
+                    }),
+                );
             }
         }
         Ok(())
@@ -432,6 +515,11 @@ struct ClearHistoryRequest {
 }
 
 #[derive(Deserialize)]
+struct ClearUserDataRequest {
+    user_id: String,
+}
+
+#[derive(Deserialize)]
 struct PreloadBootRequest {
     user_id: String,
 }
@@ -452,6 +540,83 @@ struct UiEventStreamQuery {
     user_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct ReminderDeliveryEventsQuery {
+    user_id: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct AuditEventsQuery {
+    user_id: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct InboxQuery {
+    user_id: String,
+    limit: Option<usize>,
+    include_done: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct InboxTransitionRequest {
+    user_id: String,
+    origin_ref: String,
+    action: String,
+}
+
+#[derive(Serialize)]
+struct InboxTransitionResponse {
+    status: String,
+    origin_ref: String,
+    previous_status: String,
+    next_status: String,
+}
+
+#[derive(Serialize, Clone)]
+struct InboxItemResponse {
+    id: String,
+    source_type: String,
+    source_id: i32,
+    title: String,
+    details: Option<String>,
+    owner: String,
+    status: String,
+    priority: String,
+    due_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+    requires_human_action: bool,
+    origin_ref: String,
+    dependency_refs: Vec<String>,
+    t_shirt_size: Option<String>,
+    story_points: Option<i32>,
+    estimate_optimistic_minutes: Option<i32>,
+    estimate_likely_minutes: Option<i32>,
+    estimate_pessimistic_minutes: Option<i32>,
+}
+
+#[derive(Serialize)]
+struct InboxResponse {
+    items: Vec<InboxItemResponse>,
+}
+
+#[derive(Serialize)]
+struct InboxActionableCountResponse {
+    actionable_count: usize,
+}
+
+#[derive(Serialize)]
+struct ReminderDeliveryEventsResponse {
+    events: Vec<Value>,
+}
+
+#[derive(Serialize)]
+struct AuditEventsResponse {
+    events: Vec<Value>,
+}
+
 #[derive(Serialize)]
 struct MemorySearchResponse {
     results: Vec<String>,
@@ -466,6 +631,13 @@ struct ChatHistoryResponse {
 struct ClearHistoryResponse {
     status: String,
     message: String,
+}
+
+#[derive(Serialize)]
+struct ClearUserDataResponse {
+    status: String,
+    message: String,
+    cleared: Value,
 }
 
 #[derive(Serialize)]
@@ -650,12 +822,18 @@ struct FactoryResetConfigResponse {
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/inbox", get(inbox))
+        .route("/inbox/actionable_count", get(inbox_actionable_count))
+        .route("/inbox/transition", post(inbox_transition))
+        .route("/audit/events", get(audit_events))
+        .route("/reminders/delivery_events", get(reminder_delivery_events))
         .route("/doctor", post(doctor))
         .route("/security_audit", post(security_audit))
         .route("/process_text", post(process_text))
         .route("/process_text_stream", post(process_text_stream))
         .route("/chat_history", get(chat_history))
         .route("/clear_user_history", post(clear_user_history))
+        .route("/clear_user_data", post(clear_user_data))
         .route("/memory_search", post(memory_search))
         .route("/preload_boot", post(preload_boot))
         .route("/reminder_stream", get(reminder_stream))
@@ -674,6 +852,1343 @@ pub fn build_router(state: AppState) -> Router {
         .route("/solana/tx/status", get(solana_tx_status))
         .route("/solana/tx/history", get(solana_tx_history))
         .with_state(state)
+}
+
+async fn inbox(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<InboxQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let limit = query.limit.unwrap_or(200).clamp(1, 500);
+    let include_done = query.include_done.unwrap_or(true);
+    match build_inbox_items(&state.db_path, &query.user_id, limit, include_done).await {
+        Ok(items) => (StatusCode::OK, Json(InboxResponse { items })).into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn inbox_actionable_count(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<InboxQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    match build_inbox_items(&state.db_path, &query.user_id, 500, false).await {
+        Ok(items) => {
+            let actionable_count = items
+                .iter()
+                .filter(|item| {
+                    item.owner == "human"
+                        && item.requires_human_action
+                        && matches!(
+                            item.status.as_str(),
+                            "new" | "acknowledged" | "in_progress" | "blocked"
+                        )
+                })
+                .count();
+            (
+                StatusCode::OK,
+                Json(InboxActionableCountResponse { actionable_count }),
+            )
+                .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+fn parse_inbox_status_state(value: &str) -> Option<InboxState> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "new" => Some(InboxState::New),
+        "ack" | "acknowledged" => Some(InboxState::Acknowledged),
+        "in_progress" | "in progress" | "started" => Some(InboxState::InProgress),
+        "blocked" => Some(InboxState::Blocked),
+        "done" | "completed" | "complete" => Some(InboxState::Done),
+        "dismissed" | "archived" => Some(InboxState::Dismissed),
+        _ => None,
+    }
+}
+
+fn inbox_state_to_str(state: InboxState) -> &'static str {
+    match state {
+        InboxState::New => "new",
+        InboxState::Acknowledged => "acknowledged",
+        InboxState::InProgress => "in_progress",
+        InboxState::Blocked => "blocked",
+        InboxState::Done => "done",
+        InboxState::Dismissed => "dismissed",
+    }
+}
+
+fn parse_inbox_action(value: &str) -> Option<InboxAction> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "ack" | "acknowledge" => Some(InboxAction::Acknowledge),
+        "start" => Some(InboxAction::Start),
+        "block" | "blocked" => Some(InboxAction::Block),
+        "done" | "complete" => Some(InboxAction::Done),
+        "reopen" | "undo" | "undone" => Some(InboxAction::Reopen),
+        "dismiss" | "dismissed" => Some(InboxAction::Dismiss),
+        "snooze" => Some(InboxAction::Snooze),
+        _ => None,
+    }
+}
+
+async fn inbox_transition(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<InboxTransitionRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let Some(action) = parse_inbox_action(&payload.action) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Unsupported inbox action".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let items = match build_inbox_items(&state.db_path, &payload.user_id, 1000, true).await {
+        Ok(items) => items,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response()
+        }
+    };
+
+    let Some(item) = items
+        .iter()
+        .find(|item| item.origin_ref == payload.origin_ref)
+        .cloned()
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "Inbox item not found".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(previous_state) = parse_inbox_status_state(&item.status) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid current inbox status".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let Some(next_state) = crate::inbox_fsm::transition(previous_state, action) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid inbox transition".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    if action == InboxAction::Done {
+        match item.source_type.as_str() {
+            "reminder" => {
+                let store = ReminderStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store
+                            .complete_reminder(&payload.user_id, item.source_id)
+                            .await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            "todo" => {
+                let store = TodoStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store.set_completed(item.source_id, true).await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            "task" => {
+                let store = TaskStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store.set_enabled(item.source_id, false).await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if action == InboxAction::Reopen {
+        match item.source_type.as_str() {
+            "reminder" => {
+                let store = ReminderStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store
+                            .reopen_reminder(&payload.user_id, item.source_id)
+                            .await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            "todo" => {
+                let store = TodoStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store.set_completed(item.source_id, false).await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            "task" => {
+                let store = TaskStore::new(&state.db_path).await;
+                match store {
+                    Ok(store) => {
+                        let _ = store.set_enabled(item.source_id, true).await;
+                    }
+                    Err(err) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(ErrorResponse {
+                                error: err.to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if action == InboxAction::Snooze && item.source_type == "reminder" {
+        let store = ReminderStore::new(&state.db_path).await;
+        match store {
+            Ok(store) => {
+                let now = now_ts();
+                let due_at = item.due_at.unwrap_or(now).max(now) + 15 * 60;
+                let _ = store
+                    .snooze_reminder(&payload.user_id, item.source_id, due_at)
+                    .await;
+            }
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let state_store = match InboxStateStore::new(&state.db_path).await {
+        Ok(store) => store,
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    if let Err(err) = state_store
+        .set_status(
+            &payload.user_id,
+            &payload.origin_ref,
+            inbox_state_to_str(next_state),
+        )
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let _ = state.ui_event_tx.send(UiEvent {
+        event_type: "inbox_transition".to_string(),
+        user_id: payload.user_id.clone(),
+        tool: "inbox".to_string(),
+        status: inbox_state_to_str(next_state).to_string(),
+        payload: json!({
+            "origin_ref": payload.origin_ref,
+            "source_type": item.source_type,
+            "source_id": item.source_id,
+            "action": payload.action,
+            "actor": "human",
+            "reason": "manual_transition",
+            "from": inbox_state_to_str(previous_state),
+            "to": inbox_state_to_str(next_state),
+            "previous_status": inbox_state_to_str(previous_state),
+            "next_status": inbox_state_to_str(next_state),
+        }),
+        timestamp: now_ts(),
+    });
+
+    (
+        StatusCode::OK,
+        Json(InboxTransitionResponse {
+            status: "ok".to_string(),
+            origin_ref: payload.origin_ref,
+            previous_status: inbox_state_to_str(previous_state).to_string(),
+            next_status: inbox_state_to_str(next_state).to_string(),
+        }),
+    )
+        .into_response()
+}
+
+async fn reminder_delivery_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ReminderDeliveryEventsQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let config = Config::from_store(&state.db_path).ok();
+    let Some(path) = reminders_audit_log_path(config.as_ref()) else {
+        return (
+            StatusCode::OK,
+            Json(ReminderDeliveryEventsResponse { events: vec![] }),
+        )
+            .into_response();
+    };
+
+    let limit = query.limit.unwrap_or(50).clamp(1, 500);
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(ReminderDeliveryEventsResponse { events: vec![] }),
+            )
+                .into_response()
+        }
+    };
+
+    let mut events = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| {
+            if let Some(user_id) = &query.user_id {
+                event
+                    .get("user_id")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value == user_id)
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if events.len() > limit {
+        let keep_from = events.len() - limit;
+        events = events.split_off(keep_from);
+    }
+
+    (
+        StatusCode::OK,
+        Json(ReminderDeliveryEventsResponse { events }),
+    )
+        .into_response()
+}
+
+async fn audit_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<AuditEventsQuery>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let config = Config::from_store(&state.db_path).ok();
+    let Some(path) = ui_event_log_path(config.as_ref()) else {
+        return (StatusCode::OK, Json(AuditEventsResponse { events: vec![] })).into_response();
+    };
+
+    let limit = query.limit.unwrap_or(200).clamp(1, 2000);
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(content) => content,
+        Err(_) => {
+            return (StatusCode::OK, Json(AuditEventsResponse { events: vec![] })).into_response()
+        }
+    };
+
+    let mut events = content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| {
+            if let Some(user_id) = &query.user_id {
+                let event_user = event.get("user_id").and_then(|value| value.as_str());
+                let event_type = event.get("event_type").and_then(|value| value.as_str());
+                matches!(event_user, Some("system") | Some("daemon"))
+                    || event_user == Some(user_id.as_str())
+                    || matches!(event_type, Some("boot") | Some("autonomy"))
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if events.len() > limit {
+        let keep_from = events.len() - limit;
+        events = events.split_off(keep_from);
+    }
+
+    (StatusCode::OK, Json(AuditEventsResponse { events })).into_response()
+}
+
+fn parse_plan_step_title(step: &Value) -> Option<String> {
+    if let Some(text) = step.as_str() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    for key in ["title", "description", "name", "text", "step"] {
+        if let Some(value) = step.get(key).and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+
+    None
+}
+
+fn normalize_unix_timestamp(value: i64) -> Option<i64> {
+    if value <= 0 {
+        return None;
+    }
+    if value >= 1_000_000_000_000 {
+        return Some(value / 1000);
+    }
+    Some(value)
+}
+
+fn parse_yyyy_mm_dd_to_unix(value: &str) -> Option<i64> {
+    let trimmed = value.trim();
+    let normalized = trimmed.replace('/', "-");
+    let mut parts = normalized.split('-');
+    let year = parts.next()?.trim().parse::<i32>().ok()?;
+    let month = parts.next()?.trim().parse::<u8>().ok()?;
+    let day = parts.next()?.trim().parse::<u8>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let date = Date::from_calendar_date(year, time::Month::try_from(month).ok()?, day).ok()?;
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    Some(
+        PrimitiveDateTime::new(date, Time::MIDNIGHT)
+            .assume_offset(local_offset)
+            .unix_timestamp(),
+    )
+}
+
+fn parse_due_at_value(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number
+            .as_i64()
+            .and_then(normalize_unix_timestamp)
+            .or_else(|| {
+                number
+                    .as_u64()
+                    .and_then(|n| normalize_unix_timestamp(n as i64))
+            }),
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(ts) = trimmed.parse::<i64>() {
+                return normalize_unix_timestamp(ts);
+            }
+            if let Some(ts) = parse_yyyy_mm_dd_to_unix(trimmed) {
+                return Some(normalize_due_year_if_stale(ts, trimmed));
+            }
+            if let Some(ts) = parse_due_at_from_text(trimmed, now_ts()) {
+                return Some(ts);
+            }
+            static DATE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+            let date_re = DATE_RE.get_or_init(|| Regex::new(r"(\d{4}[-/]\d{2}[-/]\d{2})").unwrap());
+            let captures = date_re.captures(trimmed)?;
+            parse_yyyy_mm_dd_to_unix(captures.get(1)?.as_str())
+        }
+        _ => None,
+    }
+}
+
+fn normalize_nlp_due_text(input: &str) -> String {
+    static FROM_START_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static FROM_NOW_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let from_start_re = FROM_START_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(\d+)\s*(day|days|week|weeks|month|months)\s+from\s+start\b").unwrap()
+    });
+    let from_now_re = FROM_NOW_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(\d+)\s*(day|days|week|weeks|month|months)\s+from\s+now\b").unwrap()
+    });
+
+    let normalized = from_start_re.replace_all(input, "in $1 $2").to_string();
+    from_now_re.replace_all(&normalized, "in $1 $2").to_string()
+}
+
+fn text_has_explicit_time(input: &str) -> bool {
+    static TIME_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = TIME_RE.get_or_init(|| {
+        Regex::new(r"(?i)(\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(am|pm)\b|\bnoon\b|\bmidnight\b)").unwrap()
+    });
+    re.is_match(input)
+}
+
+fn local_midnight_unix(ts: i64) -> i64 {
+    let Ok(utc_dt) = time::OffsetDateTime::from_unix_timestamp(ts) else {
+        return ts;
+    };
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+    let date = local_dt.date();
+    PrimitiveDateTime::new(date, Time::MIDNIGHT)
+        .assume_offset(local_offset)
+        .unix_timestamp()
+}
+
+fn extract_explicit_year(input: &str) -> Option<i32> {
+    static YEAR_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = YEAR_RE.get_or_init(|| Regex::new(r"\b(20\d{2})\b").unwrap());
+    re.captures(input)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+}
+
+fn with_local_year(ts: i64, year: i32) -> Option<i64> {
+    let utc_dt = time::OffsetDateTime::from_unix_timestamp(ts).ok()?;
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+    let month = local_dt.month();
+    let mut day = local_dt.day();
+
+    let date = loop {
+        if let Ok(value) = Date::from_calendar_date(year, month, day) {
+            break value;
+        }
+        if day == 1 {
+            return None;
+        }
+        day -= 1;
+    };
+
+    let pdt = PrimitiveDateTime::new(
+        date,
+        Time::from_hms(local_dt.hour(), local_dt.minute(), local_dt.second()).ok()?,
+    );
+    Some(pdt.assume_offset(local_offset).unix_timestamp())
+}
+
+fn normalize_due_year_if_stale(ts: i64, input: &str) -> i64 {
+    let now = now_ts();
+    let Some(explicit_year) = extract_explicit_year(input) else {
+        return ts;
+    };
+
+    let Ok(now_local) = time::OffsetDateTime::from_unix_timestamp(now) else {
+        return ts;
+    };
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let current_year = now_local.to_offset(local_offset).year();
+
+    if explicit_year >= current_year {
+        return ts;
+    }
+
+    if let Some(mut adjusted) = with_local_year(ts, current_year) {
+        if adjusted < now {
+            if let Some(next_year) = with_local_year(ts, current_year + 1) {
+                adjusted = next_year;
+            }
+        }
+        return adjusted;
+    }
+
+    ts
+}
+
+fn parse_due_at_nlp(input: &str, anchor_ts: i64) -> Option<i64> {
+    let normalized = normalize_nlp_due_text(input);
+    let anchor = Local
+        .timestamp_opt(anchor_ts, 0)
+        .single()
+        .or_else(|| Local.timestamp_opt(now_ts(), 0).single())
+        .unwrap_or_else(Local::now);
+
+    parse_date_string(&normalized, anchor, Dialect::Us)
+        .or_else(|_| parse_date_string(&normalized, anchor, Dialect::Uk))
+        .ok()
+        .map(|dt: DateTime<Local>| {
+            let ts = dt.timestamp();
+            let parsed = if text_has_explicit_time(input) {
+                ts
+            } else {
+                local_midnight_unix(ts)
+            };
+            normalize_due_year_if_stale(parsed, input)
+        })
+}
+
+fn parse_due_at_from_text(input: &str, anchor_ts: i64) -> Option<i64> {
+    if input.trim().is_empty() {
+        return None;
+    }
+    static DATE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let date_re = DATE_RE.get_or_init(|| {
+        Regex::new(r"(?i)(?:due(?:\s+date)?|deadline)\s*:\s*(\d{4}[-/]\d{2}[-/]\d{2})").unwrap()
+    });
+    if let Some(captures) = date_re.captures(input) {
+        if let Some(found) = captures.get(1).map(|m| m.as_str()) {
+            if let Some(ts) = parse_yyyy_mm_dd_to_unix(found) {
+                return Some(ts);
+            }
+        }
+    }
+    let fallback_re = DATE_RE.get_or_init(|| Regex::new(r"(\d{4}[-/]\d{2}[-/]\d{2})").unwrap());
+    if let Some(captures) = fallback_re.captures(input) {
+        if let Some(ts) = parse_yyyy_mm_dd_to_unix(captures.get(1)?.as_str()) {
+            return Some(normalize_due_year_if_stale(ts, input));
+        }
+    }
+
+    parse_due_at_nlp(input, anchor_ts)
+}
+
+fn parse_plan_step_due_at(step: &Value, title: &str, anchor_ts: i64) -> Option<i64> {
+    for key in [
+        "due_at",
+        "due_ts",
+        "due",
+        "due_date",
+        "due_on",
+        "deadline",
+        "target_date",
+    ] {
+        if let Some(value) = step.get(key).and_then(parse_due_at_value) {
+            return Some(value);
+        }
+    }
+
+    if let Some(description) = step.get("description").and_then(|v| v.as_str()) {
+        if let Some(ts) = parse_due_at_from_text(description, anchor_ts) {
+            return Some(ts);
+        }
+    }
+
+    parse_due_at_from_text(title, anchor_ts)
+}
+
+fn parse_plan_step_story_points(step: &Value, text: &str) -> Option<i32> {
+    for key in ["story_points", "points", "estimate_points"] {
+        if let Some(value) = step.get(key).and_then(|v| v.as_i64()) {
+            if value > 0 {
+                return Some(value as i32);
+            }
+        }
+    }
+
+    static STORY_POINTS_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re =
+        STORY_POINTS_RE.get_or_init(|| Regex::new(r"(?i)story\s*points?\s*:\s*(\d+)").unwrap());
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn parse_plan_step_t_shirt_size(step: &Value, text: &str) -> Option<String> {
+    for key in ["t_shirt_size", "tshirt_size", "shirt_size", "size"] {
+        if let Some(value) = step.get(key).and_then(|v| v.as_str()) {
+            let normalized = value.trim().to_ascii_uppercase();
+            if ["XS", "S", "M", "L", "XL", "XXL"].contains(&normalized.as_str()) {
+                return Some(normalized);
+            }
+        }
+    }
+
+    static TSHIRT_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = TSHIRT_RE
+        .get_or_init(|| Regex::new(r"(?i)t-?shirt\s*size\s*:\s*(XS|S|M|L|XL|XXL)").unwrap());
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_ascii_uppercase())
+}
+
+fn parse_time_estimate_minutes_from_text(text: &str) -> Option<i32> {
+    static WEEK_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static DAY_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static HOUR_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static MIN_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+
+    let week_re =
+        WEEK_RE.get_or_init(|| Regex::new(r"(?i)time\s*estimate\s*:\s*(\d+)\s*weeks?").unwrap());
+    if let Some(weeks) = week_re
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+    {
+        return Some(weeks.max(1) * 5 * 8 * 60);
+    }
+
+    let day_re =
+        DAY_RE.get_or_init(|| Regex::new(r"(?i)time\s*estimate\s*:\s*(\d+)\s*days?").unwrap());
+    if let Some(days) = day_re
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+    {
+        return Some(days.max(1) * 8 * 60);
+    }
+
+    let hour_re =
+        HOUR_RE.get_or_init(|| Regex::new(r"(?i)time\s*estimate\s*:\s*(\d+)\s*hours?").unwrap());
+    if let Some(hours) = hour_re
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+    {
+        return Some(hours.max(1) * 60);
+    }
+
+    let min_re =
+        MIN_RE.get_or_init(|| Regex::new(r"(?i)time\s*estimate\s*:\s*(\d+)\s*minutes?").unwrap());
+    min_re
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+        .map(|minutes| minutes.max(1))
+}
+
+fn parse_plan_status(value: Option<&str>, default_status: &str) -> String {
+    match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "new" => "new".to_string(),
+        "ack" | "acknowledged" => "acknowledged".to_string(),
+        "in_progress" | "in progress" | "started" => "in_progress".to_string(),
+        "blocked" => "blocked".to_string(),
+        "done" | "completed" | "complete" => "done".to_string(),
+        "dismissed" | "archived" => "dismissed".to_string(),
+        _ => default_status.to_string(),
+    }
+}
+
+fn parse_plan_priority(value: Option<&str>) -> String {
+    match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "low" => "low".to_string(),
+        "high" => "high".to_string(),
+        "urgent" | "critical" => "urgent".to_string(),
+        _ => "normal".to_string(),
+    }
+}
+
+fn parse_plan_priority_from_text(text: &str) -> Option<String> {
+    static PRIORITY_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = PRIORITY_RE.get_or_init(|| {
+        Regex::new(r"(?i)priority\s*:\s*(low|normal|medium|high|urgent|critical)").unwrap()
+    });
+    let raw = re
+        .captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str())?;
+    Some(parse_plan_priority(Some(raw)))
+}
+
+fn parse_plan_owner_from_text(text: &str) -> Option<String> {
+    static OWNER_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re = OWNER_RE.get_or_init(|| Regex::new(r"(?i)owner\s*:\s*(human|agent)").unwrap());
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_ascii_lowercase())
+}
+
+fn build_plan_step_alias_map(plan_id: i32, steps: &[Value]) -> HashMap<String, String> {
+    let mut alias_map = HashMap::new();
+    for (index, step) in steps.iter().enumerate() {
+        let origin_ref = format!("plan_step:{plan_id}:{index}");
+
+        alias_map.insert(index.to_string(), origin_ref.clone());
+        alias_map.insert(format!("step {index}"), origin_ref.clone());
+        alias_map.insert(format!("step {}", index + 1), origin_ref.clone());
+
+        for key in ["id", "ref", "key", "code", "step_id"] {
+            if let Some(value) = step.get(key).and_then(|v| v.as_str()) {
+                let normalized = value.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    alias_map.insert(normalized, origin_ref.clone());
+                }
+            }
+        }
+
+        if let Some(title) = parse_plan_step_title(step) {
+            let normalized = title.trim().to_ascii_lowercase();
+            if !normalized.is_empty() {
+                alias_map.insert(normalized.clone(), origin_ref.clone());
+                let compact = normalized
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c.is_ascii_whitespace() {
+                            c
+                        } else {
+                            ' '
+                        }
+                    })
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if !compact.is_empty() {
+                    alias_map.insert(compact, origin_ref.clone());
+                }
+            }
+        }
+    }
+    alias_map
+}
+
+fn parse_plan_step_dependency_refs(
+    plan_id: i32,
+    step: &Value,
+    alias_map: &HashMap<String, String>,
+) -> Vec<String> {
+    fn resolve_alias(alias_map: &HashMap<String, String>, lower: &str) -> Option<String> {
+        if let Some(mapped) = alias_map.get(lower) {
+            return Some(mapped.clone());
+        }
+        if lower.len() < 4 {
+            return None;
+        }
+        alias_map
+            .iter()
+            .filter(|(key, _)| key.contains(lower) || lower.contains(key.as_str()))
+            .max_by_key(|(key, _)| key.len())
+            .map(|(_, value)| value.clone())
+    }
+
+    fn push_dependency_ref(
+        out: &mut Vec<String>,
+        plan_id: i32,
+        alias_map: &HashMap<String, String>,
+        value: &Value,
+    ) {
+        match value {
+            Value::Number(number) => {
+                if let Some(index) = number.as_u64() {
+                    out.push(format!("plan_step:{plan_id}:{index}"));
+                }
+            }
+            Value::String(raw) => {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    return;
+                }
+                let lower = trimmed.to_ascii_lowercase();
+                if lower.starts_with("plan_step:")
+                    || lower.starts_with("task:")
+                    || lower.starts_with("todo:")
+                    || lower.starts_with("reminder:")
+                    || lower.starts_with("plan:")
+                {
+                    out.push(lower);
+                } else if let Some(mapped) = resolve_alias(alias_map, &lower) {
+                    out.push(mapped.clone());
+                } else if trimmed.contains(',') || trimmed.contains('|') || trimmed.contains(';') {
+                    for token in trimmed.split([',', '|', ';']) {
+                        push_dependency_ref(
+                            out,
+                            plan_id,
+                            alias_map,
+                            &Value::String(token.to_string()),
+                        );
+                    }
+                } else if let Ok(index) = trimmed.parse::<u64>() {
+                    out.push(format!("plan_step:{plan_id}:{index}"));
+                } else if let Some(rest) = lower.strip_prefix("step ") {
+                    if let Ok(index) = rest.trim().parse::<u64>() {
+                        out.push(format!("plan_step:{plan_id}:{index}"));
+                    }
+                } else {
+                    out.push(lower);
+                }
+            }
+            Value::Array(values) => {
+                for entry in values {
+                    push_dependency_ref(out, plan_id, alias_map, entry);
+                }
+            }
+            Value::Object(map) => {
+                if let Some(origin_ref) = map.get("origin_ref").or_else(|| map.get("ref")) {
+                    push_dependency_ref(out, plan_id, alias_map, origin_ref);
+                } else if let Some(id) = map.get("id") {
+                    push_dependency_ref(out, plan_id, alias_map, id);
+                } else if let Some(step_index) = map
+                    .get("step_index")
+                    .or_else(|| map.get("index"))
+                    .or_else(|| map.get("step"))
+                {
+                    push_dependency_ref(out, plan_id, alias_map, step_index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn push_dependency_refs_from_text(
+        out: &mut Vec<String>,
+        plan_id: i32,
+        alias_map: &HashMap<String, String>,
+        text: &str,
+    ) {
+        static DEPENDS_ON_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let re = DEPENDS_ON_RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)(?:depends\s*on|dependencies|blocked\s*by|requires|dependency[_\s-]*refs?)\s*:\s*([^\n\r]+)",
+            )
+            .unwrap()
+        });
+
+        for caps in re.captures_iter(text) {
+            if let Some(raw) = caps.get(1).map(|m| m.as_str()) {
+                for token in raw.split([',', '|', ';']) {
+                    push_dependency_ref(out, plan_id, alias_map, &Value::String(token.to_string()));
+                }
+            }
+        }
+    }
+
+    let mut refs = Vec::new();
+    for key in [
+        "dependency_refs",
+        "dependencyRefs",
+        "depends_on",
+        "dependsOn",
+        "dependencies",
+        "blocked_by",
+        "blockedBy",
+        "requires",
+        "prerequisite",
+        "prerequisites",
+        "after",
+    ] {
+        if let Some(value) = step.get(key) {
+            push_dependency_ref(&mut refs, plan_id, alias_map, value);
+        }
+    }
+
+    if let Some(title) = parse_plan_step_title(step) {
+        push_dependency_refs_from_text(&mut refs, plan_id, alias_map, &title);
+    }
+    if let Some(description) = step.get("description").and_then(|v| v.as_str()) {
+        push_dependency_refs_from_text(&mut refs, plan_id, alias_map, description);
+    }
+
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn extract_plan_step_ref_from_details(details: Option<&str>) -> Option<String> {
+    static PLAN_STEP_REF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let text = details?;
+    let re = PLAN_STEP_REF_RE
+        .get_or_init(|| Regex::new(r"(?i)planstepref\s*:\s*(plan_step:\d+:\d+)").unwrap());
+    re.captures(text)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_ascii_lowercase())
+}
+
+fn priority_rank(priority: &str) -> i32 {
+    match priority {
+        "urgent" => 0,
+        "high" => 1,
+        "normal" => 2,
+        _ => 3,
+    }
+}
+
+async fn build_inbox_items(
+    db_path: &str,
+    user_id: &str,
+    limit: usize,
+    include_done: bool,
+) -> Result<Vec<InboxItemResponse>> {
+    let now = now_ts();
+    let config_json = Config::from_store(db_path)
+        .ok()
+        .and_then(|cfg| cfg.tools)
+        .unwrap_or(Value::Null);
+
+    let reminder_db_path =
+        resolve_reminder_db_path(&config_json).unwrap_or_else(|| db_path.to_string());
+    let todo_db_path = resolve_todo_db_path(&config_json).unwrap_or_else(|| db_path.to_string());
+    let task_db_path = resolve_task_db_path(&config_json).unwrap_or_else(|| db_path.to_string());
+    let plan_db_path = resolve_plan_db_path(&config_json).unwrap_or_else(|| db_path.to_string());
+
+    let reminder_store = ReminderStore::new(&reminder_db_path).await?;
+    let todo_store = TodoStore::new(&todo_db_path).await?;
+    let task_store = TaskStore::new(&task_db_path).await?;
+    let plan_store = PlanStore::new(&plan_db_path).await?;
+
+    let reminders = reminder_store
+        .list_reminders(user_id, crate::reminders::ReminderStatus::All, limit)
+        .await?;
+    let todos = todo_store
+        .list_items(user_id, crate::todo::TodoStatus::All, limit)
+        .await?;
+    let tasks = task_store
+        .list_tasks(user_id, crate::tasks::TaskStatus::All, limit)
+        .await?;
+    let plans = plan_store.list_plans(user_id, limit).await?;
+    let plan_ids: Vec<i32> = plans.iter().map(|plan| plan.id).collect();
+    let plan_dependency_refs = plan_store
+        .list_step_dependencies_for_plans(&plan_ids)
+        .await?;
+    let status_store = InboxStateStore::new(db_path).await?;
+    let persisted_statuses = status_store.list_statuses(user_id, 2000).await?;
+
+    let mut items = Vec::new();
+
+    for reminder in reminders {
+        let status = if reminder.completed_at.is_some() {
+            "done"
+        } else {
+            "new"
+        };
+        if !include_done && status == "done" {
+            continue;
+        }
+        let priority = if reminder.completed_at.is_none() && reminder.due_at <= now {
+            "high"
+        } else {
+            "normal"
+        };
+        items.push(InboxItemResponse {
+            id: format!("reminder:{}", reminder.id),
+            source_type: "reminder".to_string(),
+            source_id: reminder.id,
+            title: reminder.title,
+            details: Some("Reminder".to_string()),
+            owner: "human".to_string(),
+            status: status.to_string(),
+            priority: priority.to_string(),
+            due_at: Some(reminder.due_at),
+            created_at: reminder.created_at,
+            updated_at: reminder.completed_at.unwrap_or(reminder.created_at),
+            requires_human_action: reminder.completed_at.is_none(),
+            origin_ref: format!("reminder:{}", reminder.id),
+            dependency_refs: vec![],
+            t_shirt_size: None,
+            story_points: None,
+            estimate_optimistic_minutes: None,
+            estimate_likely_minutes: None,
+            estimate_pessimistic_minutes: None,
+        });
+    }
+
+    for todo in todos {
+        let status = if todo.completed_at.is_some() {
+            "done"
+        } else {
+            "new"
+        };
+        if !include_done && status == "done" {
+            continue;
+        }
+        items.push(InboxItemResponse {
+            id: format!("todo:{}", todo.id),
+            source_type: "todo".to_string(),
+            source_id: todo.id,
+            title: todo.title,
+            details: todo.notes,
+            owner: "human".to_string(),
+            status: status.to_string(),
+            priority: "normal".to_string(),
+            due_at: None,
+            created_at: todo.created_at,
+            updated_at: todo.updated_at,
+            requires_human_action: todo.completed_at.is_none(),
+            origin_ref: format!("todo:{}", todo.id),
+            dependency_refs: todo.dependency_refs,
+            t_shirt_size: todo.t_shirt_size,
+            story_points: todo.story_points,
+            estimate_optimistic_minutes: todo.estimate_optimistic_minutes,
+            estimate_likely_minutes: todo.estimate_likely_minutes,
+            estimate_pessimistic_minutes: todo.estimate_pessimistic_minutes,
+        });
+    }
+
+    for task in tasks {
+        let status = if task.enabled { "new" } else { "done" };
+        if !include_done && status == "done" {
+            continue;
+        }
+        let priority = if task.enabled && task.next_run_at <= now {
+            "high"
+        } else {
+            "normal"
+        };
+        items.push(InboxItemResponse {
+            id: format!("task:{}", task.id),
+            source_type: "task".to_string(),
+            source_id: task.id,
+            title: task.name,
+            details: Some(task.prompt),
+            owner: "human".to_string(),
+            status: status.to_string(),
+            priority: priority.to_string(),
+            due_at: Some(task.next_run_at),
+            created_at: task.created_at,
+            updated_at: task.updated_at,
+            requires_human_action: task.enabled,
+            origin_ref: format!("task:{}", task.id),
+            dependency_refs: vec![],
+            t_shirt_size: None,
+            story_points: None,
+            estimate_optimistic_minutes: None,
+            estimate_likely_minutes: None,
+            estimate_pessimistic_minutes: None,
+        });
+    }
+
+    for plan in plans {
+        let mut emitted_step = false;
+        if let Some(steps) = plan.steps.as_ref().and_then(|value| value.as_array()) {
+            let step_alias_map = build_plan_step_alias_map(plan.id, steps);
+            for (index, step) in steps.iter().enumerate() {
+                let Some(title) = parse_plan_step_title(step) else {
+                    continue;
+                };
+                emitted_step = true;
+                let owner = step
+                    .get("owner")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("human")
+                    .to_ascii_lowercase();
+                let owner = parse_plan_owner_from_text(&title).unwrap_or(owner);
+                let status = parse_plan_status(
+                    step.get("status").and_then(|v| v.as_str()),
+                    if plan.status == "done" { "done" } else { "new" },
+                );
+                if !include_done && status == "done" {
+                    continue;
+                }
+                let due_at = parse_plan_step_due_at(step, &title, plan.created_at);
+                let priority = parse_plan_priority(step.get("priority").and_then(|v| v.as_str()));
+                let priority = parse_plan_priority_from_text(&title).unwrap_or(priority);
+                let origin_ref = format!("plan_step:{}:{}", plan.id, index);
+                let dependency_refs = plan_dependency_refs
+                    .get(&origin_ref)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        parse_plan_step_dependency_refs(plan.id, step, &step_alias_map)
+                    });
+                let t_shirt_size = parse_plan_step_t_shirt_size(step, &title);
+                let story_points = parse_plan_step_story_points(step, &title);
+                let estimate_likely_minutes = step
+                    .get("estimate_likely_minutes")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .or_else(|| parse_time_estimate_minutes_from_text(&title));
+                let estimate_optimistic_minutes = step
+                    .get("estimate_optimistic_minutes")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .or_else(|| {
+                        estimate_likely_minutes.map(|value| ((value as f32) * 0.70).round() as i32)
+                    });
+                let estimate_pessimistic_minutes = step
+                    .get("estimate_pessimistic_minutes")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .or_else(|| {
+                        estimate_likely_minutes.map(|value| ((value as f32) * 1.45).round() as i32)
+                    });
+
+                items.push(InboxItemResponse {
+                    id: format!("plan_step:{}:{}", plan.id, index),
+                    source_type: "plan_step".to_string(),
+                    source_id: plan.id,
+                    title,
+                    details: Some(format!("Plan: {}", plan.title)),
+                    owner: owner.clone(),
+                    status,
+                    priority,
+                    due_at,
+                    created_at: plan.created_at,
+                    updated_at: plan.updated_at,
+                    requires_human_action: owner != "agent",
+                    origin_ref,
+                    dependency_refs,
+                    t_shirt_size,
+                    story_points,
+                    estimate_optimistic_minutes,
+                    estimate_likely_minutes,
+                    estimate_pessimistic_minutes,
+                });
+            }
+        }
+
+        if !emitted_step {
+            let status = if plan.status == "done" { "done" } else { "new" };
+            if !include_done && status == "done" {
+                continue;
+            }
+            items.push(InboxItemResponse {
+                id: format!("plan:{}", plan.id),
+                source_type: "plan_step".to_string(),
+                source_id: plan.id,
+                title: format!("Review plan: {}", plan.title),
+                details: Some(plan.goal),
+                owner: "human".to_string(),
+                status: status.to_string(),
+                priority: "normal".to_string(),
+                due_at: None,
+                created_at: plan.created_at,
+                updated_at: plan.updated_at,
+                requires_human_action: true,
+                origin_ref: format!("plan:{}", plan.id),
+                dependency_refs: vec![],
+                t_shirt_size: None,
+                story_points: None,
+                estimate_optimistic_minutes: None,
+                estimate_likely_minutes: None,
+                estimate_pessimistic_minutes: None,
+            });
+        }
+    }
+
+    for item in &mut items {
+        if let Some(status) = persisted_statuses.get(&item.origin_ref) {
+            item.status = status.clone();
+        }
+    }
+
+    let plan_step_refs = items
+        .iter()
+        .filter(|item| item.source_type == "plan_step")
+        .map(|item| item.origin_ref.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    items.retain(|item| {
+        !(item.source_type == "todo"
+            && extract_plan_step_ref_from_details(item.details.as_deref())
+                .map(|origin_ref| plan_step_refs.contains(&origin_ref))
+                .unwrap_or(false))
+    });
+
+    let mut seen_origin_refs = HashSet::new();
+    items.retain(|item| seen_origin_refs.insert(item.origin_ref.clone()));
+
+    if !include_done {
+        items.retain(|item| item.status != "done" && item.status != "dismissed");
+    }
+
+    items.sort_by(|a, b| {
+        priority_rank(&a.priority)
+            .cmp(&priority_rank(&b.priority))
+            .then_with(|| {
+                a.due_at
+                    .unwrap_or(i64::MAX)
+                    .cmp(&b.due_at.unwrap_or(i64::MAX))
+            })
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+
+    if items.len() > limit {
+        items.truncate(limit);
+    }
+
+    Ok(items)
 }
 
 async fn solana_wallet(
@@ -2129,6 +3644,171 @@ async fn clear_user_history(
     }
 }
 
+async fn clear_user_data(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ClearUserDataRequest>,
+) -> impl IntoResponse {
+    if let Err(err) = authorize(&headers, &state.token) {
+        return err.into_response();
+    }
+
+    let user_id = payload.user_id;
+    let agent = state.agent.read().await.clone();
+    if let Err(err) = agent.delete_user_history(&user_id).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: err.to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    let reminders_deleted = match ReminderStore::new(&state.db_path).await {
+        Ok(store) => match store.delete_all(&user_id, true).await {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let todos_deleted = match TodoStore::new(&state.db_path).await {
+        Ok(store) => match store
+            .clear_items(&user_id, crate::todo::TodoStatus::All)
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let tasks_deleted = match TaskStore::new(&state.db_path).await {
+        Ok(store) => match store
+            .clear_tasks(&user_id, crate::tasks::TaskStatus::All)
+            .await
+        {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let plans_deleted = match PlanStore::new(&state.db_path).await {
+        Ok(store) => match store.clear_plans(&user_id).await {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let inbox_states_deleted = match InboxStateStore::new(&state.db_path).await {
+        Ok(store) => match store.clear_statuses(&user_id).await {
+            Ok(v) => v,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse {
+                        error: err.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: err.to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(ClearUserDataResponse {
+            status: "ok".to_string(),
+            message: "User work data cleared".to_string(),
+            cleared: json!({
+                "history": true,
+                "reminders": reminders_deleted,
+                "todos": todos_deleted,
+                "tasks": tasks_deleted,
+                "plans": plans_deleted,
+                "inbox_state_overrides": inbox_states_deleted,
+            }),
+        }),
+    )
+        .into_response()
+}
+
 async fn reminder_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2634,6 +4314,7 @@ where
         store: reminder_store.clone(),
         interval: Duration::from_secs(reminders_poll_seconds.max(1)),
         ui_event_tx: ui_event_tx.clone(),
+        audit_log_path: reminders_audit_log_path(Some(&config)),
     }));
     scheduler.start();
 
@@ -2829,10 +4510,10 @@ fn send_desktop_notification(summary: &str, body: &str) -> bool {
         if let Some(icon) = &icon_path {
             notification.icon(icon);
         }
-        return notification.show().map(|_| true).unwrap_or_else(|err| {
+        notification.show().map(|_| true).unwrap_or_else(|err| {
             tracing::warn!(error = %err, "Desktop notification failed");
             false
-        });
+        })
     }
 
     #[cfg(target_os = "macos")]
@@ -2969,6 +4650,48 @@ fn tasks_audit_log_path(config: Option<&Config>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .or_else(|| Some("./data/tasks_audit.log".to_string()));
     path
+}
+
+fn reminders_audit_log_path(config: Option<&Config>) -> Option<String> {
+    config
+        .and_then(|cfg| cfg.tools.as_ref())
+        .and_then(|tools| tools.get("reminders"))
+        .and_then(|reminders| reminders.get("audit_log_path"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| Some("./data/reminders_audit.log".to_string()))
+}
+
+fn write_reminder_audit_log(
+    path: Option<&str>,
+    ts: i64,
+    user_id: &str,
+    reminder_id: i32,
+    status: &str,
+    payload: serde_json::Value,
+) -> Result<()> {
+    let Some(path) = path else {
+        return Ok(());
+    };
+    config_store::ensure_parent_dir(path)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    let entry = serde_json::json!({
+        "timestamp": ts,
+        "user_id": user_id,
+        "reminder_id": reminder_id,
+        "status": status,
+        "payload": payload,
+    });
+    let line = serde_json::to_string(&entry)
+        .map_err(|e| ButterflyBotError::Serialization(e.to_string()))?;
+    use std::io::Write;
+    writeln!(file, "{line}").map_err(|e| ButterflyBotError::Runtime(e.to_string()))?;
+    Ok(())
 }
 
 fn write_tasks_audit_log(

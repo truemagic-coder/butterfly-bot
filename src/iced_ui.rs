@@ -1,18 +1,24 @@
-use ::time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
+use ::time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use chrono::{DateTime, Local, TimeZone};
+use chrono_english::{parse_date_string, Dialect};
 use iced::widget::{
     button, column, container, image, markdown, row, scrollable, text, text_editor, text_input,
-    Space,
+    Id as WidgetId, Space,
 };
 use iced::{
     application, time, Background, Border, Color, Element, Length, Shadow, Size, Subscription,
     Task, Theme,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+
+use crate::inbox_fsm::InboxState as InboxStatus;
 
 const BUTTERFLY_BOT_LOGO_BYTES: &[u8] =
     include_bytes!("../assets/icons/hicolor/512x512/apps/butterfly-bot.png");
@@ -73,8 +79,57 @@ struct SolanaWalletUiResponse {
     address: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct InboxApiResponse {
+    items: Vec<InboxApiItem>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct InboxApiItem {
+    id: String,
+    source_type: String,
+    owner: String,
+    title: String,
+    details: Option<String>,
+    status: String,
+    priority: String,
+    due_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+    requires_human_action: bool,
+    origin_ref: String,
+    #[serde(default)]
+    dependency_refs: Vec<String>,
+    t_shirt_size: Option<String>,
+    story_points: Option<i32>,
+    estimate_optimistic_minutes: Option<i32>,
+    estimate_likely_minutes: Option<i32>,
+    estimate_pessimistic_minutes: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct AuditEventsApiResponse {
+    events: Vec<Value>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ReminderDeliveryEventsApiResponse {
+    events: Vec<Value>,
+}
+
+#[derive(Clone, Debug)]
+struct AuditEventRow {
+    timestamp: i64,
+    event_type: String,
+    status: String,
+    actor: Option<String>,
+    line: String,
+    origin_ref: Option<String>,
+}
+
 #[derive(Clone)]
 struct ChatMessage {
+    id: u64,
     role: MessageRole,
     text: String,
     markdown_items: Vec<markdown::Item>,
@@ -90,6 +145,11 @@ enum MessageRole {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiTab {
+    Inbox,
+    Kanban,
+    Dependencies,
+    Gantt,
+    Audit,
     Chat,
     Activity,
     Settings,
@@ -99,8 +159,13 @@ enum UiTab {
 }
 
 impl UiTab {
-    fn all() -> [UiTab; 6] {
+    fn all() -> [UiTab; 11] {
         [
+            UiTab::Inbox,
+            UiTab::Kanban,
+            UiTab::Dependencies,
+            UiTab::Gantt,
+            UiTab::Audit,
             UiTab::Chat,
             UiTab::Activity,
             UiTab::Settings,
@@ -112,6 +177,11 @@ impl UiTab {
 
     fn label(self) -> &'static str {
         match self {
+            UiTab::Inbox => "Inbox",
+            UiTab::Kanban => "Kanban",
+            UiTab::Dependencies => "Dependencies",
+            UiTab::Gantt => "Gantt",
+            UiTab::Audit => "Audit",
             UiTab::Chat => "Chat",
             UiTab::Activity => "Activity",
             UiTab::Settings => "Config",
@@ -120,6 +190,54 @@ impl UiTab {
             UiTab::Heartbeat => "Heartbeat",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InboxSourceType {
+    Reminder,
+    Todo,
+    Task,
+    PlanStep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InboxPriority {
+    Low,
+    Normal,
+    High,
+    Urgent,
+}
+
+#[derive(Clone, Debug)]
+struct InboxItem {
+    id: String,
+    source_type: InboxSourceType,
+    owner: String,
+    title: String,
+    details: Option<String>,
+    status: InboxStatus,
+    priority: InboxPriority,
+    due_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+    requires_human_action: bool,
+    origin_ref: String,
+    dependency_refs: Vec<String>,
+    t_shirt_size: Option<String>,
+    story_points: Option<i32>,
+    estimate_optimistic_minutes: Option<i32>,
+    estimate_likely_minutes: Option<i32>,
+    estimate_pessimistic_minutes: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InboxActionKind {
+    Acknowledge,
+    Start,
+    Block,
+    Done,
+    Reopen,
+    Snooze,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -140,6 +258,11 @@ struct SettingsForm {
     search_network_allow: String,
     wakeup_poll_seconds: String,
     tpm_mode: String,
+    proactive_chat_enabled: bool,
+    proactive_chat_min_interval_seconds: String,
+    proactive_chat_severity: String,
+    proactive_chat_quiet_start_hhmm: String,
+    proactive_chat_quiet_end_hhmm: String,
     mcp_servers: Vec<UiServerRow>,
     http_call_servers: Vec<UiServerRow>,
     prompt_text: String,
@@ -157,6 +280,11 @@ impl Default for SettingsForm {
             search_network_allow: String::new(),
             wakeup_poll_seconds: "60".to_string(),
             tpm_mode: "auto".to_string(),
+            proactive_chat_enabled: true,
+            proactive_chat_min_interval_seconds: "45".to_string(),
+            proactive_chat_severity: "blocked_or_overdue".to_string(),
+            proactive_chat_quiet_start_hhmm: String::new(),
+            proactive_chat_quiet_end_hhmm: String::new(),
             mcp_servers: vec![],
             http_call_servers: vec![],
             prompt_text: String::new(),
@@ -186,6 +314,26 @@ struct ButterflyIcedApp {
     history_loaded: bool,
     chat_messages: Vec<ChatMessage>,
     activity_messages: Vec<ChatMessage>,
+    inbox_items: Vec<InboxItem>,
+    inbox_status: String,
+    inbox_error: String,
+    inbox_refresh_in_flight: bool,
+    inbox_action_origin_ref_in_flight: Option<String>,
+    inbox_last_refresh_ts: i64,
+    last_badge_actionable_count: Option<usize>,
+    audit_events: Vec<AuditEventRow>,
+    audit_status: String,
+    audit_error: String,
+    audit_refresh_in_flight: bool,
+    audit_last_refresh_ts: i64,
+    audit_last_activity_bridge_ts: i64,
+    audit_origin_filter: Option<String>,
+    timeline_focus_origin_ref: Option<String>,
+    chat_origin_anchor: Option<String>,
+    chat_anchor_message_id: Option<u64>,
+    chat_scroll_id: WidgetId,
+    proactive_notified_origin_refs: HashSet<String>,
+    proactive_last_chat_ts: i64,
     settings: SettingsForm,
     settings_status: String,
     settings_error: String,
@@ -197,6 +345,9 @@ struct ButterflyIcedApp {
     security_error: String,
     security_overall: String,
     security_findings: Vec<SecurityAuditFindingResponse>,
+    reminder_delivery_status: String,
+    reminder_delivery_error: String,
+    reminder_delivery_events: Vec<String>,
     solana_wallet_address: Option<String>,
     solana_wallet_status: String,
     solana_wallet_fetch_in_flight: bool,
@@ -243,6 +394,11 @@ enum Message {
     SearchNetworkAllowChanged(String),
     WakeupPollSecondsChanged(String),
     TpmModeChanged(String),
+    ToggleProactiveChatEnabled,
+    ProactiveChatMinIntervalChanged(String),
+    ProactiveChatSeverityChanged(String),
+    ProactiveChatQuietStartChanged(String),
+    ProactiveChatQuietEndChanged(String),
     AddMcpServer,
     RemoveMcpServer(usize),
     McpServerNameChanged(usize, String),
@@ -264,6 +420,25 @@ enum Message {
     RefreshSolanaWallet,
     SolanaWalletLoaded(Result<Option<String>, String>),
     CopyToClipboard(String),
+    InboxRefreshRequested,
+    InboxLoaded(Result<Vec<InboxItem>, String>),
+    InboxAcknowledge(String),
+    InboxStart(String),
+    InboxBlock(String),
+    InboxDone(String),
+    InboxReopen(String),
+    InboxSnooze(String),
+    InboxActionFinished(Result<String, String>),
+    RefreshReminderDeliveryEvents,
+    ReminderDeliveryEventsLoaded(Result<Vec<String>, String>),
+    AuditRefreshRequested,
+    AuditEventsLoaded(Result<Vec<AuditEventRow>, String>),
+    TimelineOpenItem(String),
+    TimelineOpenAudit(String),
+    OpenChatWithContext(String),
+    OpenChatAtEvent(String, i64),
+    ChatClearAnchor,
+    AuditClearFilter,
 }
 
 pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
@@ -279,6 +454,23 @@ pub fn launch_ui(config: IcedUiLaunchConfig) -> iced::Result {
                 Task::perform(
                     check_daemon_health(state.daemon_url.clone()),
                     Message::HealthChecked,
+                ),
+                Task::perform(
+                    load_inbox_items(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                    ),
+                    Message::InboxLoaded,
+                ),
+                Task::perform(
+                    fetch_audit_events(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                        200,
+                    ),
+                    Message::AuditEventsLoaded,
                 ),
                 Task::perform(load_settings(state.db_path.clone()), |result| {
                     Message::SettingsLoaded(Box::new(result))
@@ -343,6 +535,26 @@ impl ButterflyIcedApp {
             history_loaded: false,
             chat_messages: vec![],
             activity_messages: vec![],
+            inbox_items: vec![],
+            inbox_status: "Loading inbox...".to_string(),
+            inbox_error: String::new(),
+            inbox_refresh_in_flight: true,
+            inbox_action_origin_ref_in_flight: None,
+            inbox_last_refresh_ts: 0,
+            last_badge_actionable_count: None,
+            audit_events: vec![],
+            audit_status: "Loading audit events...".to_string(),
+            audit_error: String::new(),
+            audit_refresh_in_flight: true,
+            audit_last_refresh_ts: 0,
+            audit_last_activity_bridge_ts: 0,
+            audit_origin_filter: None,
+            timeline_focus_origin_ref: None,
+            chat_origin_anchor: None,
+            chat_anchor_message_id: None,
+            chat_scroll_id: WidgetId::unique(),
+            proactive_notified_origin_refs: HashSet::new(),
+            proactive_last_chat_ts: 0,
             settings: SettingsForm::default(),
             settings_status: String::new(),
             settings_error: String::new(),
@@ -354,6 +566,9 @@ impl ButterflyIcedApp {
             security_error: String::new(),
             security_overall: String::new(),
             security_findings: vec![],
+            reminder_delivery_status: String::new(),
+            reminder_delivery_error: String::new(),
+            reminder_delivery_events: vec![],
             solana_wallet_address: None,
             solana_wallet_status: String::new(),
             solana_wallet_fetch_in_flight: false,
@@ -370,11 +585,13 @@ impl ButterflyIcedApp {
     fn push_chat(&mut self, role: MessageRole, text: String) {
         let markdown_items = parse_markdown_items(&text);
         self.chat_messages.push(ChatMessage {
+            id: self.next_id,
             role,
             text,
             markdown_items,
             timestamp: now_unix_ts(),
         });
+        self.next_id = self.next_id.saturating_add(1);
         if self.chat_messages.len() > 300 {
             let drop_count = self.chat_messages.len() - 300;
             self.chat_messages.drain(0..drop_count);
@@ -384,11 +601,13 @@ impl ButterflyIcedApp {
     fn push_activity(&mut self, text: String) {
         let markdown_items = parse_markdown_items(&text);
         self.activity_messages.push(ChatMessage {
+            id: self.next_id,
             role: MessageRole::System,
             text,
             markdown_items,
             timestamp: now_unix_ts(),
         });
+        self.next_id = self.next_id.saturating_add(1);
         if self.activity_messages.len() > 300 {
             let drop_count = self.activity_messages.len() - 300;
             self.activity_messages.drain(0..drop_count);
@@ -398,6 +617,7 @@ impl ButterflyIcedApp {
 
 impl Drop for ButterflyIcedApp {
     fn drop(&mut self) {
+        let _ = set_macos_dock_badge(0);
         if self.manage_local_daemon {
             let _ = stop_local_daemon_blocking();
         }
@@ -407,16 +627,145 @@ impl Drop for ButterflyIcedApp {
 fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
     match message {
         Message::Tick => {
+            let mut tasks: Vec<Task<Message>> = Vec::new();
             if !state.daemon_starting {
-                return Task::perform(
+                tasks.push(Task::perform(
                     check_daemon_health(state.daemon_url.clone()),
                     Message::HealthChecked,
+                ));
+            }
+
+            let now = now_unix_ts();
+            if !state.inbox_refresh_in_flight
+                && now.saturating_sub(state.inbox_last_refresh_ts) >= 15
+            {
+                state.inbox_refresh_in_flight = true;
+                tasks.push(Task::perform(
+                    load_inbox_items(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                    ),
+                    Message::InboxLoaded,
+                ));
+            }
+
+            if !state.audit_refresh_in_flight
+                && now.saturating_sub(state.audit_last_refresh_ts) >= 15
+            {
+                state.audit_refresh_in_flight = true;
+                tasks.push(Task::perform(
+                    fetch_audit_events(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                        200,
+                    ),
+                    Message::AuditEventsLoaded,
+                ));
+            }
+
+            if tasks.is_empty() {
+                Task::none()
+            } else {
+                Task::batch(tasks)
+            }
+        }
+        Message::TabSelected(tab) => {
+            state.active_tab = tab;
+            if tab == UiTab::Inbox && !state.inbox_refresh_in_flight {
+                state.inbox_refresh_in_flight = true;
+                return Task::perform(
+                    load_inbox_items(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                    ),
+                    Message::InboxLoaded,
+                );
+            }
+            if tab == UiTab::Audit && !state.audit_refresh_in_flight {
+                state.audit_refresh_in_flight = true;
+                return Task::perform(
+                    fetch_audit_events(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                        200,
+                    ),
+                    Message::AuditEventsLoaded,
                 );
             }
             Task::none()
         }
-        Message::TabSelected(tab) => {
-            state.active_tab = tab;
+        Message::TimelineOpenItem(origin_ref) => {
+            state.timeline_focus_origin_ref = Some(origin_ref.clone());
+            state.active_tab = UiTab::Inbox;
+            state.push_activity(format!("timeline drilldown → inbox ({origin_ref})"));
+            if !state.inbox_refresh_in_flight {
+                state.inbox_refresh_in_flight = true;
+                return Task::perform(
+                    load_inbox_items(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                    ),
+                    Message::InboxLoaded,
+                );
+            }
+            Task::none()
+        }
+        Message::TimelineOpenAudit(origin_ref) => {
+            state.audit_origin_filter = Some(origin_ref.clone());
+            state.active_tab = UiTab::Audit;
+            state.push_activity(format!("timeline drilldown → audit ({origin_ref})"));
+            if !state.audit_refresh_in_flight {
+                state.audit_refresh_in_flight = true;
+                return Task::perform(
+                    fetch_audit_events(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                        200,
+                    ),
+                    Message::AuditEventsLoaded,
+                );
+            }
+            Task::none()
+        }
+        Message::OpenChatWithContext(origin_ref) => {
+            state.active_tab = UiTab::Chat;
+            state.chat_origin_anchor = Some(origin_ref.clone());
+            state.chat_anchor_message_id =
+                find_latest_chat_message_id(&state.chat_messages, &origin_ref, None);
+            state.composer = format!(
+                "Show full context and latest state for work item {origin_ref}. Include blockers and next action."
+            );
+            state.push_activity(format!("drilldown → chat context ({origin_ref})"));
+            scroll_chat_to_anchor_task(state)
+        }
+        Message::OpenChatAtEvent(origin_ref, event_ts) => {
+            state.active_tab = UiTab::Chat;
+            state.chat_origin_anchor = Some(origin_ref.clone());
+            state.chat_anchor_message_id =
+                find_latest_chat_message_id(&state.chat_messages, &origin_ref, Some(event_ts));
+            state.composer = format!(
+                "Show full context around event time {} for work item {origin_ref}.",
+                format_local_time(event_ts)
+            );
+            state.push_activity(format!(
+                "drilldown → chat anchor ({origin_ref}) @ {}",
+                format_local_time(event_ts)
+            ));
+            scroll_chat_to_anchor_task(state)
+        }
+        Message::ChatClearAnchor => {
+            state.chat_origin_anchor = None;
+            state.chat_anchor_message_id = None;
+            Task::none()
+        }
+        Message::AuditClearFilter => {
+            state.audit_origin_filter = None;
             Task::none()
         }
         Message::ComposerChanged(value) => {
@@ -584,10 +933,17 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             match result {
                 Ok(lines) => {
                     state.chat_messages.clear();
+                    state.activity_messages.clear();
+                    state.next_id = 1;
                     for line in lines {
                         if let Some((role, text, ts)) = parse_history_entry(&line) {
+                            if role == MessageRole::System {
+                                state.push_activity(format!("history/system • {}", text));
+                                continue;
+                            }
                             let markdown_items = parse_markdown_items(&text);
                             state.chat_messages.push(ChatMessage {
+                                id: state.next_id,
                                 role,
                                 text,
                                 markdown_items,
@@ -596,7 +952,12 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
                             state.next_id = state.next_id.saturating_add(1);
                         }
                     }
+                    state.chat_anchor_message_id =
+                        state.chat_origin_anchor.as_ref().and_then(|origin| {
+                            find_latest_chat_message_id(&state.chat_messages, origin, None)
+                        });
                     state.push_activity("chat history loaded".to_string());
+                    return scroll_chat_to_anchor_task(state);
                 }
                 Err(err) => {
                     state.error = format!("History load failed: {err}");
@@ -605,7 +966,7 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ClearHistoryPressed => Task::perform(
-            run_clear_user_history_request(
+            run_clear_user_data_request(
                 state.daemon_url.clone(),
                 state.token.clone(),
                 state.user_id.clone(),
@@ -616,9 +977,32 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             match result {
                 Ok(()) => {
                     state.chat_messages.clear();
-                    state.push_activity("chat history cleared".to_string());
+                    state.activity_messages.clear();
+                    state.inbox_items.clear();
+                    state.audit_events.clear();
+                    state.push_activity("all user work data cleared".to_string());
+                    state.inbox_refresh_in_flight = true;
+                    return Task::batch(vec![
+                        Task::perform(
+                            load_inbox_items(
+                                state.daemon_url.clone(),
+                                state.token.clone(),
+                                state.user_id.clone(),
+                            ),
+                            Message::InboxLoaded,
+                        ),
+                        Task::perform(
+                            fetch_audit_events(
+                                state.daemon_url.clone(),
+                                state.token.clone(),
+                                state.user_id.clone(),
+                                200,
+                            ),
+                            Message::AuditEventsLoaded,
+                        ),
+                    ]);
                 }
-                Err(err) => state.error = format!("Clear history failed: {err}"),
+                Err(err) => state.error = format!("Clear data failed: {err}"),
             }
             Task::none()
         }
@@ -728,6 +1112,26 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             state.settings.tpm_mode = value;
             Task::none()
         }
+        Message::ToggleProactiveChatEnabled => {
+            state.settings.proactive_chat_enabled = !state.settings.proactive_chat_enabled;
+            Task::none()
+        }
+        Message::ProactiveChatMinIntervalChanged(value) => {
+            state.settings.proactive_chat_min_interval_seconds = value;
+            Task::none()
+        }
+        Message::ProactiveChatSeverityChanged(value) => {
+            state.settings.proactive_chat_severity = value;
+            Task::none()
+        }
+        Message::ProactiveChatQuietStartChanged(value) => {
+            state.settings.proactive_chat_quiet_start_hhmm = value;
+            Task::none()
+        }
+        Message::ProactiveChatQuietEndChanged(value) => {
+            state.settings.proactive_chat_quiet_end_hhmm = value;
+            Task::none()
+        }
         Message::AddMcpServer => {
             state.settings.mcp_servers.push(UiServerRow::default());
             Task::none()
@@ -820,12 +1224,15 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             if !state.daemon_running {
                 state.doctor_error = "Daemon is not running".to_string();
                 state.security_error = "Daemon is not running".to_string();
+                state.reminder_delivery_error = "Daemon is not running".to_string();
                 return Task::none();
             }
             state.doctor_status = "Running security doctor...".to_string();
             state.security_status = "Running security audit...".to_string();
+            state.reminder_delivery_status = "Loading reminder delivery diagnostics...".to_string();
             state.doctor_error.clear();
             state.security_error.clear();
+            state.reminder_delivery_error.clear();
             Task::batch(vec![
                 Task::perform(
                     run_doctor_request(state.daemon_url.clone(), state.token.clone()),
@@ -834,6 +1241,15 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
                 Task::perform(
                     run_security_audit_request(state.daemon_url.clone(), state.token.clone()),
                     Message::SecurityFinished,
+                ),
+                Task::perform(
+                    fetch_reminder_delivery_events(
+                        state.daemon_url.clone(),
+                        state.token.clone(),
+                        state.user_id.clone(),
+                        60,
+                    ),
+                    Message::ReminderDeliveryEventsLoaded,
                 ),
             ])
         }
@@ -933,6 +1349,305 @@ fn update(state: &mut ButterflyIcedApp, message: Message) -> Task<Message> {
             state.push_activity("copied to clipboard".to_string());
             iced::clipboard::write(value)
         }
+        Message::InboxRefreshRequested => {
+            if state.inbox_refresh_in_flight {
+                return Task::none();
+            }
+            state.inbox_refresh_in_flight = true;
+            state.inbox_error.clear();
+            Task::perform(
+                load_inbox_items(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                ),
+                Message::InboxLoaded,
+            )
+        }
+        Message::InboxLoaded(result) => {
+            state.inbox_refresh_in_flight = false;
+            state.inbox_action_origin_ref_in_flight = None;
+            state.inbox_last_refresh_ts = now_unix_ts();
+            match result {
+                Ok(items) => {
+                    state.inbox_items = items;
+                    state.inbox_error.clear();
+                    state.inbox_status =
+                        format!("Inbox synced ({} items)", state.inbox_items.len());
+                    sync_actionable_badge(state);
+                    maybe_emit_proactive_chat_nudge(state);
+                }
+                Err(err) => {
+                    state.inbox_error = err;
+                    state.inbox_status.clear();
+                }
+            }
+            Task::none()
+        }
+        Message::InboxAcknowledge(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Acknowledge);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Acknowledge,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxStart(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Start);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Start,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxBlock(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Block);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Block,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxDone(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Done);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Done,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxReopen(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Reopen);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Reopen,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxSnooze(origin_ref) => {
+            let Some(item) = state
+                .inbox_items
+                .iter()
+                .find(|item| item.origin_ref == origin_ref)
+                .cloned()
+            else {
+                return Task::none();
+            };
+
+            optimistic_inbox_transition(state, &origin_ref, InboxActionKind::Snooze);
+            state.inbox_action_origin_ref_in_flight = Some(origin_ref.clone());
+            state.inbox_refresh_in_flight = true;
+            Task::perform(
+                apply_inbox_action(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    item,
+                    InboxActionKind::Snooze,
+                ),
+                Message::InboxActionFinished,
+            )
+        }
+        Message::InboxActionFinished(result) => {
+            let mut tasks = Vec::new();
+            state.inbox_action_origin_ref_in_flight = None;
+            match result {
+                Ok(status) => {
+                    state.push_activity(status.clone());
+                    state.inbox_status = status;
+                    state.inbox_error.clear();
+                }
+                Err(err) => {
+                    state.inbox_error = err;
+                    state.inbox_refresh_in_flight = false;
+                    return Task::none();
+                }
+            }
+
+            tasks.push(Task::perform(
+                load_inbox_items(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                ),
+                Message::InboxLoaded,
+            ));
+
+            Task::batch(tasks)
+        }
+        Message::RefreshReminderDeliveryEvents => {
+            if !state.daemon_running {
+                state.reminder_delivery_error = "Daemon is not running".to_string();
+                return Task::none();
+            }
+            state.reminder_delivery_status = "Loading reminder delivery diagnostics...".to_string();
+            state.reminder_delivery_error.clear();
+            Task::perform(
+                fetch_reminder_delivery_events(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    60,
+                ),
+                Message::ReminderDeliveryEventsLoaded,
+            )
+        }
+        Message::ReminderDeliveryEventsLoaded(result) => {
+            match result {
+                Ok(events) => {
+                    state.reminder_delivery_events = events;
+                    state.reminder_delivery_error.clear();
+                    state.reminder_delivery_status = format!(
+                        "Reminder delivery diagnostics loaded ({})",
+                        state.reminder_delivery_events.len()
+                    );
+                }
+                Err(err) => {
+                    state.reminder_delivery_error = err;
+                    state.reminder_delivery_status.clear();
+                }
+            }
+            Task::none()
+        }
+        Message::AuditRefreshRequested => {
+            if state.audit_refresh_in_flight {
+                return Task::none();
+            }
+            state.audit_refresh_in_flight = true;
+            state.audit_error.clear();
+            Task::perform(
+                fetch_audit_events(
+                    state.daemon_url.clone(),
+                    state.token.clone(),
+                    state.user_id.clone(),
+                    200,
+                ),
+                Message::AuditEventsLoaded,
+            )
+        }
+        Message::AuditEventsLoaded(result) => {
+            state.audit_refresh_in_flight = false;
+            state.audit_last_refresh_ts = now_unix_ts();
+            match result {
+                Ok(events) => {
+                    let mut bridged = 0usize;
+                    let bridge_after_ts = state.audit_last_activity_bridge_ts;
+                    for event in events
+                        .iter()
+                        .filter(|event| event.timestamp > bridge_after_ts)
+                    {
+                        let should_bridge = matches!(
+                            event.event_type.as_str(),
+                            "inbox_transition" | "reminder_delivery"
+                        );
+                        if should_bridge {
+                            let origin = event.origin_ref.as_deref().unwrap_or("-");
+                            let actor = event.actor.as_deref().unwrap_or("system");
+                            state.push_activity(format!(
+                                "Ops update ({actor}) • {} • {} • origin:{}",
+                                event.event_type, event.status, origin
+                            ));
+                            bridged += 1;
+                        }
+                    }
+                    if let Some(max_ts) = events.iter().map(|e| e.timestamp).max() {
+                        state.audit_last_activity_bridge_ts =
+                            state.audit_last_activity_bridge_ts.max(max_ts);
+                    }
+                    state.audit_events = events;
+                    state.audit_error.clear();
+                    state.audit_status = format!("Audit synced ({})", state.audit_events.len());
+                    if bridged > 0 {
+                        state.push_activity(format!("audit→activity bridge: {bridged} updates"));
+                    }
+                }
+                Err(err) => {
+                    state.audit_error = err;
+                    state.audit_status.clear();
+                }
+            }
+            Task::none()
+        }
     }
 }
 
@@ -991,6 +1706,11 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
     .width(Length::Fill);
 
     let body = container(match state.active_tab {
+        UiTab::Inbox => view_inbox_tab(state),
+        UiTab::Kanban => view_kanban_tab(state),
+        UiTab::Dependencies => view_dependencies_tab(state),
+        UiTab::Gantt => view_gantt_tab(state),
+        UiTab::Audit => view_audit_tab(state),
         UiTab::Chat => view_chat_tab(state),
         UiTab::Activity => view_activity_tab(state),
         UiTab::Settings => view_settings_tab(state),
@@ -1006,6 +1726,8 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
         .height(40)
         .into();
 
+    let actionable_count = count_actionable_human_items(&state.inbox_items);
+
     let content = column![
         row![
             logo,
@@ -1016,6 +1738,7 @@ fn view(state: &ButterflyIcedApp) -> Element<'_, Message> {
             ]
             .spacing(2),
             Space::new().width(Length::Fill),
+            text(format!("Actionable now: {actionable_count}")).size(14),
             text(state.daemon_status.clone()).size(14)
         ]
         .spacing(16)
@@ -1057,6 +1780,76 @@ fn glass_panel(_theme: &Theme) -> iced::widget::container::Style {
             radius: 16.0.into(),
             width: 1.0,
             color: Color::from_rgba(1.0, 1.0, 1.0, 0.12),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_alert_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::from_rgb(1.0, 0.92, 0.92)),
+        background: Some(Background::Color(Color::from_rgba(0.42, 0.12, 0.18, 0.58))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(1.0, 0.35, 0.40, 0.55),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_accent_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba(0.20, 0.27, 0.62, 0.56))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(0.58, 0.70, 1.0, 0.50),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_success_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba(0.10, 0.46, 0.30, 0.58))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(0.45, 0.90, 0.65, 0.52),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_warning_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::WHITE),
+        background: Some(Background::Color(Color::from_rgba(0.52, 0.36, 0.10, 0.58))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(0.98, 0.79, 0.42, 0.50),
+        },
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+fn glass_muted_panel(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        text_color: Some(Color::from_rgb(0.75, 0.79, 0.88)),
+        background: Some(Background::Color(Color::from_rgba(0.14, 0.16, 0.22, 0.50))),
+        border: Border {
+            radius: 16.0.into(),
+            width: 1.0,
+            color: Color::from_rgba(0.62, 0.68, 0.82, 0.28),
         },
         shadow: Shadow::default(),
         snap: false,
@@ -1125,10 +1918,1897 @@ fn rounded_danger_button(
     rounded_button_style(iced::widget::button::danger(theme, status))
 }
 
+fn view_inbox_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let now = now_unix_ts();
+    let actionable_now = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.requires_human_action && item.status.is_actionable())
+        .count();
+    let overdue = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            item.requires_human_action
+                && item.status.is_actionable()
+                && item.due_at.map(|due| due < now).unwrap_or(false)
+        })
+        .count();
+    let blocked = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.status == InboxStatus::Blocked)
+        .count();
+    let awaiting_human = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.requires_human_action && item.status != InboxStatus::Done)
+        .count();
+
+    let mut needs_action_items = Vec::new();
+    let mut in_progress_items = Vec::new();
+    let mut blocked_items = Vec::new();
+    let mut done_items = Vec::new();
+    for item in &state.inbox_items {
+        match item.status {
+            InboxStatus::New | InboxStatus::Acknowledged => needs_action_items.push(item),
+            InboxStatus::InProgress => in_progress_items.push(item),
+            InboxStatus::Blocked => blocked_items.push(item),
+            InboxStatus::Done | InboxStatus::Dismissed => done_items.push(item),
+        }
+    }
+
+    let sort_section_by_due = |items: &mut Vec<&InboxItem>| {
+        items.sort_by(|a, b| {
+            a.due_at
+                .or_else(|| infer_due_at_from_item_text(a))
+                .unwrap_or(i64::MAX)
+                .cmp(
+                    &b.due_at
+                        .or_else(|| infer_due_at_from_item_text(b))
+                        .unwrap_or(i64::MAX),
+                )
+                .then_with(|| priority_rank(a.priority).cmp(&priority_rank(b.priority)))
+                .then_with(|| b.created_at.cmp(&a.created_at))
+        });
+    };
+
+    sort_section_by_due(&mut needs_action_items);
+    sort_section_by_due(&mut in_progress_items);
+    sort_section_by_due(&mut blocked_items);
+    sort_section_by_due(&mut done_items);
+
+    let content = column![
+        row![
+            inbox_chip("Actionable now", actionable_now),
+            inbox_chip("Overdue", overdue),
+            inbox_chip("Blocked", blocked),
+            inbox_chip("Awaiting human", awaiting_human),
+            Space::new().width(Length::Fill),
+            button("Refresh")
+                .padding([8, 12])
+                .style(rounded_primary_button)
+                .on_press_maybe((!state.inbox_refresh_in_flight).then_some(Message::InboxRefreshRequested))
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        container(
+            text("Action semantics: Seen = reviewed • Start = in progress • Block = waiting/dependency • Done = completed • Undo = reopen if DoD not met • Snooze = remind later")
+                .size(13)
+        )
+        .padding([8, 10])
+        .style(glass_accent_panel),
+        if state.inbox_error.is_empty() {
+            text(state.inbox_status.clone())
+        } else {
+            text(state.inbox_error.clone()).color([0.95, 0.45, 0.45])
+        },
+        inbox_section(
+            "Needs Action",
+            &needs_action_items,
+            state.timeline_focus_origin_ref.as_deref(),
+            state.inbox_action_origin_ref_in_flight.as_deref(),
+        ),
+        inbox_section(
+            "In progress",
+            &in_progress_items,
+            state.timeline_focus_origin_ref.as_deref(),
+            state.inbox_action_origin_ref_in_flight.as_deref(),
+        ),
+        inbox_section(
+            "Blocked",
+            &blocked_items,
+            state.timeline_focus_origin_ref.as_deref(),
+            state.inbox_action_origin_ref_in_flight.as_deref(),
+        ),
+        inbox_section(
+            "Done",
+            &done_items,
+            state.timeline_focus_origin_ref.as_deref(),
+            state.inbox_action_origin_ref_in_flight.as_deref(),
+        ),
+    ]
+    .spacing(10)
+    .width(Length::Fill);
+
+    container(
+        scrollable(container(content).width(Length::Fill).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn inbox_chip<'a>(label: &'a str, value: usize) -> Element<'a, Message> {
+    container(text(format!("{label}: {value}")).size(13))
+        .padding([6, 10])
+        .style(glass_panel)
+        .into()
+}
+
+#[derive(Clone, Copy)]
+enum BadgeTone {
+    Neutral,
+    Info,
+    Success,
+    Warning,
+    Danger,
+    Muted,
+}
+
+fn metric_badge(label: &str, value: impl Into<String>) -> Element<'static, Message> {
+    metric_badge_tone(label, value, BadgeTone::Neutral)
+}
+
+fn metric_badge_tone(
+    label: &str,
+    value: impl Into<String>,
+    tone: BadgeTone,
+) -> Element<'static, Message> {
+    let style = match tone {
+        BadgeTone::Neutral => glass_panel,
+        BadgeTone::Info => glass_accent_panel,
+        BadgeTone::Success => glass_success_panel,
+        BadgeTone::Warning => glass_warning_panel,
+        BadgeTone::Danger => glass_alert_panel,
+        BadgeTone::Muted => glass_muted_panel,
+    };
+
+    container(text(format!("{label}: {}", value.into())).size(11))
+        .padding([4, 8])
+        .style(style)
+        .into()
+}
+
+fn format_minutes_short(minutes: i32) -> String {
+    let minutes = minutes.max(1);
+    if minutes >= 8 * 60 {
+        let days = minutes as f32 / (8.0 * 60.0);
+        format!("{days:.1}d")
+    } else if minutes >= 60 {
+        let hours = minutes as f32 / 60.0;
+        format!("{hours:.1}h")
+    } else {
+        format!("{minutes}m")
+    }
+}
+
+fn inbox_section<'a>(
+    title: &'a str,
+    items: &[&InboxItem],
+    focused_origin_ref: Option<&str>,
+    action_in_flight_origin_ref: Option<&str>,
+) -> Element<'a, Message> {
+    let rows = if items.is_empty() {
+        column![container(text("No items")).padding(8).style(glass_panel)]
+    } else {
+        items.iter().fold(column!().spacing(8), |col, item| {
+            let priority = match item.priority {
+                InboxPriority::Low => "low",
+                InboxPriority::Normal => "normal",
+                InboxPriority::High => "high",
+                InboxPriority::Urgent => "urgent",
+            };
+            let source = match item.source_type {
+                InboxSourceType::Reminder => "reminder",
+                InboxSourceType::Todo => "todo",
+                InboxSourceType::Task => "task",
+                InboxSourceType::PlanStep => "plan",
+            };
+            let due_ts = item.due_at.or_else(|| infer_due_at_from_item_text(item));
+            let due = due_ts
+                .map(format_due_badge_time)
+                .unwrap_or_else(|| "no due date".to_string());
+
+            let now = now_unix_ts();
+            let due_tone = if let Some(ts) = due_ts {
+                if item.status.is_actionable() && ts < now {
+                    BadgeTone::Danger
+                } else if item.status.is_actionable() && ts <= now + 24 * 60 * 60 {
+                    BadgeTone::Warning
+                } else {
+                    BadgeTone::Success
+                }
+            } else {
+                BadgeTone::Muted
+            };
+
+            let mut meta_badges = row![
+                metric_badge_tone("Type", source.to_string(), BadgeTone::Info),
+                metric_badge("Priority", priority.to_string()),
+                metric_badge_tone("Due", due.clone(), due_tone),
+            ]
+            .spacing(6)
+            .align_y(iced::Alignment::Center);
+
+            if let Some(size) = item.t_shirt_size.as_ref() {
+                let size_norm = size.to_ascii_uppercase();
+                let size_tone = match size_norm.as_str() {
+                    "XS" | "S" => BadgeTone::Success,
+                    "M" => BadgeTone::Info,
+                    "L" => BadgeTone::Warning,
+                    "XL" | "XXL" => BadgeTone::Danger,
+                    _ => BadgeTone::Neutral,
+                };
+                meta_badges = meta_badges.push(metric_badge_tone("Size", size_norm, size_tone));
+            }
+            if let Some(points) = item.story_points {
+                if points > 0 {
+                    let points_tone = if points >= 8 {
+                        BadgeTone::Danger
+                    } else if points >= 5 {
+                        BadgeTone::Warning
+                    } else {
+                        BadgeTone::Success
+                    };
+                    meta_badges =
+                        meta_badges.push(metric_badge_tone("SP", points.to_string(), points_tone));
+                }
+            }
+            if let Some(minutes) = item.estimate_optimistic_minutes {
+                meta_badges = meta_badges.push(metric_badge_tone(
+                    "Opt",
+                    format_minutes_short(minutes),
+                    BadgeTone::Info,
+                ));
+            }
+            if let Some(minutes) = item.estimate_likely_minutes {
+                meta_badges = meta_badges.push(metric_badge_tone(
+                    "Likely",
+                    format_minutes_short(minutes),
+                    BadgeTone::Warning,
+                ));
+            }
+            if let Some(minutes) = item.estimate_pessimistic_minutes {
+                meta_badges = meta_badges.push(metric_badge_tone(
+                    "Pess",
+                    format_minutes_short(minutes),
+                    BadgeTone::Danger,
+                ));
+            }
+
+            let row_in_flight = action_in_flight_origin_ref == Some(item.origin_ref.as_str());
+            let can_transition = item.status.is_actionable() && !row_in_flight;
+            let can_seen = can_transition && item.status == InboxStatus::New;
+            let can_start = can_transition
+                && matches!(
+                    item.status,
+                    InboxStatus::New | InboxStatus::Acknowledged | InboxStatus::Blocked
+                );
+            let can_block = can_transition
+                && matches!(
+                    item.status,
+                    InboxStatus::New | InboxStatus::Acknowledged | InboxStatus::InProgress
+                );
+            let can_done = can_transition
+                && matches!(
+                    item.status,
+                    InboxStatus::New
+                        | InboxStatus::Acknowledged
+                        | InboxStatus::InProgress
+                        | InboxStatus::Blocked
+                );
+            let can_reopen = !row_in_flight && item.status == InboxStatus::Done;
+            let can_snooze = can_transition
+                && item.source_type == InboxSourceType::Reminder
+                && matches!(
+                    item.status,
+                    InboxStatus::New
+                        | InboxStatus::Acknowledged
+                        | InboxStatus::InProgress
+                        | InboxStatus::Blocked
+                );
+            let action_row = row![
+                button("Seen")
+                    .padding([6, 10])
+                    .style(rounded_secondary_button)
+                    .on_press_maybe(
+                        can_seen.then_some(Message::InboxAcknowledge(item.origin_ref.clone()))
+                    ),
+                button("Start")
+                    .padding([6, 10])
+                    .style(rounded_primary_button)
+                    .on_press_maybe(
+                        can_start.then_some(Message::InboxStart(item.origin_ref.clone()))
+                    ),
+                button("Blocked")
+                    .padding([6, 10])
+                    .style(rounded_secondary_button)
+                    .on_press_maybe(
+                        can_block.then_some(Message::InboxBlock(item.origin_ref.clone()))
+                    ),
+                button("Done")
+                    .padding([6, 10])
+                    .style(rounded_success_button)
+                    .on_press_maybe(
+                        can_done.then_some(Message::InboxDone(item.origin_ref.clone()))
+                    ),
+                button("Undo")
+                    .padding([6, 10])
+                    .style(rounded_secondary_button)
+                    .on_press_maybe(
+                        can_reopen.then_some(Message::InboxReopen(item.origin_ref.clone()))
+                    ),
+                button("Snooze")
+                    .padding([6, 10])
+                    .style(rounded_secondary_button)
+                    .on_press_maybe(
+                        can_snooze.then_some(Message::InboxSnooze(item.origin_ref.clone()))
+                    ),
+            ]
+            .spacing(8);
+
+            col.push(
+                container(
+                    column![
+                        row![
+                            text(if item.status == InboxStatus::New {
+                                "●"
+                            } else {
+                                "○"
+                            })
+                            .size(15)
+                            .color(
+                                if item.status == InboxStatus::New {
+                                    Color::from_rgb(0.30, 0.66, 1.0)
+                                } else {
+                                    Color::from_rgb(0.60, 0.64, 0.72)
+                                }
+                            ),
+                            Space::new().width(8),
+                            text(item.title.clone()).size(16),
+                            Space::new().width(Length::Fill),
+                            text(inbox_status_label(item.status)).size(12)
+                        ]
+                        .align_y(iced::Alignment::Center),
+                        if let Some(details) = &item.details {
+                            text(details.clone()).size(13)
+                        } else {
+                            text("").size(1)
+                        },
+                        scrollable(meta_badges)
+                            .direction(iced::widget::scrollable::Direction::Horizontal(
+                                iced::widget::scrollable::Scrollbar::default(),
+                            ))
+                            .height(Length::Shrink)
+                            .width(Length::Fill),
+                        text(format!(
+                            "Ref: {} • Updated: {}",
+                            item.id,
+                            format_local_time(item.updated_at)
+                        ))
+                        .size(12),
+                        action_row,
+                        if row_in_flight {
+                            text("Updating...").size(12).color([0.70, 0.86, 1.0])
+                        } else {
+                            text("").size(1)
+                        },
+                    ]
+                    .spacing(6),
+                )
+                .padding(10)
+                .style(if focused_origin_ref == Some(item.origin_ref.as_str()) {
+                    glass_accent_panel
+                } else {
+                    glass_panel
+                }),
+            )
+        })
+    };
+
+    container(
+        column![
+            row![
+                text(title.to_uppercase()).size(22),
+                Space::new().width(Length::Fill),
+                inbox_chip("items", items.len()),
+            ]
+            .align_y(iced::Alignment::Center),
+            rows
+        ]
+        .spacing(8),
+    )
+    .padding(8)
+    .style(glass_panel)
+    .into()
+}
+
+#[allow(dead_code)]
+fn view_timeline_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let mut human_lane: Vec<&InboxItem> = vec![];
+    let mut agent_lane: Vec<&InboxItem> = vec![];
+    for item in &state.inbox_items {
+        if item.owner.eq_ignore_ascii_case("agent") {
+            agent_lane.push(item);
+        } else {
+            human_lane.push(item);
+        }
+    }
+
+    let human_blocked = human_lane
+        .iter()
+        .filter(|item| item.status == InboxStatus::Blocked)
+        .count();
+    let agent_blocked = agent_lane
+        .iter()
+        .filter(|item| item.status == InboxStatus::Blocked)
+        .count();
+
+    let mut critical_paths = Vec::new();
+    let item_index: HashMap<&str, &InboxItem> = state
+        .inbox_items
+        .iter()
+        .map(|item| (item.origin_ref.as_str(), item))
+        .collect();
+
+    for item in state
+        .inbox_items
+        .iter()
+        .filter(|item| item.status == InboxStatus::Blocked)
+    {
+        let mut visited = HashSet::new();
+        let mut chain = vec![item.title.clone()];
+        let mut current = item;
+        visited.insert(current.origin_ref.clone());
+        let mut unresolved = false;
+
+        for _ in 0..4 {
+            let Some(dep_ref) = current.dependency_refs.first() else {
+                break;
+            };
+
+            if !visited.insert(dep_ref.clone()) {
+                unresolved = true;
+                chain.push("cycle detected".to_string());
+                break;
+            }
+
+            if let Some(next) = item_index.get(dep_ref.as_str()) {
+                chain.push(next.title.clone());
+                current = next;
+            } else {
+                unresolved = true;
+                chain.push(format!("missing dependency ({dep_ref})"));
+                break;
+            }
+        }
+
+        critical_paths.push((
+            item.origin_ref.clone(),
+            item.priority,
+            item.due_at.unwrap_or(i64::MAX),
+            chain.join("  →  "),
+            unresolved,
+        ));
+    }
+
+    critical_paths.sort_by_key(|entry| (priority_rank(entry.1), entry.2));
+    if critical_paths.len() > 8 {
+        critical_paths.truncate(8);
+    }
+
+    let critical_path_cards = if critical_paths.is_empty() {
+        column![
+            container(text("No blocked dependency chains right now").size(13))
+                .padding([10, 12])
+                .style(glass_panel)
+        ]
+    } else {
+        critical_paths.into_iter().fold(
+            column!().spacing(8),
+            |col, (origin_ref, _, _, chain, unresolved)| {
+                col.push(
+                    container(
+                        column![
+                            row![
+                                text(if unresolved { "⚠" } else { "⛓" }).size(15),
+                                text(chain).size(13),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::Alignment::Center),
+                            row![
+                                text(origin_ref.clone()).size(11),
+                                Space::new().width(Length::Fill),
+                                button("Open item")
+                                    .padding([4, 10])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::TimelineOpenItem(origin_ref.clone())),
+                                button("Open audit")
+                                    .padding([4, 10])
+                                    .style(rounded_primary_button)
+                                    .on_press(Message::TimelineOpenAudit(origin_ref.clone())),
+                                button("Open chat")
+                                    .padding([4, 10])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::OpenChatWithContext(origin_ref.clone())),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::Alignment::Center),
+                        ]
+                        .spacing(6),
+                    )
+                    .padding([8, 10])
+                    .style(if unresolved {
+                        glass_alert_panel
+                    } else {
+                        glass_panel
+                    }),
+                )
+            },
+        )
+    };
+
+    let lane = |title: &'static str, mut items: Vec<&InboxItem>| {
+        let lane_blocked = items
+            .iter()
+            .filter(|item| item.status == InboxStatus::Blocked)
+            .count();
+        items.sort_by_key(|item| {
+            (
+                item.status != InboxStatus::Blocked,
+                item.due_at.unwrap_or(i64::MAX),
+                item.created_at,
+            )
+        });
+
+        let rows = if items.is_empty() {
+            column![container(text("No items in this lane").size(13))
+                .padding([10, 12])
+                .style(glass_panel)]
+        } else {
+            items.into_iter().fold(column!().spacing(8), |col, item| {
+                let due = item
+                    .due_at
+                    .map(format_local_time)
+                    .unwrap_or_else(|| "no due date".to_string());
+                let status = inbox_status_label(item.status);
+                let status_color = inbox_status_color(item.status);
+                let priority = match item.priority {
+                    InboxPriority::Low => "low",
+                    InboxPriority::Normal => "normal",
+                    InboxPriority::High => "high",
+                    InboxPriority::Urgent => "urgent",
+                };
+                let owner = if item.owner.eq_ignore_ascii_case("agent") {
+                    "agent"
+                } else {
+                    "human"
+                };
+
+                let mut badges = row![
+                    metric_badge("Owner", owner.to_string()),
+                    metric_badge("Priority", priority.to_string()),
+                    metric_badge("Due", due.clone()),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center);
+                if let Some(size) = item.t_shirt_size.as_ref() {
+                    badges = badges.push(metric_badge("Size", size.to_ascii_uppercase()));
+                }
+                if let Some(points) = item.story_points {
+                    if points > 0 {
+                        badges = badges.push(metric_badge("SP", points.to_string()));
+                    }
+                }
+                if let Some(minutes) = item.estimate_likely_minutes {
+                    badges = badges.push(metric_badge("Likely", format_minutes_short(minutes)));
+                }
+
+                col.push(
+                    container(
+                        column![
+                            row![
+                                text(item.title.clone()).size(15),
+                                Space::new().width(Length::Fill),
+                                text("●").size(13).color(status_color),
+                                text(status).size(12).color(status_color)
+                            ]
+                            .align_y(iced::Alignment::Center),
+                            scrollable(badges)
+                                .direction(iced::widget::scrollable::Direction::Horizontal(
+                                    iced::widget::scrollable::Scrollbar::default(),
+                                ))
+                                .height(Length::Shrink)
+                                .width(Length::Fill),
+                        ]
+                        .spacing(6),
+                    )
+                    .padding([10, 12])
+                    .style(if item.status == InboxStatus::Blocked {
+                        glass_alert_panel
+                    } else {
+                        glass_panel
+                    }),
+                )
+            })
+        };
+
+        container(
+            column![
+                row![
+                    text(title).size(18),
+                    Space::new().width(Length::Fill),
+                    inbox_chip("blocked", lane_blocked),
+                ]
+                .align_y(iced::Alignment::Center),
+                rows
+            ]
+            .spacing(8),
+        )
+        .padding(8)
+        .style(glass_panel)
+    };
+
+    let total_overdue = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.due_at.map(|due| due < now_unix_ts()).unwrap_or(false))
+        .count();
+
+    let content = column![
+        row![
+            inbox_chip("Human blocked", human_blocked),
+            inbox_chip("Agent blocked", agent_blocked),
+            inbox_chip("Overdue", total_overdue),
+            inbox_chip("Total items", state.inbox_items.len()),
+            Space::new().width(Length::Fill),
+            button("Refresh")
+                .padding([8, 12])
+                .style(rounded_primary_button)
+                .on_press(Message::InboxRefreshRequested),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        container(
+            row![
+                text("Blocker-first timeline").size(14),
+                Space::new().width(Length::Fill),
+                text("Human + Agent lanes sorted by blocked status and due time").size(12)
+            ]
+            .align_y(iced::Alignment::Center)
+        )
+        .padding([10, 12])
+        .style(glass_accent_panel),
+        container(
+            column![
+                row![
+                    text("Critical path").size(16),
+                    Space::new().width(Length::Fill),
+                    text("Blocked chains surfaced first").size(12),
+                ]
+                .align_y(iced::Alignment::Center),
+                critical_path_cards,
+            ]
+            .spacing(8)
+        )
+        .padding(8)
+        .style(glass_panel),
+        lane("Human lane", human_lane),
+        lane("Agent lane", agent_lane),
+    ]
+    .spacing(10);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn view_kanban_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let now = now_unix_ts();
+    let seven_days_ago = now - (7 * 24 * 60 * 60);
+
+    let mut new_items = Vec::new();
+    let mut acknowledged_items = Vec::new();
+    let mut in_progress_items = Vec::new();
+    let mut blocked_items = Vec::new();
+    let mut done_items = Vec::new();
+
+    for item in &state.inbox_items {
+        match item.status {
+            InboxStatus::New => new_items.push(item),
+            InboxStatus::Acknowledged => acknowledged_items.push(item),
+            InboxStatus::InProgress => in_progress_items.push(item),
+            InboxStatus::Blocked => blocked_items.push(item),
+            InboxStatus::Done | InboxStatus::Dismissed => done_items.push(item),
+        }
+    }
+
+    let completed_with_due = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed)
+                && item.due_at.is_some()
+        })
+        .count();
+    let completed_on_time = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed)
+                && item
+                    .due_at
+                    .map(|due| item.updated_at <= due)
+                    .unwrap_or(false)
+        })
+        .count();
+    let deadline_hit_rate_pct = if completed_with_due > 0 {
+        ((completed_on_time as f32 / completed_with_due as f32) * 100.0).round() as i32
+    } else {
+        0
+    };
+
+    let throughput_7d = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed)
+                && item.updated_at >= seven_days_ago
+        })
+        .count();
+
+    let velocity_points_7d: i32 = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed)
+                && item.updated_at >= seven_days_ago
+        })
+        .map(|item| item.story_points.unwrap_or(0).max(0))
+        .sum();
+
+    let active_count =
+        new_items.len() + acknowledged_items.len() + in_progress_items.len() + blocked_items.len();
+    let done_count = done_items.len();
+    let done_open_ratio = if active_count > 0 {
+        format!("{:.1}", done_count as f32 / active_count as f32)
+    } else {
+        "∞".to_string()
+    };
+
+    let overdue_open = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            !matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed)
+                && item.due_at.map(|due| due < now).unwrap_or(false)
+        })
+        .count();
+
+    let item_index: HashMap<&str, &InboxItem> = state
+        .inbox_items
+        .iter()
+        .map(|item| (item.origin_ref.as_str(), item))
+        .collect();
+    let blocked_with_dependencies = blocked_items
+        .iter()
+        .filter(|item| !item.dependency_refs.is_empty())
+        .count();
+    let unresolved_dependency_edges = blocked_items
+        .iter()
+        .flat_map(|item| item.dependency_refs.iter())
+        .filter(|dep_ref| !item_index.contains_key(dep_ref.as_str()))
+        .count();
+
+    let mut dependency_chains = blocked_items
+        .iter()
+        .filter_map(|item| {
+            let dep_ref = item.dependency_refs.first()?;
+            let dep_title = item_index
+                .get(dep_ref.as_str())
+                .map(|dep| dep.title.clone())
+                .unwrap_or_else(|| format!("missing ({dep_ref})"));
+            Some((
+                item.origin_ref.clone(),
+                format!("{} → {}", item.title, dep_title),
+            ))
+        })
+        .collect::<Vec<_>>();
+    dependency_chains.sort_by(|a, b| a.1.cmp(&b.1));
+    dependency_chains.truncate(3);
+
+    let dependency_chain_preview: Element<'_, Message> = if dependency_chains.is_empty() {
+        container(text("No blocked dependency chains right now").size(12))
+            .padding([8, 10])
+            .style(glass_panel)
+            .width(Length::Fill)
+            .into()
+    } else {
+        dependency_chains
+            .into_iter()
+            .fold(column!().spacing(6), |col, (origin_ref, chain)| {
+                col.push(
+                    container(
+                        column![
+                            text(chain).size(12),
+                            row![
+                                Space::new().width(Length::Fill),
+                                button("Inbox")
+                                    .padding([4, 8])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::TimelineOpenItem(origin_ref.clone())),
+                                button("Audit")
+                                    .padding([4, 8])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::TimelineOpenAudit(origin_ref.clone())),
+                                button("Chat")
+                                    .padding([4, 8])
+                                    .style(rounded_primary_button)
+                                    .on_press(Message::OpenChatWithContext(origin_ref.clone())),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::Alignment::Center),
+                        ]
+                        .spacing(6),
+                    )
+                    .padding([8, 10])
+                    .style(glass_panel)
+                    .width(Length::Fill),
+                )
+            })
+            .into()
+    };
+
+    let column_view = |title: &'static str, items: Vec<&InboxItem>| {
+        let max_cards = 4usize;
+        let item_count = items.len();
+        let cards = if items.is_empty() {
+            column![container(text("No items").size(12))
+                .padding([8, 10])
+                .style(glass_panel)
+                .width(Length::Fill)]
+        } else {
+            let mut cards = items.into_iter().take(max_cards).fold(
+                column!().spacing(8),
+                |col, item| {
+                    let due = item
+                        .due_at
+                        .map(format_due_badge_time)
+                        .unwrap_or_else(|| "no due".to_string());
+                    let source = match item.source_type {
+                        InboxSourceType::Reminder => "reminder",
+                        InboxSourceType::Todo => "todo",
+                        InboxSourceType::Task => "task",
+                        InboxSourceType::PlanStep => "plan",
+                    };
+                    let size = item
+                        .t_shirt_size
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string())
+                        .to_ascii_uppercase();
+                    let points = item.story_points.unwrap_or(0).max(0);
+                    let likely = item
+                        .estimate_likely_minutes
+                        .map(format_minutes_short)
+                        .unwrap_or_else(|| "-".to_string());
+
+                    col.push(
+                        container(
+                            column![
+                                text(item.title.clone()).size(14),
+                                text(format!("{source} • {}", item.owner)).size(12),
+                                text(format!(
+                                    "due: {due} • size: {size} • sp: {points} • likely: {likely}"
+                                ))
+                                .size(11),
+                                text(item.origin_ref.to_string()).size(11),
+                            ]
+                            .spacing(4),
+                        )
+                        .padding([8, 10])
+                        .width(Length::Fill)
+                        .style(if item.status == InboxStatus::Blocked {
+                            glass_alert_panel
+                        } else {
+                            glass_panel
+                        }),
+                    )
+                },
+            );
+
+            let overflow = item_count.saturating_sub(max_cards);
+            if overflow > 0 {
+                cards = cards.push(
+                    container(
+                        text(format!("+{overflow} more items (see Inbox)"))
+                            .size(12)
+                            .color([0.78, 0.82, 0.92]),
+                    )
+                    .padding([8, 10])
+                    .style(glass_muted_panel)
+                    .width(Length::Fill),
+                );
+            }
+
+            cards
+        };
+
+        container(
+            column![
+                row![
+                    text(title).size(18),
+                    Space::new().width(Length::Fill),
+                    inbox_chip("items", item_count),
+                ]
+                .align_y(iced::Alignment::Center),
+                cards
+            ]
+            .spacing(8),
+        )
+        .padding(8)
+        .style(glass_panel)
+        .width(Length::FillPortion(1))
+    };
+
+    let board = row![
+        column_view("NEW", new_items),
+        column_view("SEEN", acknowledged_items),
+        column_view("IN PROGRESS", in_progress_items),
+        column_view("BLOCKED", blocked_items),
+        column_view("DONE", done_items),
+    ]
+    .spacing(10)
+    .height(Length::Fill)
+    .width(Length::Fill);
+
+    let content = column![
+        container(
+            row![
+                text("Kanban board + delivery metrics").size(14),
+                Space::new().width(Length::Fill),
+                text("No inline edits in this view").size(12),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 10])
+        .style(glass_accent_panel),
+        row![
+            metric_badge(
+                "On-time",
+                format!("{}%", deadline_hit_rate_pct.clamp(0, 100))
+            ),
+            metric_badge("Overdue open", overdue_open.to_string()),
+            metric_badge("Throughput (7d)", throughput_7d.to_string()),
+            metric_badge("Velocity SP (7d)", velocity_points_7d.max(0).to_string()),
+            metric_badge("Done/Open", done_open_ratio),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        container(
+            column![
+                row![
+                    text("Dependency watch").size(15),
+                    Space::new().width(Length::Fill),
+                    text("Lightweight graph preview").size(12),
+                ]
+                .align_y(iced::Alignment::Center),
+                row![
+                    inbox_chip("Blocked w/ deps", blocked_with_dependencies),
+                    inbox_chip("Unresolved edges", unresolved_dependency_edges),
+                ]
+                .spacing(8)
+                .align_y(iced::Alignment::Center),
+                dependency_chain_preview
+            ]
+            .spacing(8)
+        )
+        .padding(8)
+        .style(glass_panel),
+        board,
+    ]
+    .spacing(10)
+    .height(Length::Fill);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn view_dependencies_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let item_index: HashMap<&str, &InboxItem> = state
+        .inbox_items
+        .iter()
+        .map(|item| (item.origin_ref.as_str(), item))
+        .collect();
+
+    let mut edges = state
+        .inbox_items
+        .iter()
+        .flat_map(|item| {
+            item.dependency_refs.iter().map(|dep_ref| {
+                let dep_item = item_index.get(dep_ref.as_str()).copied();
+                (
+                    item.origin_ref.clone(),
+                    item.title.clone(),
+                    item.owner.clone(),
+                    item.status,
+                    dep_ref.clone(),
+                    dep_item.map(|dep| dep.title.clone()),
+                    dep_item.map(|dep| dep.owner.clone()),
+                    dep_item.is_some(),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+
+    edges.sort_by(|a, b| {
+        let a_unresolved = !a.7;
+        let b_unresolved = !b.7;
+        a_unresolved
+            .cmp(&b_unresolved)
+            .reverse()
+            .then_with(|| (a.3 != InboxStatus::Blocked).cmp(&(b.3 != InboxStatus::Blocked)))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    let total_edges = edges.len();
+    let unresolved_edges = edges.iter().filter(|edge| !edge.7).count();
+    let blocked_edges = edges
+        .iter()
+        .filter(|edge| edge.3 == InboxStatus::Blocked)
+        .count();
+    let cross_owner_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge.6
+                .as_ref()
+                .map(|dep_owner| !edge.2.eq_ignore_ascii_case(dep_owner))
+                .unwrap_or(false)
+        })
+        .count();
+    let cross_owner_blocked_edges = edges
+        .iter()
+        .filter(|edge| {
+            edge.3 == InboxStatus::Blocked
+                && edge
+                    .6
+                    .as_ref()
+                    .map(|dep_owner| !edge.2.eq_ignore_ascii_case(dep_owner))
+                    .unwrap_or(false)
+        })
+        .count();
+
+    let mut owner_pair_rollups: HashMap<String, (usize, usize, usize)> = HashMap::new();
+    for edge in &edges {
+        let source_owner = edge.2.trim().to_ascii_lowercase();
+        let dep_owner = edge
+            .6
+            .as_ref()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .unwrap_or_else(|| "unknown".to_string());
+        let key = format!("{source_owner} → {dep_owner}");
+        let entry = owner_pair_rollups.entry(key).or_insert((0, 0, 0));
+        entry.0 += 1;
+        if edge.3 == InboxStatus::Blocked {
+            entry.1 += 1;
+        }
+        if !edge.7 {
+            entry.2 += 1;
+        }
+    }
+
+    let mut owner_pair_rows = owner_pair_rollups.into_iter().collect::<Vec<_>>();
+    owner_pair_rows.sort_by(|a, b| {
+        b.1 .2
+            .cmp(&a.1 .2)
+            .then_with(|| b.1 .1.cmp(&a.1 .1))
+            .then_with(|| b.1 .0.cmp(&a.1 .0))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    owner_pair_rows.truncate(8);
+
+    let mut cycle_count = 0usize;
+    for item in &state.inbox_items {
+        for dep_ref in &item.dependency_refs {
+            if let Some(dep_item) = item_index.get(dep_ref.as_str()) {
+                if dep_item
+                    .dependency_refs
+                    .iter()
+                    .any(|back_ref| back_ref == &item.origin_ref)
+                {
+                    cycle_count += 1;
+                }
+            }
+        }
+    }
+
+    let graph_rows = if edges.is_empty() {
+        column![container(text("No dependency edges yet.").size(13))
+            .padding([10, 12])
+            .style(glass_panel)
+            .width(Length::Fill)]
+    } else {
+        edges
+            .iter()
+            .take(40)
+            .fold(column!().spacing(8), |col, edge| {
+                let source_ref = edge.0.clone();
+                let from_title = edge.1.clone();
+                let status = edge.3;
+                let dep_ref = edge.4.clone();
+                let dep_title = edge
+                    .5
+                    .clone()
+                    .unwrap_or_else(|| format!("missing dependency ({dep_ref})"));
+                let unresolved = !edge.7;
+
+                let owner_pair = match edge.6.clone() {
+                    Some(dep_owner) => format!("{} → {dep_owner}", edge.2),
+                    None => format!("{} → unknown", edge.2),
+                };
+
+                col.push(
+                    container(
+                        column![
+                            row![
+                                text(if unresolved { "⚠" } else { "⛓" }).size(14),
+                                text(format!("{from_title} → {dep_title}")).size(13),
+                                Space::new().width(Length::Fill),
+                                text(inbox_status_label(status)).size(12),
+                            ]
+                            .spacing(8)
+                            .align_y(iced::Alignment::Center),
+                            row![
+                                text(owner_pair).size(11),
+                                Space::new().width(Length::Fill),
+                                button("Inbox")
+                                    .padding([4, 8])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::TimelineOpenItem(source_ref.clone())),
+                                button("Audit")
+                                    .padding([4, 8])
+                                    .style(rounded_secondary_button)
+                                    .on_press(Message::TimelineOpenAudit(source_ref.clone())),
+                                button("Chat")
+                                    .padding([4, 8])
+                                    .style(rounded_primary_button)
+                                    .on_press(Message::OpenChatWithContext(source_ref.clone())),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::Alignment::Center),
+                        ]
+                        .spacing(6),
+                    )
+                    .padding([8, 10])
+                    .style(if unresolved {
+                        glass_alert_panel
+                    } else if status == InboxStatus::Blocked {
+                        glass_warning_panel
+                    } else {
+                        glass_panel
+                    }),
+                )
+            })
+    };
+
+    let owner_rollup_rows: Element<'_, Message> = if owner_pair_rows.is_empty() {
+        container(text("No owner handoffs detected yet.").size(12))
+            .padding([8, 10])
+            .style(glass_panel)
+            .width(Length::Fill)
+            .into()
+    } else {
+        owner_pair_rows
+            .into_iter()
+            .fold(
+                column!().spacing(6),
+                |col, (pair, (total, blocked, unresolved))| {
+                    col.push(
+                        container(
+                            row![
+                                text(pair).size(12),
+                                Space::new().width(Length::Fill),
+                                metric_badge("Edges", total.to_string()),
+                                metric_badge_tone(
+                                    "Blocked",
+                                    blocked.to_string(),
+                                    if blocked > 0 {
+                                        BadgeTone::Warning
+                                    } else {
+                                        BadgeTone::Muted
+                                    }
+                                ),
+                                metric_badge_tone(
+                                    "Unresolved",
+                                    unresolved.to_string(),
+                                    if unresolved > 0 {
+                                        BadgeTone::Danger
+                                    } else {
+                                        BadgeTone::Success
+                                    }
+                                ),
+                            ]
+                            .spacing(6)
+                            .align_y(iced::Alignment::Center),
+                        )
+                        .padding([8, 10])
+                        .style(glass_panel)
+                        .width(Length::Fill),
+                    )
+                },
+            )
+            .into()
+    };
+
+    let content = column![
+        container(
+            row![
+                text("Dependency graph").size(14),
+                Space::new().width(Length::Fill),
+                text("Edges across todos/plans/tasks/reminders").size(12),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 10])
+        .style(glass_accent_panel),
+        row![
+            inbox_chip("Total edges", total_edges),
+            inbox_chip("Unresolved", unresolved_edges),
+            inbox_chip("Blocked edges", blocked_edges),
+            inbox_chip("Cross-owner", cross_owner_edges),
+            inbox_chip("Cross-owner blocked", cross_owner_blocked_edges),
+            inbox_chip("2-node cycles", cycle_count),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        container(
+            column![
+                row![
+                    text("Org handoff rollup").size(15),
+                    Space::new().width(Length::Fill),
+                    text("owner → dependency-owner edges").size(12),
+                ]
+                .align_y(iced::Alignment::Center),
+                owner_rollup_rows,
+            ]
+            .spacing(8),
+        )
+        .padding(8)
+        .style(glass_panel),
+        graph_rows,
+    ]
+    .spacing(10)
+    .width(Length::Fill);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn view_gantt_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let extract_plan_step_ref = |details: Option<&String>| -> Option<String> {
+        static PLAN_STEP_REF_RE: OnceLock<Regex> = OnceLock::new();
+        let text = details?.as_str();
+        let re = PLAN_STEP_REF_RE
+            .get_or_init(|| Regex::new(r"(?i)planstepref\s*:\s*(plan_step:\d+:\d+)").unwrap());
+        re.captures(text)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_ascii_lowercase())
+    };
+
+    let plan_step_refs_in_view = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.source_type == InboxSourceType::PlanStep)
+        .map(|item| item.origin_ref.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    let mut gantt_rows = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.source_type,
+                InboxSourceType::Todo | InboxSourceType::PlanStep
+            ) && (item.due_at.is_some() || item.estimate_likely_minutes.is_some())
+                && !(item.source_type == InboxSourceType::Todo
+                    && extract_plan_step_ref(item.details.as_ref())
+                        .map(|origin_ref| plan_step_refs_in_view.contains(&origin_ref))
+                        .unwrap_or(false))
+        })
+        .collect::<Vec<_>>();
+
+    let item_index: HashMap<String, &InboxItem> = state
+        .inbox_items
+        .iter()
+        .map(|item| (item.origin_ref.to_ascii_lowercase(), item))
+        .collect();
+
+    let mut seen_fingerprints = HashSet::new();
+    gantt_rows.retain(|item| {
+        let due_bucket = item
+            .due_at
+            .map(|ts| ts / 86_400)
+            .unwrap_or(i64::MAX / 86_400);
+        let fingerprint = format!(
+            "{}|{}|{}|{}|{}",
+            item.title.trim().to_ascii_lowercase(),
+            due_bucket,
+            item.story_points.unwrap_or(0),
+            item.estimate_likely_minutes.unwrap_or(0),
+            item.t_shirt_size
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        );
+
+        if seen_fingerprints.contains(&fingerprint) {
+            return false;
+        }
+        seen_fingerprints.insert(fingerprint)
+    });
+
+    let gantt_start_end = |item: &InboxItem| -> (i64, i64) {
+        let likely_seconds = (item.estimate_likely_minutes.unwrap_or(60).max(1) as i64) * 60;
+        let end_ts = item
+            .due_at
+            .unwrap_or_else(|| item.created_at + likely_seconds)
+            .max(item.created_at + 60);
+
+        let latest_dep_end = item
+            .dependency_refs
+            .iter()
+            .filter_map(|dep_ref| item_index.get(&dep_ref.to_ascii_lowercase()).copied())
+            .map(|dep| {
+                dep.due_at.unwrap_or_else(|| {
+                    dep.created_at + (dep.estimate_likely_minutes.unwrap_or(60).max(1) as i64 * 60)
+                })
+            })
+            .max();
+
+        let start_from_due = item
+            .due_at
+            .map(|due| (due - likely_seconds).max(0))
+            .unwrap_or(item.created_at);
+
+        let start_ts = latest_dep_end
+            .filter(|dep_end| *dep_end < end_ts)
+            .unwrap_or(start_from_due)
+            .min(end_ts - 60);
+        (start_ts, end_ts)
+    };
+
+    gantt_rows.sort_by_key(|item| {
+        let (start_ts, end_ts) = gantt_start_end(item);
+        (start_ts, end_ts, item.created_at)
+    });
+
+    let time_window_start = gantt_rows
+        .iter()
+        .map(|item| gantt_start_end(item).0)
+        .min()
+        .unwrap_or_else(now_unix_ts);
+    let time_window_end = gantt_rows
+        .iter()
+        .map(|item| gantt_start_end(item).1)
+        .max()
+        .unwrap_or(time_window_start + 3600)
+        .max(time_window_start + 3600);
+    let total_window_seconds = (time_window_end - time_window_start).max(1) as f32;
+
+    let rows = if gantt_rows.is_empty() {
+        column![container(text("No todo tickets available for Gantt view"))
+            .padding([10, 12])
+            .style(glass_panel)]
+    } else {
+        gantt_rows
+            .into_iter()
+            .fold(column!().spacing(10), |col, item| {
+                let (start_ts, end_ts) = gantt_start_end(item);
+
+                let offset_px =
+                    (((start_ts - time_window_start).max(0) as f32) / total_window_seconds * 560.0)
+                        .clamp(0.0, 560.0);
+                let bar_px = (((end_ts - start_ts).max(60) as f32) / total_window_seconds * 560.0)
+                    .clamp(6.0, 560.0);
+
+                let size = item.t_shirt_size.clone().unwrap_or_else(|| "-".to_string());
+                let points = item.story_points.unwrap_or(0).max(0);
+                let likely_minutes = item.estimate_likely_minutes.unwrap_or(60).max(1);
+                let due_label = item
+                    .due_at
+                    .map(format_local_time)
+                    .unwrap_or_else(|| "no due date".to_string());
+
+                col.push(
+                    container(
+                        column![
+                            row![
+                                text(item.title.clone()).size(14),
+                                Space::new().width(Length::Fill),
+                                text(format!("size: {size} • points: {points}")).size(12),
+                            ]
+                            .align_y(iced::Alignment::Center),
+                            row![
+                                Space::new().width(offset_px),
+                                container(Space::new().width(bar_px).height(14)).style(
+                                    if matches!(
+                                        item.status,
+                                        InboxStatus::Done | InboxStatus::Dismissed
+                                    ) {
+                                        glass_success_panel
+                                    } else if item.status == InboxStatus::Blocked {
+                                        glass_alert_panel
+                                    } else {
+                                        glass_accent_panel
+                                    }
+                                ),
+                                Space::new().width(Length::Fill),
+                            ]
+                            .spacing(0)
+                            .align_y(iced::Alignment::Center),
+                            text(format!(
+                                "start {} • due {} • likely {} • ref {}",
+                                format_local_time(start_ts),
+                                due_label,
+                                format_minutes_short(likely_minutes),
+                                item.origin_ref
+                            ))
+                            .size(11),
+                        ]
+                        .spacing(6),
+                    )
+                    .padding([8, 10])
+                    .style(glass_panel),
+                )
+            })
+    };
+
+    let content = column![
+        container(
+            row![
+                text("Read-only Gantt").size(14),
+                Space::new().width(Length::Fill),
+                text("Blue=open • Green=done • Red=blocked (due-date aligned)").size(12),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 10])
+        .style(glass_accent_panel),
+        rows,
+    ]
+    .spacing(10)
+    .width(Length::Fill);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+#[allow(dead_code)]
+fn view_burndown_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let extract_plan_step_ref = |details: Option<&String>| -> Option<String> {
+        static PLAN_STEP_REF_RE: OnceLock<Regex> = OnceLock::new();
+        let text = details?.as_str();
+        let re = PLAN_STEP_REF_RE
+            .get_or_init(|| Regex::new(r"(?i)planstepref\s*:\s*(plan_step:\d+:\d+)").unwrap());
+        re.captures(text)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_ascii_lowercase())
+    };
+
+    let plan_step_refs_in_view = state
+        .inbox_items
+        .iter()
+        .filter(|item| item.source_type == InboxSourceType::PlanStep)
+        .map(|item| item.origin_ref.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    let mut burn_items = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.source_type,
+                InboxSourceType::Todo | InboxSourceType::PlanStep
+            ) && (item.story_points.is_some() || item.estimate_likely_minutes.is_some())
+                && !(item.source_type == InboxSourceType::Todo
+                    && extract_plan_step_ref(item.details.as_ref())
+                        .map(|origin_ref| plan_step_refs_in_view.contains(&origin_ref))
+                        .unwrap_or(false))
+        })
+        .collect::<Vec<_>>();
+
+    let mut seen_fingerprints = HashSet::new();
+    burn_items.retain(|item| {
+        let due_bucket = item
+            .due_at
+            .map(|ts| ts / 86_400)
+            .unwrap_or(i64::MAX / 86_400);
+        let fingerprint = format!(
+            "{}|{}|{}|{}|{}",
+            item.title.trim().to_ascii_lowercase(),
+            due_bucket,
+            item.story_points.unwrap_or(0),
+            item.estimate_likely_minutes.unwrap_or(0),
+            item.t_shirt_size
+                .as_deref()
+                .unwrap_or("")
+                .trim()
+                .to_ascii_lowercase()
+        );
+
+        if seen_fingerprints.contains(&fingerprint) {
+            return false;
+        }
+        seen_fingerprints.insert(fingerprint)
+    });
+
+    let total_points: i32 = burn_items
+        .iter()
+        .map(|item| item.story_points.unwrap_or(1).max(1))
+        .sum();
+    let completed_points: i32 = burn_items
+        .iter()
+        .filter(|item| matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed))
+        .map(|item| item.story_points.unwrap_or(1).max(1))
+        .sum();
+    let remaining_points = (total_points - completed_points).max(0);
+
+    let total_likely_minutes: i32 = burn_items
+        .iter()
+        .map(|item| item.estimate_likely_minutes.unwrap_or(60).max(1))
+        .sum();
+    let completed_likely_minutes: i32 = burn_items
+        .iter()
+        .filter(|item| matches!(item.status, InboxStatus::Done | InboxStatus::Dismissed))
+        .map(|item| item.estimate_likely_minutes.unwrap_or(60).max(1))
+        .sum();
+    let remaining_likely_minutes = (total_likely_minutes - completed_likely_minutes).max(0);
+
+    let progress_ratio = if total_points > 0 {
+        completed_points as f32 / total_points as f32
+    } else {
+        0.0
+    };
+    let ideal_remaining_points = ((1.0 - progress_ratio) * total_points as f32).round() as i32;
+
+    let progress_bar = row![
+        container(
+            Space::new()
+                .width((progress_ratio.clamp(0.0, 1.0) * 560.0).max(4.0))
+                .height(14)
+        )
+        .style(glass_accent_panel),
+        container(
+            Space::new()
+                .width(((1.0 - progress_ratio.clamp(0.0, 1.0)) * 560.0).max(4.0))
+                .height(14)
+        )
+        .style(glass_panel),
+    ]
+    .spacing(0)
+    .align_y(iced::Alignment::Center);
+
+    let content = column![
+        container(
+            row![
+                text("Read-only Burndown").size(14),
+                Space::new().width(Length::Fill),
+                text("Uses sized tickets (Todo + Plan steps)").size(12),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .padding([8, 10])
+        .style(glass_accent_panel),
+        row![
+            inbox_chip("Total points", total_points.max(0) as usize),
+            inbox_chip("Completed points", completed_points.max(0) as usize),
+            inbox_chip("Remaining points", remaining_points.max(0) as usize),
+            inbox_chip("Ideal remaining", ideal_remaining_points.max(0) as usize),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        row![
+            inbox_chip("Total likely (min)", total_likely_minutes.max(0) as usize),
+            inbox_chip(
+                "Completed likely (min)",
+                completed_likely_minutes.max(0) as usize
+            ),
+            inbox_chip(
+                "Remaining likely (min)",
+                remaining_likely_minutes.max(0) as usize
+            ),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        container(progress_bar).padding([8, 10]).style(glass_panel),
+        container(
+            text("Interpretation: left segment = burned work, right segment = remaining work.")
+                .size(12)
+        )
+        .padding([8, 10])
+        .style(glass_panel),
+    ]
+    .spacing(10)
+    .width(Length::Fill);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn view_audit_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let filtered_events = state
+        .audit_events
+        .iter()
+        .filter(|event| {
+            if let Some(origin_ref) = state.audit_origin_filter.as_ref() {
+                event.origin_ref.as_deref() == Some(origin_ref.as_str())
+            } else {
+                true
+            }
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let lines = filtered_events
+        .iter()
+        .fold(column!().spacing(6), |col, event| {
+            let (icon, tone, panel) = if event.line.contains("error")
+                || event.line.contains("failed")
+                || event.line.contains("blocked")
+            {
+                (
+                    "⛔",
+                    Color::from_rgb(0.98, 0.58, 0.58),
+                    glass_alert_panel as fn(&Theme) -> _,
+                )
+            } else if event.line.contains("ok") || event.line.contains("done") {
+                (
+                    "✅",
+                    Color::from_rgb(0.62, 0.95, 0.72),
+                    glass_panel as fn(&Theme) -> _,
+                )
+            } else {
+                (
+                    "🧭",
+                    Color::from_rgb(0.74, 0.80, 1.0),
+                    glass_panel as fn(&Theme) -> _,
+                )
+            };
+
+            let open_item_button: Element<'_, Message> = if let Some(origin_ref) = &event.origin_ref
+            {
+                row![
+                    button("Open item")
+                        .padding([4, 10])
+                        .style(rounded_secondary_button)
+                        .on_press(Message::TimelineOpenItem(origin_ref.clone())),
+                    button("Open chat")
+                        .padding([4, 10])
+                        .style(rounded_secondary_button)
+                        .on_press(Message::OpenChatAtEvent(
+                            origin_ref.clone(),
+                            event.timestamp
+                        )),
+                ]
+                .spacing(6)
+                .into()
+            } else {
+                Space::new().width(0).into()
+            };
+
+            col.push(
+                container(
+                    row![
+                        text(icon).size(16).color(tone),
+                        text(event.line.clone()).size(13),
+                        Space::new().width(Length::Fill),
+                        open_item_button,
+                    ]
+                    .spacing(8)
+                    .align_y(iced::Alignment::Center),
+                )
+                .padding([8, 10])
+                .style(panel),
+            )
+        });
+
+    let last_sync = if state.audit_last_refresh_ts > 0 {
+        format_local_time(state.audit_last_refresh_ts)
+    } else {
+        "never".to_string()
+    };
+
+    let status_banner: Element<'_, Message> = if state.audit_error.is_empty() {
+        container(text(state.audit_status.clone()).size(13))
+            .padding([8, 10])
+            .style(glass_accent_panel)
+            .into()
+    } else {
+        container(
+            text(state.audit_error.clone())
+                .size(13)
+                .color([0.98, 0.70, 0.70]),
+        )
+        .padding([8, 10])
+        .style(glass_alert_panel)
+        .into()
+    };
+
+    let filter_bar: Element<'_, Message> =
+        if let Some(origin_ref) = state.audit_origin_filter.as_ref() {
+            container(
+                row![
+                    text(format!("Filter: {origin_ref}")).size(12),
+                    Space::new().width(Length::Fill),
+                    button("Clear filter")
+                        .padding([4, 10])
+                        .style(rounded_secondary_button)
+                        .on_press(Message::AuditClearFilter),
+                ]
+                .align_y(iced::Alignment::Center),
+            )
+            .padding([8, 10])
+            .style(glass_panel)
+            .into()
+        } else {
+            container(text("Showing all events").size(12))
+                .padding([8, 10])
+                .style(glass_panel)
+                .into()
+        };
+
+    let content = column![
+        row![
+            text("Audit trail").size(18),
+            Space::new().width(Length::Fill),
+            inbox_chip("Events", filtered_events.len()),
+            text(last_sync).size(12),
+            Space::new().width(Length::Fill),
+            button("Refresh")
+                .padding([8, 12])
+                .style(rounded_primary_button)
+                .on_press(Message::AuditRefreshRequested),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
+        status_banner,
+        filter_bar,
+        lines,
+    ]
+    .spacing(10);
+
+    container(
+        scrollable(container(content).padding([4, 14]))
+            .height(Length::Fill)
+            .width(Length::Fill),
+    )
+    .padding(10)
+    .style(glass_panel)
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .into()
+}
+
+fn inbox_status_label(status: InboxStatus) -> &'static str {
+    match status {
+        InboxStatus::New => "new",
+        InboxStatus::Acknowledged => "acknowledged",
+        InboxStatus::InProgress => "in_progress",
+        InboxStatus::Blocked => "blocked",
+        InboxStatus::Done => "done",
+        InboxStatus::Dismissed => "dismissed",
+    }
+}
+
+#[allow(dead_code)]
+fn inbox_status_color(status: InboxStatus) -> Color {
+    match status {
+        InboxStatus::New => Color::from_rgb(0.64, 0.76, 1.0),
+        InboxStatus::Acknowledged => Color::from_rgb(0.72, 0.82, 1.0),
+        InboxStatus::InProgress => Color::from_rgb(0.73, 0.85, 1.0),
+        InboxStatus::Blocked => Color::from_rgb(0.98, 0.55, 0.58),
+        InboxStatus::Done => Color::from_rgb(0.62, 0.95, 0.70),
+        InboxStatus::Dismissed => Color::from_rgb(0.68, 0.72, 0.78),
+    }
+}
+
 fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
+    let anchored_matches = state
+        .chat_origin_anchor
+        .as_ref()
+        .map(|anchor| {
+            state
+                .chat_messages
+                .iter()
+                .filter(|msg| msg.text.contains(anchor))
+                .count()
+        })
+        .unwrap_or(0);
+
+    let anchor_banner: Element<'_, Message> =
+        if let Some(anchor) = state.chat_origin_anchor.as_ref() {
+            let anchor_id_text = state
+                .chat_anchor_message_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string());
+            container(
+                row![
+                    text(format!("Chat anchor: {anchor}")).size(12),
+                    Space::new().width(Length::Fill),
+                    text(format!("message-id: {anchor_id_text}")).size(12),
+                    inbox_chip("matches", anchored_matches),
+                    button("Clear")
+                        .padding([4, 10])
+                        .style(rounded_secondary_button)
+                        .on_press(Message::ChatClearAnchor),
+                ]
+                .align_y(iced::Alignment::Center),
+            )
+            .padding([8, 10])
+            .style(glass_accent_panel)
+            .into()
+        } else {
+            Space::new().height(0).into()
+        };
+
     let list = state
         .chat_messages
         .iter()
+        .filter(|msg| msg.role != MessageRole::System)
         .fold(column!().spacing(10).width(Length::Fill), |col, msg| {
             let who = match msg.role {
                 MessageRole::User => "You",
@@ -1154,10 +3834,21 @@ fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                 .spacing(6),
             )
             .padding(12)
-            .style(match msg.role {
-                MessageRole::User => glass_user_bubble,
-                MessageRole::Bot => glass_bot_bubble,
-                MessageRole::System => glass_panel,
+            .style(if state.chat_anchor_message_id == Some(msg.id) {
+                glass_alert_panel
+            } else if state
+                .chat_origin_anchor
+                .as_ref()
+                .map(|anchor| msg.text.contains(anchor))
+                .unwrap_or(false)
+            {
+                glass_accent_panel
+            } else {
+                match msg.role {
+                    MessageRole::User => glass_user_bubble,
+                    MessageRole::Bot => glass_bot_bubble,
+                    MessageRole::System => glass_panel,
+                }
             });
             col.push(bubble)
         })
@@ -1180,6 +3871,7 @@ fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
     column![
         container(
             scrollable(container(list).padding([0, 14]).width(Length::Fill))
+                .id(state.chat_scroll_id.clone())
                 .height(Length::Fill)
                 .width(Length::Fill)
                 .anchor_bottom()
@@ -1194,6 +3886,7 @@ fn view_chat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
         } else {
             text(state.error.clone()).color([0.95, 0.45, 0.45])
         },
+        anchor_banner,
         composer
     ]
     .spacing(10)
@@ -1361,6 +4054,56 @@ fn view_settings_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             text("OpenAI chat model: gpt-4.1-mini (fixed)").size(14),
             text("OpenAI memory models: gpt-4.1-mini / text-embedding-3-small / gpt-4.1-mini (fixed)").size(14),
             text("OpenAI coding model: gpt-5.2-codex (fixed)").size(14),
+            text("Proactive Agent→Human chat policy").size(14),
+            row![
+                text(if state.settings.proactive_chat_enabled {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                })
+                .size(13),
+                Space::new().width(Length::Fill),
+                button(if state.settings.proactive_chat_enabled {
+                    "Disable"
+                } else {
+                    "Enable"
+                })
+                .padding([6, 10])
+                .style(rounded_secondary_button)
+                .on_press(Message::ToggleProactiveChatEnabled),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
+            text_input(
+                "Proactive min interval seconds",
+                &state.settings.proactive_chat_min_interval_seconds
+            )
+            .on_input(Message::ProactiveChatMinIntervalChanged)
+            .padding(8),
+            text_input(
+                "Proactive severity (blocked_only|blocked_or_overdue)",
+                &state.settings.proactive_chat_severity
+            )
+            .on_input(Message::ProactiveChatSeverityChanged)
+            .padding(8),
+            row![
+                text_input(
+                    "Quiet start HH:MM (optional)",
+                    &state.settings.proactive_chat_quiet_start_hhmm
+                )
+                .on_input(Message::ProactiveChatQuietStartChanged)
+                .padding(8)
+                .width(Length::FillPortion(1)),
+                text_input(
+                    "Quiet end HH:MM (optional)",
+                    &state.settings.proactive_chat_quiet_end_hhmm
+                )
+                .on_input(Message::ProactiveChatQuietEndChanged)
+                .padding(8)
+                .width(Length::FillPortion(1)),
+            ]
+            .spacing(8)
+            .align_y(iced::Alignment::Center),
         ]
         .spacing(6))
         .padding(10)
@@ -1500,10 +4243,18 @@ fn view_diagnostics_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             });
 
     let content = column![
-        button("Run security doctor")
-            .padding([8, 12])
-            .style(rounded_primary_button)
-            .on_press(Message::RunDoctorPressed),
+        row![
+            button("Run security doctor")
+                .padding([8, 12])
+                .style(rounded_primary_button)
+                .on_press(Message::RunDoctorPressed),
+            button("Refresh reminder delivery")
+                .padding([8, 12])
+                .style(rounded_secondary_button)
+                .on_press(Message::RefreshReminderDeliveryEvents),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center),
         text(state.doctor_status.clone()),
         if state.doctor_error.is_empty() {
             text("")
@@ -1527,6 +4278,22 @@ fn view_diagnostics_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
             display_posture_level(&state.security_overall)
         )),
         container(security_lines).padding(8).style(glass_panel),
+        text(""),
+        text(state.reminder_delivery_status.clone()),
+        if state.reminder_delivery_error.is_empty() {
+            text("")
+        } else {
+            text(state.reminder_delivery_error.clone()).color([0.95, 0.45, 0.45])
+        },
+        container(
+            state
+                .reminder_delivery_events
+                .iter()
+                .fold(column!().spacing(6), |col, line| col
+                    .push(text(line.clone())))
+        )
+        .padding(8)
+        .style(glass_panel),
     ]
     .spacing(10);
 
@@ -1642,6 +4409,228 @@ fn view_heartbeat_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+fn count_actionable_human_items(items: &[InboxItem]) -> usize {
+    items
+        .iter()
+        .filter(|item| item.requires_human_action && item.status.is_actionable())
+        .count()
+}
+
+fn sync_actionable_badge(state: &mut ButterflyIcedApp) {
+    let actionable = count_actionable_human_items(&state.inbox_items);
+    if state.last_badge_actionable_count == Some(actionable) {
+        return;
+    }
+
+    if let Err(err) = set_macos_dock_badge(actionable) {
+        state.push_activity(format!("dock badge update failed: {err}"));
+    }
+    state.last_badge_actionable_count = Some(actionable);
+}
+
+fn set_macos_dock_badge(count: usize) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        let label = if count == 0 {
+            "".to_string()
+        } else {
+            count.to_string()
+        };
+        let script = format!(
+            "ObjC.import('AppKit'); $.NSApplication.sharedApplication.dockTile.badgeLabel = '{}';",
+            label.replace('\'', "\\'")
+        );
+        let _status = Command::new("osascript")
+            .args(["-l", "JavaScript", "-e", &script])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = count;
+        Ok(())
+    }
+}
+
+fn parse_inbox_status(value: Option<&str>, default: InboxStatus) -> InboxStatus {
+    match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "new" => InboxStatus::New,
+        "ack" | "acknowledged" => InboxStatus::Acknowledged,
+        "in_progress" | "in progress" | "started" => InboxStatus::InProgress,
+        "blocked" => InboxStatus::Blocked,
+        "done" | "completed" | "complete" => InboxStatus::Done,
+        "dismissed" | "archived" => InboxStatus::Dismissed,
+        _ => default,
+    }
+}
+
+fn parse_inbox_priority(value: Option<&str>, default: InboxPriority) -> InboxPriority {
+    match value.unwrap_or("").trim().to_ascii_lowercase().as_str() {
+        "low" => InboxPriority::Low,
+        "high" => InboxPriority::High,
+        "urgent" | "critical" => InboxPriority::Urgent,
+        "normal" | "medium" => InboxPriority::Normal,
+        _ => default,
+    }
+}
+
+fn priority_rank(priority: InboxPriority) -> i32 {
+    match priority {
+        InboxPriority::Urgent => 0,
+        InboxPriority::High => 1,
+        InboxPriority::Normal => 2,
+        InboxPriority::Low => 3,
+    }
+}
+
+async fn load_inbox_items(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+) -> Result<Vec<InboxItem>, String> {
+    let extract_plan_step_ref = |details: Option<&String>| -> Option<String> {
+        static PLAN_STEP_REF_RE: OnceLock<Regex> = OnceLock::new();
+        let text = details?.as_str();
+        let re = PLAN_STEP_REF_RE
+            .get_or_init(|| Regex::new(r"(?i)planstepref\s*:\s*(plan_step:\d+:\d+)").unwrap());
+        re.captures(text)
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_ascii_lowercase())
+    };
+
+    let client = daemon_request_client();
+    let url = format!(
+        "{}/inbox?user_id={}&limit=250&include_done=true",
+        daemon_url.trim_end_matches('/'),
+        user_id
+    );
+    let mut request = client.get(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!("Inbox request failed: HTTP {status}: {body}"));
+    }
+
+    let parsed = response
+        .json::<InboxApiResponse>()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let mut items = parsed
+        .items
+        .into_iter()
+        .map(|item| {
+            let source_type = match item.source_type.as_str() {
+                "reminder" => InboxSourceType::Reminder,
+                "todo" => InboxSourceType::Todo,
+                "task" => InboxSourceType::Task,
+                _ => InboxSourceType::PlanStep,
+            };
+            let default_status = parse_inbox_status(Some(&item.status), InboxStatus::New);
+            let status = default_status;
+            let priority = parse_inbox_priority(Some(&item.priority), InboxPriority::Normal);
+
+            InboxItem {
+                id: item.id,
+                source_type,
+                owner: item.owner,
+                title: item.title,
+                details: item.details,
+                status,
+                priority,
+                due_at: item.due_at,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+                requires_human_action: item.requires_human_action,
+                origin_ref: item.origin_ref,
+                dependency_refs: item.dependency_refs,
+                t_shirt_size: item.t_shirt_size,
+                story_points: item.story_points,
+                estimate_optimistic_minutes: item.estimate_optimistic_minutes,
+                estimate_likely_minutes: item.estimate_likely_minutes,
+                estimate_pessimistic_minutes: item.estimate_pessimistic_minutes,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let plan_step_refs_in_view = items
+        .iter()
+        .filter(|item| item.source_type == InboxSourceType::PlanStep)
+        .map(|item| item.origin_ref.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+
+    items.retain(|item| {
+        !(item.source_type == InboxSourceType::Todo
+            && extract_plan_step_ref(item.details.as_ref())
+                .map(|origin_ref| plan_step_refs_in_view.contains(&origin_ref))
+                .unwrap_or(false))
+    });
+
+    let mut seen_origin_refs = HashSet::new();
+    items.retain(|item| seen_origin_refs.insert(item.origin_ref.clone()));
+
+    items.sort_by(|a, b| {
+        priority_rank(a.priority)
+            .cmp(&priority_rank(b.priority))
+            .then_with(|| {
+                a.due_at
+                    .unwrap_or(i64::MAX)
+                    .cmp(&b.due_at.unwrap_or(i64::MAX))
+            })
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+
+    Ok(items)
+}
+
+async fn apply_inbox_action(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+    item: InboxItem,
+    action: InboxActionKind,
+) -> Result<String, String> {
+    let action_name = match action {
+        InboxActionKind::Acknowledge => "acknowledge",
+        InboxActionKind::Start => "start",
+        InboxActionKind::Block => "block",
+        InboxActionKind::Done => "done",
+        InboxActionKind::Reopen => "reopen",
+        InboxActionKind::Snooze => "snooze",
+    };
+
+    let client = daemon_request_client();
+    let url = format!("{}/inbox/transition", daemon_url.trim_end_matches('/'));
+    let mut request = client.post(url).json(&serde_json::json!({
+        "user_id": user_id,
+        "origin_ref": item.origin_ref,
+        "action": action_name,
+    }));
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    let status = response.status();
+    let body = response.text().await.map_err(|err| err.to_string())?;
+    if !status.is_success() {
+        return Err(format!("Inbox action failed: HTTP {status}: {body}"));
+    }
+
+    Ok(format!("Inbox action applied: {}", action_name))
 }
 
 async fn send_prompt(
@@ -1823,6 +4812,154 @@ async fn run_security_audit_request(
         .map_err(|err| err.to_string())
 }
 
+async fn fetch_reminder_delivery_events(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+    limit: usize,
+) -> Result<Vec<String>, String> {
+    let client = daemon_request_client();
+    let url = format!(
+        "{}/reminders/delivery_events?user_id={}&limit={}",
+        daemon_url.trim_end_matches('/'),
+        user_id,
+        limit
+    );
+    let mut request = client.get(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!(
+            "Reminder delivery diagnostics failed: HTTP {status}: {body}"
+        ));
+    }
+
+    let parsed = response
+        .json::<ReminderDeliveryEventsApiResponse>()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let lines = parsed
+        .events
+        .into_iter()
+        .map(|event| {
+            let status = event
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let ts = event
+                .get("timestamp")
+                .and_then(|v| v.as_i64())
+                .map(format_local_time)
+                .unwrap_or_else(|| "unknown-time".to_string());
+            let title = event
+                .get("payload")
+                .and_then(|v| v.get("title"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("(untitled)");
+            format!("[{ts}] {status} — {title}")
+        })
+        .collect::<Vec<_>>();
+
+    Ok(lines)
+}
+
+async fn fetch_audit_events(
+    daemon_url: String,
+    token: String,
+    user_id: String,
+    limit: usize,
+) -> Result<Vec<AuditEventRow>, String> {
+    let client = daemon_request_client();
+    let url = format!(
+        "{}/audit/events?user_id={}&limit={}",
+        daemon_url.trim_end_matches('/'),
+        user_id,
+        limit
+    );
+    let mut request = client.get(url);
+    if !token.trim().is_empty() {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+
+    let response = request.send().await.map_err(|err| err.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unable to read response body".to_string());
+        return Err(format!(
+            "Audit events request failed: HTTP {status}: {body}"
+        ));
+    }
+
+    let parsed = response
+        .json::<AuditEventsApiResponse>()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let lines = parsed
+        .events
+        .into_iter()
+        .map(|event| {
+            let ts = event.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0);
+            let ts_label = if ts > 0 {
+                format_local_time(ts)
+            } else {
+                "unknown-time".to_string()
+            };
+            let event_type = event
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("event")
+                .to_string();
+            let status = event
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let tool = event
+                .get("tool")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-")
+                .to_string();
+            let user = event.get("user_id").and_then(|v| v.as_str()).unwrap_or("-");
+            let actor = event
+                .get("payload")
+                .and_then(|v| v.get("actor"))
+                .and_then(|v| v.as_str())
+                .map(|v| v.to_string());
+            let origin_ref = event
+                .get("payload")
+                .and_then(|v| v.get("origin_ref"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            AuditEventRow {
+                timestamp: ts,
+                event_type: event_type.clone(),
+                status: status.clone(),
+                actor,
+                line: format!(
+                    "[{ts_label}] {event_type} • {tool} • {status} • {user} • origin:{}",
+                    origin_ref.clone().unwrap_or_else(|| "-".to_string())
+                ),
+                origin_ref,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(lines)
+}
+
 async fn fetch_solana_wallet_address(
     daemon_url: String,
     token: String,
@@ -1900,13 +5037,13 @@ async fn run_chat_history_request(
     Ok(history)
 }
 
-async fn run_clear_user_history_request(
+async fn run_clear_user_data_request(
     daemon_url: String,
     token: String,
     user_id: String,
 ) -> Result<(), String> {
     let client = daemon_request_client();
-    let url = format!("{}/clear_user_history", daemon_url.trim_end_matches('/'));
+    let url = format!("{}/clear_user_data", daemon_url.trim_end_matches('/'));
     let mut request = client.post(url);
     if !token.trim().is_empty() {
         request = request.header("authorization", format!("Bearer {token}"));
@@ -1925,6 +5062,48 @@ async fn run_clear_user_history_request(
         return Err(format!("HTTP {status}: {text}"));
     }
     Ok(())
+}
+
+fn optimistic_inbox_transition(
+    state: &mut ButterflyIcedApp,
+    origin_ref: &str,
+    action: InboxActionKind,
+) {
+    let Some(item) = state
+        .inbox_items
+        .iter_mut()
+        .find(|item| item.origin_ref == origin_ref)
+    else {
+        return;
+    };
+
+    let Some(previous) = parse_inbox_status_state(item.status) else {
+        return;
+    };
+    let action = match action {
+        InboxActionKind::Acknowledge => crate::inbox_fsm::InboxAction::Acknowledge,
+        InboxActionKind::Start => crate::inbox_fsm::InboxAction::Start,
+        InboxActionKind::Block => crate::inbox_fsm::InboxAction::Block,
+        InboxActionKind::Done => crate::inbox_fsm::InboxAction::Done,
+        InboxActionKind::Reopen => crate::inbox_fsm::InboxAction::Reopen,
+        InboxActionKind::Snooze => crate::inbox_fsm::InboxAction::Snooze,
+    };
+    let Some(next) = crate::inbox_fsm::transition(previous, action) else {
+        return;
+    };
+    item.status = next;
+    item.updated_at = now_unix_ts();
+}
+
+fn parse_inbox_status_state(status: InboxStatus) -> Option<crate::inbox_fsm::InboxState> {
+    match status {
+        InboxStatus::New => Some(crate::inbox_fsm::InboxState::New),
+        InboxStatus::Acknowledged => Some(crate::inbox_fsm::InboxState::Acknowledged),
+        InboxStatus::InProgress => Some(crate::inbox_fsm::InboxState::InProgress),
+        InboxStatus::Blocked => Some(crate::inbox_fsm::InboxState::Blocked),
+        InboxStatus::Done => Some(crate::inbox_fsm::InboxState::Done),
+        InboxStatus::Dismissed => Some(crate::inbox_fsm::InboxState::Dismissed),
+    }
 }
 
 fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)> {
@@ -1984,6 +5163,198 @@ fn parse_history_entry(line: &str) -> Option<(MessageRole, String, Option<i64>)>
     Some((role, rest.to_string(), parsed_ts))
 }
 
+fn find_latest_chat_message_id(
+    messages: &[ChatMessage],
+    origin_ref: &str,
+    at_or_before_ts: Option<i64>,
+) -> Option<u64> {
+    let by_origin = messages
+        .iter()
+        .rev()
+        .find(|msg| {
+            msg.text.contains(origin_ref)
+                && at_or_before_ts
+                    .map(|ts| msg.timestamp <= ts)
+                    .unwrap_or(true)
+        })
+        .map(|msg| msg.id);
+    if by_origin.is_some() {
+        return by_origin;
+    }
+
+    at_or_before_ts.and_then(|ts| {
+        messages
+            .iter()
+            .rev()
+            .find(|msg| msg.timestamp <= ts)
+            .map(|msg| msg.id)
+    })
+}
+
+fn maybe_emit_proactive_chat_nudge(state: &mut ButterflyIcedApp) {
+    if !state.settings.proactive_chat_enabled {
+        return;
+    }
+
+    if in_quiet_hours(
+        &state.settings.proactive_chat_quiet_start_hhmm,
+        &state.settings.proactive_chat_quiet_end_hhmm,
+    ) {
+        return;
+    }
+
+    let now = now_unix_ts();
+    let min_interval_seconds = state
+        .settings
+        .proactive_chat_min_interval_seconds
+        .trim()
+        .parse::<i64>()
+        .unwrap_or(45)
+        .max(5);
+    let severity = state
+        .settings
+        .proactive_chat_severity
+        .trim()
+        .to_ascii_lowercase();
+    let blocked_only = severity == "blocked_only";
+
+    let candidates = state
+        .inbox_items
+        .iter()
+        .filter(|item| {
+            item.requires_human_action
+                && item.status.is_actionable()
+                && if blocked_only {
+                    item.status == InboxStatus::Blocked
+                } else {
+                    item.status == InboxStatus::Blocked
+                        || item.due_at.map(|due| due <= now).unwrap_or(false)
+                }
+        })
+        .collect::<Vec<_>>();
+
+    let active_origin_refs = candidates
+        .iter()
+        .map(|item| item.origin_ref.clone())
+        .collect::<HashSet<_>>();
+    state
+        .proactive_notified_origin_refs
+        .retain(|origin_ref| active_origin_refs.contains(origin_ref));
+
+    if now.saturating_sub(state.proactive_last_chat_ts) < min_interval_seconds {
+        return;
+    }
+
+    let mut ordered = candidates;
+    ordered.sort_by_key(|item| {
+        (
+            item.status != InboxStatus::Blocked,
+            priority_rank(item.priority),
+            item.due_at.unwrap_or(i64::MAX),
+        )
+    });
+
+    let Some(item) = ordered
+        .into_iter()
+        .find(|item| {
+            !state
+                .proactive_notified_origin_refs
+                .contains(&item.origin_ref)
+        })
+        .cloned()
+    else {
+        return;
+    };
+
+    let due_label = item
+        .due_at
+        .map(format_local_time)
+        .unwrap_or_else(|| "no due date".to_string());
+    let ask = if item.status == InboxStatus::Blocked {
+        "I am blocked and need your decision to unblock this."
+    } else {
+        "This is overdue and needs your action now."
+    };
+
+    state.push_chat(
+        MessageRole::Bot,
+        format!(
+            "Heads up: {} ({}) • due: {} • ref: {}. {} Next step: choose Acknowledge/Start/Done in Inbox.",
+            item.title,
+            inbox_status_label(item.status),
+            due_label,
+            item.origin_ref,
+            ask
+        ),
+    );
+    state
+        .proactive_notified_origin_refs
+        .insert(item.origin_ref.clone());
+    state.proactive_last_chat_ts = now;
+    state.push_activity(format!(
+        "agent proactive chat nudge sent for {}",
+        item.origin_ref
+    ));
+}
+
+fn parse_hhmm_to_minutes(value: &str) -> Option<u16> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (h, m) = trimmed.split_once(':')?;
+    let hour = h.trim().parse::<u16>().ok()?;
+    let minute = m.trim().parse::<u16>().ok()?;
+    if hour > 23 || minute > 59 {
+        return None;
+    }
+    Some(hour * 60 + minute)
+}
+
+fn in_quiet_hours(start_hhmm: &str, end_hhmm: &str) -> bool {
+    let Some(start) = parse_hhmm_to_minutes(start_hhmm) else {
+        return false;
+    };
+    let Some(end) = parse_hhmm_to_minutes(end_hhmm) else {
+        return false;
+    };
+
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let now_local = OffsetDateTime::now_utc().to_offset(local_offset);
+    let current = now_local.hour() as u16 * 60 + now_local.minute() as u16;
+
+    if start == end {
+        return false;
+    }
+    if start < end {
+        current >= start && current < end
+    } else {
+        current >= start || current < end
+    }
+}
+
+fn scroll_chat_to_anchor_task(state: &ButterflyIcedApp) -> Task<Message> {
+    let Some(anchor_id) = state.chat_anchor_message_id else {
+        return Task::none();
+    };
+
+    let Some(index) = state
+        .chat_messages
+        .iter()
+        .position(|msg| msg.id == anchor_id)
+    else {
+        return Task::none();
+    };
+
+    let denom = (state.chat_messages.len().saturating_sub(1)).max(1) as f32;
+    let y = (index as f32 / denom).clamp(0.0, 1.0);
+
+    iced::widget::operation::snap_to(
+        state.chat_scroll_id.clone(),
+        iced::widget::operation::RelativeOffset { x: 0.0, y },
+    )
+}
+
 fn parse_history_bracket_timestamp(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -2013,6 +5384,179 @@ fn now_unix_ts() -> i64 {
         .unwrap_or(0)
 }
 
+fn parse_yyyy_mm_dd_to_unix(value: &str) -> Option<i64> {
+    let normalized = value.trim().replace('/', "-");
+    let mut parts = normalized.split('-');
+    let year = parts.next()?.trim().parse::<i32>().ok()?;
+    let month = parts.next()?.trim().parse::<u8>().ok()?;
+    let day = parts.next()?.trim().parse::<u8>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let date = Date::from_calendar_date(year, Month::try_from(month).ok()?, day).ok()?;
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    Some(
+        PrimitiveDateTime::new(date, Time::MIDNIGHT)
+            .assume_offset(local_offset)
+            .unix_timestamp(),
+    )
+}
+
+fn normalize_nlp_due_text(input: &str) -> String {
+    static FROM_START_RE: OnceLock<Regex> = OnceLock::new();
+    static FROM_NOW_RE: OnceLock<Regex> = OnceLock::new();
+
+    let from_start_re = FROM_START_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(\d+)\s*(day|days|week|weeks|month|months)\s+from\s+start\b").unwrap()
+    });
+    let from_now_re = FROM_NOW_RE.get_or_init(|| {
+        Regex::new(r"(?i)\b(\d+)\s*(day|days|week|weeks|month|months)\s+from\s+now\b").unwrap()
+    });
+
+    let normalized = from_start_re.replace_all(input, "in $1 $2").to_string();
+    from_now_re.replace_all(&normalized, "in $1 $2").to_string()
+}
+
+fn text_has_explicit_time(input: &str) -> bool {
+    static TIME_RE: OnceLock<Regex> = OnceLock::new();
+    let re = TIME_RE.get_or_init(|| {
+        Regex::new(r"(?i)(\b\d{1,2}:\d{2}\b|\b\d{1,2}\s*(am|pm)\b|\bnoon\b|\bmidnight\b)").unwrap()
+    });
+    re.is_match(input)
+}
+
+fn local_midnight_unix(ts: i64) -> i64 {
+    let Ok(utc_dt) = OffsetDateTime::from_unix_timestamp(ts) else {
+        return ts;
+    };
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+    let date = local_dt.date();
+    PrimitiveDateTime::new(date, Time::MIDNIGHT)
+        .assume_offset(local_offset)
+        .unix_timestamp()
+}
+
+fn extract_explicit_year(input: &str) -> Option<i32> {
+    static YEAR_RE: OnceLock<Regex> = OnceLock::new();
+    let re = YEAR_RE.get_or_init(|| Regex::new(r"\b(20\d{2})\b").unwrap());
+    re.captures(input)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| m.as_str().parse::<i32>().ok())
+}
+
+fn with_local_year(ts: i64, year: i32) -> Option<i64> {
+    let utc_dt = OffsetDateTime::from_unix_timestamp(ts).ok()?;
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+    let month = local_dt.month();
+    let mut day = local_dt.day();
+
+    let date = loop {
+        if let Ok(value) = Date::from_calendar_date(year, month, day) {
+            break value;
+        }
+        if day == 1 {
+            return None;
+        }
+        day -= 1;
+    };
+
+    let pdt = PrimitiveDateTime::new(
+        date,
+        Time::from_hms(local_dt.hour(), local_dt.minute(), local_dt.second()).ok()?,
+    );
+    Some(pdt.assume_offset(local_offset).unix_timestamp())
+}
+
+fn normalize_due_year_if_stale(ts: i64, input: &str) -> i64 {
+    let now = now_unix_ts();
+    let Some(explicit_year) = extract_explicit_year(input) else {
+        return ts;
+    };
+
+    let Ok(now_local) = OffsetDateTime::from_unix_timestamp(now) else {
+        return ts;
+    };
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let current_year = now_local.to_offset(local_offset).year();
+
+    if explicit_year >= current_year {
+        return ts;
+    }
+
+    if let Some(mut adjusted) = with_local_year(ts, current_year) {
+        if adjusted < now {
+            if let Some(next_year) = with_local_year(ts, current_year + 1) {
+                adjusted = next_year;
+            }
+        }
+        return adjusted;
+    }
+
+    ts
+}
+
+fn infer_due_at_from_text(text: &str, anchor_ts: i64) -> Option<i64> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    static LABELED_RE: OnceLock<Regex> = OnceLock::new();
+    static DATE_RE: OnceLock<Regex> = OnceLock::new();
+
+    let labeled_re = LABELED_RE.get_or_init(|| {
+        Regex::new(r"(?i)(?:due(?:\s+date)?|deadline)\s*:\s*(\d{4}[-/]\d{2}[-/]\d{2})").unwrap()
+    });
+    if let Some(value) = labeled_re
+        .captures(trimmed)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str())
+    {
+        if let Some(ts) = parse_yyyy_mm_dd_to_unix(value) {
+            return Some(ts);
+        }
+    }
+
+    let date_re = DATE_RE.get_or_init(|| Regex::new(r"(\d{4}[-/]\d{2}[-/]\d{2})").unwrap());
+    if let Some(ts) = date_re
+        .captures(trimmed)
+        .and_then(|caps| caps.get(1))
+        .and_then(|m| parse_yyyy_mm_dd_to_unix(m.as_str()))
+    {
+        return Some(normalize_due_year_if_stale(ts, trimmed));
+    }
+
+    let normalized = normalize_nlp_due_text(trimmed);
+    let anchor = Local
+        .timestamp_opt(anchor_ts, 0)
+        .single()
+        .or_else(|| Local.timestamp_opt(now_unix_ts(), 0).single())
+        .unwrap_or_else(Local::now);
+
+    parse_date_string(&normalized, anchor, Dialect::Us)
+        .or_else(|_| parse_date_string(&normalized, anchor, Dialect::Uk))
+        .ok()
+        .map(|dt: DateTime<Local>| {
+            let ts = dt.timestamp();
+            let parsed = if text_has_explicit_time(trimmed) {
+                ts
+            } else {
+                local_midnight_unix(ts)
+            };
+            normalize_due_year_if_stale(parsed, trimmed)
+        })
+}
+
+fn infer_due_at_from_item_text(item: &InboxItem) -> Option<i64> {
+    infer_due_at_from_text(&item.title, item.created_at).or_else(|| {
+        item.details
+            .as_deref()
+            .and_then(|details| infer_due_at_from_text(details, item.created_at))
+    })
+}
+
 fn format_local_time(ts: i64) -> String {
     let Ok(utc_dt) = OffsetDateTime::from_unix_timestamp(ts) else {
         return "1970-01-01 00:00:00".to_string();
@@ -2030,6 +5574,24 @@ fn format_local_time(ts: i64) -> String {
         local_dt.minute(),
         local_dt.second()
     )
+}
+
+fn format_due_badge_time(ts: i64) -> String {
+    let Ok(utc_dt) = OffsetDateTime::from_unix_timestamp(ts) else {
+        return "1970-01-01".to_string();
+    };
+    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_dt = utc_dt.to_offset(local_offset);
+    if local_dt.hour() == 0 && local_dt.minute() == 0 && local_dt.second() == 0 {
+        format!(
+            "{:04}-{:02}-{:02}",
+            local_dt.year(),
+            u8::from(local_dt.month()),
+            local_dt.day()
+        )
+    } else {
+        format_local_time(ts)
+    }
 }
 
 fn display_posture_level(value: &str) -> &'static str {
@@ -2464,6 +6026,30 @@ async fn load_settings(db_path: String) -> Result<LoadedSettings, String> {
             .and_then(|v| v.as_str())
             .unwrap_or("auto")
             .to_string();
+        let proactive_chat_enabled = get_path(tools, &["settings", "proactive_chat", "enabled"])
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let proactive_chat_min_interval_seconds = get_path(
+            tools,
+            &["settings", "proactive_chat", "min_interval_seconds"],
+        )
+        .and_then(|v| v.as_u64())
+        .unwrap_or(45)
+        .to_string();
+        let proactive_chat_severity = get_path(tools, &["settings", "proactive_chat", "severity"])
+            .and_then(|v| v.as_str())
+            .unwrap_or("blocked_or_overdue")
+            .to_string();
+        let proactive_chat_quiet_start_hhmm =
+            get_path(tools, &["settings", "proactive_chat", "quiet_start_hhmm"])
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+        let proactive_chat_quiet_end_hhmm =
+            get_path(tools, &["settings", "proactive_chat", "quiet_end_hhmm"])
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
         let mut mcp_servers = parse_server_rows(get_path(tools, &["mcp", "servers"]));
         let mut http_call_servers = parse_server_rows(get_path(tools, &["http_call", "servers"]));
 
@@ -2516,6 +6102,11 @@ async fn load_settings(db_path: String) -> Result<LoadedSettings, String> {
                 search_network_allow,
                 wakeup_poll_seconds,
                 tpm_mode,
+                proactive_chat_enabled,
+                proactive_chat_min_interval_seconds,
+                proactive_chat_severity,
+                proactive_chat_quiet_start_hhmm,
+                proactive_chat_quiet_end_hhmm,
                 mcp_servers: std::mem::take(&mut mcp_servers),
                 http_call_servers: std::mem::take(&mut http_call_servers),
                 prompt_text,
@@ -2618,6 +6209,39 @@ async fn save_settings(
                     .as_object_mut()
                     .ok_or_else(|| "tools.settings.security must be an object".to_string())?;
                 security_obj.insert("tpm_mode".to_string(), Value::String(form.tpm_mode.clone()));
+
+                let proactive_chat = settings_obj
+                    .entry("proactive_chat")
+                    .or_insert_with(|| Value::Object(serde_json::Map::new()));
+                let proactive_chat_obj = proactive_chat
+                    .as_object_mut()
+                    .ok_or_else(|| "tools.settings.proactive_chat must be an object".to_string())?;
+                let proactive_min_interval = form
+                    .proactive_chat_min_interval_seconds
+                    .trim()
+                    .parse::<u64>()
+                    .unwrap_or(45)
+                    .max(5);
+                proactive_chat_obj.insert(
+                    "enabled".to_string(),
+                    Value::Bool(form.proactive_chat_enabled),
+                );
+                proactive_chat_obj.insert(
+                    "min_interval_seconds".to_string(),
+                    Value::Number(serde_json::Number::from(proactive_min_interval)),
+                );
+                proactive_chat_obj.insert(
+                    "severity".to_string(),
+                    Value::String(form.proactive_chat_severity.trim().to_ascii_lowercase()),
+                );
+                proactive_chat_obj.insert(
+                    "quiet_start_hhmm".to_string(),
+                    Value::String(form.proactive_chat_quiet_start_hhmm.trim().to_string()),
+                );
+                proactive_chat_obj.insert(
+                    "quiet_end_hhmm".to_string(),
+                    Value::String(form.proactive_chat_quiet_end_hhmm.trim().to_string()),
+                );
 
                 let solana = settings_obj
                     .entry("solana")

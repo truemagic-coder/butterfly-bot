@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ::time::{OffsetDateTime, UtcOffset};
 use async_stream::try_stream;
 use base64::Engine as _;
 use futures::stream::BoxStream;
@@ -235,6 +236,23 @@ impl AgentService {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| ButterflyBotError::Runtime(e.to_string()))?
             .as_secs();
+        let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+        let now_local = OffsetDateTime::from_unix_timestamp(now as i64)
+            .map(|dt| dt.to_offset(local_offset))
+            .unwrap_or_else(|_| OffsetDateTime::UNIX_EPOCH.to_offset(local_offset));
+        let now_local_date = format!(
+            "{:04}-{:02}-{:02}",
+            now_local.year(),
+            u8::from(now_local.month()),
+            now_local.day()
+        );
+        let now_local_datetime = format!(
+            "{} {:02}:{:02}:{:02}",
+            now_local_date,
+            now_local.hour(),
+            now_local.minute(),
+            now_local.second()
+        );
 
         // NOTE: refresh_context() is called by callers BEFORE this method.
         // Do NOT re-fetch here – it swallows errors and causes silent failures.
@@ -259,8 +277,8 @@ impl AgentService {
         };
 
         let mut system_prompt = format!(
-            "You are {}, an AI assistant with the following instructions:\n\n{}\n\nCurrent time (unix seconds): {}",
-            self.agent.name, instructions_block, now
+            "You are {}, an AI assistant with the following instructions:\n\n{}\n\nCurrent time (unix seconds): {}\nCurrent local datetime: {}\nCurrent local date: {}\nDate-grounding rule: if the user asks for a future plan but provides stale past calendar years, prefer equivalent dates in the current or next year unless they explicitly insist on historical dates.",
+            self.agent.name, instructions_block, now, now_local_datetime, now_local_date
         );
 
         let heartbeat_guard = self.heartbeat_markdown.read().await;
@@ -291,6 +309,9 @@ impl AgentService {
         system_prompt.push_str(
             "- Respond in the same language as the latest user message unless the user asked for translation.\n- Do not fabricate tool-call transcripts, parameter blocks, or tool outputs. Only describe tool actions that actually executed in this turn.\n",
         );
+        system_prompt.push_str(
+            "- Do not invent citations, URLs, source lists, or market-research references. Only cite links that came from an actual tool/web result in this turn.\n- Do not replace a user's existing workspace/todo state with a generic sample plan. If they ask to modify current todos/plans, operate on real existing items via tools.\n",
+        );
 
         let tool_names = self
             .tool_registry
@@ -306,7 +327,10 @@ impl AgentService {
         };
 
         system_prompt.push_str(
-            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- Use the `todo` tool for manual, checklist-style action items the user completes explicitly.\n- Use the `tasks` tool only for time-based/scheduled or recurring actions (run_at/interval).\n- When implementing code, writing functions, or building features, you MUST use the `coding` tool - it uses a specialized coding model optimized for development work.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
+            "\n\nTOOL POLICY:\n- When the user asks to set, list, snooze, complete, or delete reminders, you MUST call the reminders tool.\n- Do not claim a reminder was created/updated unless the tool call succeeds.\n- If reminder details are missing, ask a clarification instead of guessing.\n- When working on goals, projects, or multi-step objectives, you MUST use the `planning` tool to create and track plans.\n- For plan creation/update, steps MUST be structured objects (not only plain strings) and include these fields whenever possible: `title`, `owner`, `priority`, `due_date` (or `due_at`), `t_shirt_size`, `story_points`, `estimate_optimistic_minutes`, `estimate_likely_minutes`, `estimate_pessimistic_minutes`, and dependency fields (`dependency_refs` or `depends_on`).\n- Prefer realistic FUTURE due dates anchored to the current local date; do not use stale past years unless the user explicitly asks for historical dates.\n- Use the `todo` tool for manual, checklist-style action items the user completes explicitly; when creating todos, include sizing and estimate fields (`t_shirt_size`, `story_points`, optimistic/likely/pessimistic minutes) and dependency edges via `dependency_refs` when relevant.\n- Use the `tasks` tool only for time-based/scheduled or recurring actions (run_at/interval).\n- When implementing code, writing functions, or building features, you MUST use the `coding` tool - it uses a specialized coding model optimized for development work.\n- ALWAYS list existing plans/todos/tasks BEFORE creating new ones to avoid duplicates.\n- After completing an action, mark the corresponding todo as complete.\n",
+        );
+        system_prompt.push_str(
+            "- For requests to 'add/update dependency graph' on current work, first list current plans/todos, then update/create only the required items with explicit `dependency_refs`/`depends_on`; return a concise applied-change summary (no speculative roadmap).\n",
         );
         system_prompt.push_str(
             "- For explicit Solana transfer requests, call the `solana` tool with action `transfer` directly.\n- For SOL-denominated amounts, pass the exact user amount using `amount_sol` (or `amount` as a decimal/string with SOL units) instead of manually converting to lamports.\n- 1 SOL = 1,000,000,000 lamports.\n- Do not ask for an extra confirmation step unless the user explicitly requested a dry-run/simulation-only flow.\n- Do not surface internal simulation/preflight details in the final user response unless the user asks for those details.\n",
@@ -392,7 +416,7 @@ impl AgentService {
             full_prompt.push_str("\n\n");
         }
         full_prompt.push_str(
-            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the prompt context or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. When working on any multi-step objective, use the `planning` tool to create/update plans, the `todo` tool to track action items, and the `tasks` tool for scheduled work. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
+            "INSTRUCTION: If a DUE REMINDERS section is present in the context, surface those reminders first. Respond to the CURRENT USER MESSAGE below. If the prompt context or heartbeat explicitly requires autonomous actions, you may take initiative by using tools to advance the task even without additional user prompts. When working on any multi-step objective, use the `planning` tool to create/update plans, the `todo` tool to track action items, and the `tasks` tool for scheduled work. For planning output, include complete estimation metadata by default (owner, priority, due_date/due_at, t_shirt_size, story_points, estimate_optimistic_minutes, estimate_likely_minutes, estimate_pessimistic_minutes) plus dependency metadata (`dependency_refs` or `depends_on`) when there is sequencing/blocking. For dependency-graph requests on current todos/plans, DO NOT generate generic example roadmaps; LIST existing items first, then apply tool-grounded updates only. If earlier history mentions self-harm but the current message does not, do not output crisis resources.\n\n",
         );
         full_prompt.push_str("CURRENT USER MESSAGE:\n");
         full_prompt.push_str(query);
@@ -665,6 +689,17 @@ impl AgentService {
                 || normalized_user_prompt.contains("reorder")
                 || normalized_user_prompt.contains("clear")
                 || normalized_user_prompt.contains("update"));
+        let is_dependency_graph_request = normalized_user_prompt.contains("dependency graph")
+            || normalized_user_prompt.contains("dependency")
+            || normalized_user_prompt.contains("depends_on")
+            || normalized_user_prompt.contains("dependency_refs")
+            || normalized_user_prompt.contains("blocked_by");
+        let modifies_existing_work = normalized_user_prompt.contains("current")
+            || normalized_user_prompt.contains("existing")
+            || normalized_user_prompt.contains("these")
+            || normalized_user_prompt.contains("those");
+        let requires_dependency_workflow_grounding =
+            requires_workflow_tool_action && is_dependency_graph_request && modifies_existing_work;
         let requires_live_solana_data = normalized_user_prompt.contains("balance")
             || normalized_user_prompt.contains("wallet address")
             || normalized_user_prompt.contains("my address")
@@ -719,6 +754,7 @@ impl AgentService {
 
         let mut solana_grounding_retries = 0usize;
         let mut workflow_grounding_retries = 0usize;
+        let mut dependency_workflow_retries = 0usize;
         let mut x402_transfer_retries = 0usize;
         let mut x402_solana_attempted = false;
         let mut has_executed_tool_call = false;
@@ -865,7 +901,7 @@ impl AgentService {
                 {
                     if workflow_grounding_retries < 3 {
                         workflow_grounding_retries += 1;
-                        prompt.push_str("\n\nSYSTEM CORRECTION:\nFor this workflow request, you MUST call the relevant tool (`todo`, `tasks`, `reminders`, or `planning`) before answering. List existing items first when applicable to avoid duplicates, then create/update only as needed, and return completed outcomes (not planned actions).\n");
+                        prompt.push_str("\n\nSYSTEM CORRECTION:\nFor this workflow request, you MUST call the relevant tool (`todo`, `tasks`, `reminders`, or `planning`) before answering. List existing items first when applicable to avoid duplicates, then create/update only as needed, and return completed outcomes (not planned actions). For planning/todo creations, include full estimation metadata fields by default: owner, priority, due_date/due_at, t_shirt_size, story_points, estimate_optimistic_minutes, estimate_likely_minutes, estimate_pessimistic_minutes, plus dependency metadata (`dependency_refs` or `depends_on`) whenever there is blocker/order coupling.\n");
                         continue;
                     }
 
@@ -986,6 +1022,27 @@ impl AgentService {
             }
             if response.tool_calls.is_empty() {
                 return Ok(last_text);
+            }
+
+            let has_workflow_call_in_turn = response.tool_calls.iter().any(|call| {
+                let mut effective_name = normalize_tool_name(&call.name);
+                if let Some(mapped_name) = map_tool_name_alias(&effective_name) {
+                    effective_name = mapped_name.to_string();
+                }
+                matches!(
+                    effective_name.as_str(),
+                    "todo" | "tasks" | "reminders" | "planning"
+                )
+            });
+
+            if requires_dependency_workflow_grounding && !has_workflow_call_in_turn {
+                if dependency_workflow_retries < 3 {
+                    dependency_workflow_retries += 1;
+                    prompt.push_str("\n\nSYSTEM CORRECTION:\nThis request is to modify CURRENT work dependencies. You MUST call `planning` and/or `todo` tools in this turn (list current items first, then update/create with dependency fields). Do not do search-only/tool-agnostic responses for this request.\n");
+                    continue;
+                }
+
+                return Ok("I couldn't apply dependency-graph changes to existing work because the required workflow tools were not used successfully. Please retry and I will execute planning/todo updates directly.".to_string());
             }
 
             has_executed_tool_call = true;

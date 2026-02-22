@@ -8,6 +8,8 @@ pub mod domains;
 pub mod error;
 pub mod factories;
 pub mod iced_ui;
+pub mod inbox_fsm;
+pub mod inbox_state;
 pub mod interfaces;
 pub mod logging;
 pub mod planning;

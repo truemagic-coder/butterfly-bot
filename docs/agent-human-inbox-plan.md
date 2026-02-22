@@ -169,6 +169,144 @@ Acceptance:
 
 - Agent naturally produces execution artifacts, not just prose.
 
+### E3. Conversation rules and tone
+
+- Chat tab is reserved for conversational messages only (`human` ↔ `agent`).
+- Activity tab is reserved for operational telemetry and status updates.
+- Audit tab remains the authoritative ledger for lifecycle/state evidence.
+
+Tone guidelines for agent-initiated chat:
+
+- concise and action-oriented
+- explicit ask when human decision is required
+- include one clear next step
+- avoid noisy low-signal status chatter
+
+Baseline trigger policy (implemented):
+
+- Trigger proactive chat only for human-owned actionable items that are `blocked` or overdue.
+- Deduplicate by `origin_ref` so each active blocker/overdue item is nudged once until state changes.
+- Throttle proactive nudges to avoid spam bursts.
+- Policy controls live in Config tab (`proactive_chat.enabled`, `proactive_chat.min_interval_seconds`).
+- Policy controls live in Config tab (`proactive_chat.enabled`, `proactive_chat.min_interval_seconds`, `proactive_chat.severity`, quiet-hours window).
+
+## Workstream F — Singularity & Symbiosis Workflow (Bidirectional Transparency)
+
+### F1. Unified Agent ↔ Human model with clear surface boundaries
+
+- Chat = conversation (human prompts + agent replies + deliberate agent-initiated asks).
+- Activity = operational timeline (status, transitions, retries, deliveries, failures).
+- Audit = authoritative evidence stream with lifecycle metadata.
+
+### F2. Agent → Human proactive updates (without being asked)
+
+Agent must publish concise updates for:
+
+- work started
+- tool/action completed
+- blocked/waiting state
+- retries/failures/recovery
+- plan changes and reprioritization
+
+### F3. UI surface for operational transparency
+
+Add a dedicated visibility surface (either):
+
+- a new `Timeline`/`Ops` tab, or
+- an `Inbox + Timeline` composite view, or
+- enriched Chat with filterable system updates.
+
+Minimum UX requirements:
+
+- clear separation of `human`, `agent`, and `system` events
+- timestamped event feed
+- link from each event to related `origin_ref` work item when available
+- quick filters: `All`, `Agent updates`, `Human chat`, `Errors/Blocked`
+
+### F5. Two explicit tabs: Audit + Timeline
+
+Current implementation status:
+
+- ✅ Timeline and Audit tabs are live in UI.
+- ✅ Blocker-first cards and owner lane split are implemented.
+- ✅ Critical-path dependency chains are surfaced from `dependency_refs` when available.
+- ✅ Audit feed includes transition context (`from`, `to`, `actor`, `reason`) for inbox transitions.
+- ✅ Timeline blocker cards drill down to source Inbox item and filtered Audit context.
+- ✅ Audit event rows deep-link back to source Inbox row.
+- ✅ Timeline and Audit blockers deep-link into Chat with prefilled context prompt.
+- ✅ New audit/ops events are bridged into Activity as system timeline updates.
+- ✅ Exact historical chat message-id anchor is resolved from Audit event time and highlighted in Chat.
+- ✅ Viewport auto-scroll jump now snaps directly to anchored message card.
+- ✅ Baseline proactive Agent→Human chat nudges now fire for blocked/overdue human-action items.
+- ✅ Todo tickets now carry optional sizing (`t_shirt_size`, `story_points`) and 3-point estimates.
+- ✅ Read-only Gantt tab is available for estimate-based timeline visualization.
+
+Operational UI policy now enforced:
+
+- Chat tab displays only conversational messages.
+- Activity tab displays operational/system updates.
+
+#### Audit tab (authoritative event/state ledger)
+
+
+Purpose: full transparency and traceability of work lifecycle.
+
+Show an append-only, filterable log of:
+
+- item creation
+- ownership changes (`human` / `agent`)
+- lifecycle transitions (`new → acknowledged → in_progress → blocked → done/dismissed`)
+- retries, delivery outcomes, and failures
+- actor metadata (`agent`, `human`, `system`)
+
+Minimum table/view fields:
+
+- `timestamp`
+- `origin_ref`
+- `item title`
+- `actor`
+- `event/action`
+- `previous_state`
+- `new_state`
+- `reason/details`
+
+#### Timeline tab (execution flow and dependency visibility)
+
+Purpose: operational planning + immediate blocker discovery for both human and agent.
+
+Render a time-aware plan/work view (Gantt-like but workflow-first):
+
+- grouped by owner lane (`human lane`, `agent lane`)
+- bars/cards for active and upcoming work
+- dependency and blocker edges
+- overdue and risk highlighting
+- compact “Now / Next / Blocked” summary strip
+
+Blocker-first requirements:
+
+- blocked items pinned at top with severity/age
+- separate counts for `human-blocked` and `agent-blocked`
+- one-click drilldown from blocker to chat context + originating work item
+
+Acceptance:
+
+- User can identify current blockers for human and agent in < 5 seconds.
+- Audit tab can answer “what changed, when, and why” without ambiguity.
+- Timeline tab shows critical path and blocked path at a glance.
+
+### F4. One-model principle
+
+No one-way surfaces:
+
+- Inbox, chat, and telemetry are different views over the same underlying lifecycle.
+- Agent can speak into chat; human can act from chat/inbox; both see the same state.
+
+Acceptance:
+
+- Human can see what the agent is doing in real time without asking.
+- Every significant agent action is visible in UI as a timeline/chat event.
+- Work item transitions are visible both in Inbox and shared conversation timeline.
+
 ## Delivery Phases
 
 ### Phase 1 (MVP)
@@ -182,12 +320,15 @@ Acceptance:
 - macOS dock badge integration
 - retry + event telemetry for delivery
 - agent handoff conventions for work item creation
+- proactive Agent → Human operational updates in shared stream
 
 ### Phase 3
 
 - richer filtering/grouping
 - ownership reassignment
 - approval/blocking workflows
+- dedicated Timeline/Ops UI with cross-links to inbox items
+- explicit `Audit` tab + `Timeline` tab with blocker-first views
 
 ## Risks & Mitigations
 
@@ -205,3 +346,26 @@ Acceptance:
 3. Reminder/work notifications are retriable and not silently lost.
 4. macOS badge count reflects actionable human work accurately.
 5. Chat remains available but is no longer the only execution surface.
+6. Agent and human share a transparent, bidirectional operational timeline.
+
+## Implementation Status (2026-02-21)
+
+- ✅ Inbox tab in desktop UI with grouped sections and row actions.
+- ✅ Unified derived inbox list across reminders/todos/tasks/plans.
+- ✅ Actionable count surfaced in UI header.
+- ✅ Daemon inbox APIs:
+  - `GET /inbox`
+  - `GET /inbox/actionable_count`
+- ✅ Reminder delivery telemetry states emitted (`queued`, `delivery_attempted`, `delivered`, `delivery_failed`).
+- ✅ Reminder delivery diagnostics endpoint:
+  - `GET /reminders/delivery_events`
+- ✅ Diagnostics tab rendering of reminder delivery events.
+- ✅ macOS dock badge best-effort sync from actionable inbox count.
+- ✅ Inbox lifecycle transitions enforced via `rust-fsm` (`src/inbox_fsm.rs`).
+- ✅ Persisted inbox lifecycle transitions via daemon endpoint and SQLCipher store:
+  - `POST /inbox/transition`
+  - `inbox_item_states` table
+
+Open follow-up:
+
+- ⏳ Add optional transition history timeline (who/when/action metadata) for audit UX.
