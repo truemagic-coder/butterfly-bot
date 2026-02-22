@@ -2765,32 +2765,87 @@ fn now_ts() -> i64 {
         .as_secs() as i64
 }
 
+fn resolve_notification_icon_path() -> Option<String> {
+    let mut candidates = Vec::new();
+
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(
+            cwd.join("assets/icons/hicolor/256x256/apps/butterfly-bot.png")
+                .to_string_lossy()
+                .to_string(),
+        );
+        candidates.push(
+            cwd.join("assets/icons/hicolor/128x128/apps/butterfly-bot.png")
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(bin_dir) = exe.parent() {
+            candidates.push(
+                bin_dir
+                    .join("../Resources/butterfly-bot.png")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            candidates.push(
+                bin_dir
+                    .join("../share/icons/hicolor/256x256/apps/butterfly-bot.png")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
+    }
+
+    candidates.push("/usr/share/icons/hicolor/256x256/apps/butterfly-bot.png".to_string());
+
+    candidates
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+}
+
 fn send_desktop_notification(summary: &str, body: &str) {
     #[cfg(target_os = "linux")]
     {
-        if let Err(err) = notify_rust::Notification::new()
-            .summary(summary)
-            .body(body)
-            .show()
-        {
+        let icon_path = resolve_notification_icon_path();
+        let mut notification = notify_rust::Notification::new();
+        notification.summary(summary).body(body);
+        if let Some(icon) = &icon_path {
+            notification.icon(icon);
+        }
+        if let Err(err) = notification.show() {
             tracing::warn!(error = %err, "Desktop notification failed");
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        let escaped_summary = summary.replace('\\', "\\\\").replace('"', "\\\"");
-        let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "display notification \"{}\" with title \"{}\"",
-            escaped_body, escaped_summary
-        );
-        if let Err(err) = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .status()
-        {
-            tracing::warn!(error = %err, "Desktop notification failed");
+        let icon_path = resolve_notification_icon_path();
+
+        // Prefer terminal-notifier when available because it supports explicit app icons.
+        let mut cmd = std::process::Command::new("terminal-notifier");
+        cmd.arg("-title").arg(summary).arg("-message").arg(body);
+        if let Some(icon) = &icon_path {
+            cmd.arg("-appIcon").arg(icon);
+        }
+
+        let used_terminal_notifier = cmd.status().map(|status| status.success()).unwrap_or(false);
+
+        if !used_terminal_notifier {
+            let escaped_summary = summary.replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
+            let script = format!(
+                "display notification \"{}\" with title \"{}\"",
+                escaped_body, escaped_summary
+            );
+            if let Err(err) = std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(script)
+                .status()
+            {
+                tracing::warn!(error = %err, "Desktop notification failed");
+            }
         }
     }
 
