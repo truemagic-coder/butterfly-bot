@@ -1460,7 +1460,12 @@ async fn daemon_x_api_key_auth_and_reload_config_workflow() {
     let db_file = temp.path().join("daemon-reload-config.db");
     let db_path = db_file.to_string_lossy().to_string();
 
-    let config = Config::convention_defaults(&db_path);
+    let mut config = Config::convention_defaults(&db_path);
+    config.openai = Some(OpenAiConfig {
+        api_key: Some("key".to_string()),
+        model: Some("gpt-4o-mini".to_string()),
+        base_url: Some(server.base_url()),
+    });
     config_store::save_config(&db_path, &config).expect("save config for reload");
 
     let reminder_store = ReminderStore::new(&db_path).await.unwrap();

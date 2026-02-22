@@ -2790,53 +2790,56 @@ fn view_kanban_tab(state: &ButterflyIcedApp) -> Element<'_, Message> {
                 .style(glass_panel)
                 .width(Length::Fill)]
         } else {
-            let mut cards = items.into_iter().take(max_cards).fold(
-                column!().spacing(8),
-                |col, item| {
-                    let due = item
-                        .due_at
-                        .map(format_due_badge_time)
-                        .unwrap_or_else(|| "no due".to_string());
-                    let source = match item.source_type {
-                        InboxSourceType::Reminder => "reminder",
-                        InboxSourceType::Todo => "todo",
-                        InboxSourceType::Task => "task",
-                        InboxSourceType::PlanStep => "plan",
-                    };
-                    let size = item
-                        .t_shirt_size
-                        .clone()
-                        .unwrap_or_else(|| "-".to_string())
-                        .to_ascii_uppercase();
-                    let points = item.story_points.unwrap_or(0).max(0);
-                    let likely = item
-                        .estimate_likely_minutes
-                        .map(format_minutes_short)
-                        .unwrap_or_else(|| "-".to_string());
+            let mut cards =
+                items
+                    .into_iter()
+                    .take(max_cards)
+                    .fold(column!().spacing(8), |col, item| {
+                        let due = item
+                            .due_at
+                            .map(format_due_badge_time)
+                            .unwrap_or_else(|| "no due".to_string());
+                        let source = match item.source_type {
+                            InboxSourceType::Reminder => "reminder",
+                            InboxSourceType::Todo => "todo",
+                            InboxSourceType::Task => "task",
+                            InboxSourceType::PlanStep => "plan",
+                        };
+                        let size = item
+                            .t_shirt_size
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string())
+                            .to_ascii_uppercase();
+                        let points = item.story_points.unwrap_or(0).max(0);
+                        let likely = item
+                            .estimate_likely_minutes
+                            .map(format_minutes_short)
+                            .unwrap_or_else(|| "-".to_string());
 
-                    col.push(
-                        container(
-                            column![
-                                text(item.title.clone()).size(14),
-                                text(format!("{source} • {}", item.owner)).size(12),
-                                text(format!(
+                        col.push(
+                            container(
+                                column![
+                                    text(item.title.clone()).size(14),
+                                    text(format!("{source} • {}", item.owner)).size(12),
+                                    text(format!(
                                     "due: {due} • size: {size} • sp: {points} • likely: {likely}"
                                 ))
-                                .size(11),
-                                text(item.origin_ref.to_string()).size(11),
-                            ]
-                            .spacing(4),
+                                    .size(11),
+                                    text(item.origin_ref.to_string()).size(11),
+                                ]
+                                .spacing(4),
+                            )
+                            .padding([8, 10])
+                            .width(Length::Fill)
+                            .style(
+                                if item.status == InboxStatus::Blocked {
+                                    glass_alert_panel
+                                } else {
+                                    glass_panel
+                                },
+                            ),
                         )
-                        .padding([8, 10])
-                        .width(Length::Fill)
-                        .style(if item.status == InboxStatus::Blocked {
-                            glass_alert_panel
-                        } else {
-                            glass_panel
-                        }),
-                    )
-                },
-            );
+                    });
 
             let overflow = item_count.saturating_sub(max_cards);
             if overflow > 0 {
