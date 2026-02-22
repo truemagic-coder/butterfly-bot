@@ -2158,7 +2158,7 @@ async fn stop_daemon_by_url(daemon_url: String) -> Result<String, String> {
     match stop_local_daemon().await {
         Ok(status) if status == "Daemon stopped" => Ok(status),
         Ok(_) | Err(_) => {
-            let (_host, port) = parse_daemon_address(&daemon_url);
+            let (_host, _port) = parse_daemon_address(&daemon_url);
 
             #[cfg(target_os = "linux")]
             {
