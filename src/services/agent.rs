@@ -1561,11 +1561,7 @@ fn grounded_x402_failure_response(
     let amount = if x402_asset_is_native_sol(&intent.asset_id) {
         format!("{:.9}", intent.amount_atomic as f64 / 1_000_000_000f64)
     } else {
-        let decimals = if asset_symbol(&intent.asset_id) == "USDC" {
-            6
-        } else {
-            6
-        };
+        let decimals = 6;
         format_atomic_with_decimals(intent.amount_atomic, decimals)
     };
     let symbol = asset_symbol(&intent.asset_id);

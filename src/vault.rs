@@ -200,13 +200,14 @@ pub fn set_secret_required(name: &str, value: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         match macos_keychain_set_required(name, value) {
-            Ok(()) => return Ok(()),
+            Ok(()) => Ok(()),
             Err(err) => {
                 if keyring_backend_unavailable(&err.to_string()) {
                     write_secret_fallback_file(name, value);
-                    return Ok(());
+                    Ok(())
+                } else {
+                    Err(err)
                 }
-                return Err(err);
             }
         }
     }
@@ -237,12 +238,13 @@ pub fn get_secret_required(name: &str) -> Result<Option<String>> {
     #[cfg(target_os = "macos")]
     {
         match macos_keychain_get_required(name) {
-            Ok(value) => return Ok(value.or_else(|| read_secret_fallback_file(name))),
+            Ok(value) => Ok(value.or_else(|| read_secret_fallback_file(name))),
             Err(err) => {
                 if keyring_backend_unavailable(&err.to_string()) {
-                    return Ok(read_secret_fallback_file(name));
+                    Ok(read_secret_fallback_file(name))
+                } else {
+                    Err(err)
                 }
-                return Err(err);
             }
         }
     }
